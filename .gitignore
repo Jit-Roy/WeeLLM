@@ -46,6 +46,7 @@ venv.bak/
 # Model weights & shards  (large binary files — store elsewhere)
 # -----------------------------------------------------------------------------
 flux2-klein-4b/
+Z-Image-Turbo/
 
 # Ignore all safetensors weight files
 *.safetensors

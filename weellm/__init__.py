@@ -11,16 +11,16 @@ Supported models
 
 Quick start
 -----------
-    from weellm import get_pipeline
+    from weellm import WeePipeline
     import torch
 
-    Pipeline = get_pipeline("flux2-klein")
-    pipe = Pipeline.from_pretrained("flux2-klein-4b", device="cuda", dtype=torch.bfloat16)
+    pipe = WeePipeline.from_pretrained("flux2-klein-4b", device="cuda", dtype=torch.bfloat16)
     image = pipe.generate("A sunset over mountains", height=512, width=512)
     image.save("output.png")
 """
 
 from .registry import get_pipeline, list_models, register_model, MODEL_REGISTRY
+from .auto import WeePipeline
 from .core.base_pipeline import BasePipeline
 from .core.base_streamer import BaseStreamer
 
@@ -38,6 +38,8 @@ __all__ = [
     # Base classes (for model implementers)
     "BasePipeline",
     "BaseStreamer",
+    # Auto router
+    "WeePipeline",
     # Built-in pipelines
     "WeeFlux2KleinPipeline",
 ]
