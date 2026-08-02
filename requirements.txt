@@ -1,0 +1,23 @@
+# LightLLM dependencies
+# Install with: pip install -r requirements.txt
+
+# Core deep learning
+torch>=2.1.0
+torchvision
+
+# Diffusers + transformers
+diffusers>=0.37.0
+transformers>=4.50.0
+accelerate>=0.30.0
+
+# Safetensors (fast, memory-mapped model loading)
+safetensors>=0.4.0
+
+# Image handling
+Pillow>=10.0.0
+
+# Progress bars
+tqdm>=4.65.0
+
+# Memory reporting (optional but recommended)
+psutil>=5.9.0
