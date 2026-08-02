@@ -44,8 +44,8 @@ venv.bak/
 
 # -----------------------------------------------------------------------------
 # Model weights & shards  (large binary files — store elsewhere)
-# Track config.json / tokenizer files but NOT the heavy .safetensors
 # -----------------------------------------------------------------------------
+flux2-klein-4b/
 
 # Ignore all safetensors weight files
 *.safetensors
