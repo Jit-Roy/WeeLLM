@@ -10,10 +10,11 @@ WeeLLM uses a **Live Seek Architecture**: it reads weights directly out of Huggi
 
 ## Supported Models
 
-| Model | Size | Peak VRAM | Peak RAM | Time (512×512, 4–8 steps) |
+| Model | Size | Peak VRAM | Peak RAM | Time (512×512, steps) |
 |---|---|---|---|---|
-| `flux2-klein` | 4B params | **2.0 GB** | **2.3 GB** | ~61s on RTX 3050 |
-| `z-image-turbo` | ~10B params | **1.6 GB** | **1.7 GB** | ~167s on RTX 3050 |
+| `flux2-klein` | 4B params | **2.0 GB** | **2.3 GB** | ~61s · 4 steps · RTX 3050 |
+| `z-image-turbo` | ~10B params | **1.6 GB** | **1.7 GB** | ~167s · 4 steps · RTX 3050 |
+| `sdxl` (Juggernaut XL v9) | ~6.6B params | **2.98 GB** | **1.5 GB** | ~120s · 20 steps · RTX 3050 |
 
 > The models run with **no quantization** — full bfloat16 weights streamed layer-by-layer from disk.
 
@@ -33,6 +34,11 @@ python main.py --model black-forest-labs/FLUX.1-dev --prompt "A majestic lion at
 
 # Z-Image-Turbo (~10B) — photorealistic powerhouse
 python main.py --model Tongyi-MAI/Z-Image-Turbo --prompt "A serene Japanese zen garden at sunrise, photorealistic, 8k"
+
+# SDXL (Juggernaut XL v9 — 6.6B) — classic photorealistic quality
+python main.py --model RunDiffusion/Juggernaut-XL-v9 \
+  --prompt "A cyberpunk city at night with neon signs" \
+  --steps 20 --guidance_scale 7.0
 
 # Run from a local folder (skips download)
 python main.py --model ./my-local-flux-model --prompt "A cyberpunk city at night"
@@ -70,11 +76,12 @@ WeeLLM/
     ├── registry.py                  # Model name → pipeline class map
     │
     ├── core/                        # Shared infrastructure
-    │   ├── encoders/                # Shared encoders (e.g. Qwen3)
-    │   │   └── qwen3_streamer.py
+    │   ├── encoders/                # Shared encoders
+    │   │   ├── qwen3_streamer.py    # Qwen3 text encoder (Flux / Z-Image)
+    │   │   └── clip_streamer.py     # CLIP text encoder streamer (SDXL)
     │   ├── base_pipeline.py         # Abstract BasePipeline
     │   ├── base_streamer.py         # Abstract BaseStreamer
-    │   ├── live_seek.py             # LiveSeeker (zero-duplication disk reader)
+    │   ├── live_seek.py             # SafetensorsLiveSeeker (zero-duplication disk reader)
     │   └── utils.py                 # Memory & HF resolution utilities
     │
     └── models/
@@ -82,9 +89,13 @@ WeeLLM/
         │   ├── pipeline.py
         │   └── transformer_streamer.py
         │
-        └── z_image_turbo/           # Z-Image-Turbo ~10B
+        ├── z_image_turbo/           # Z-Image-Turbo ~10B
+        │   ├── pipeline.py
+        │   └── transformer_streamer.py
+        │
+        └── sdxl/                   # Stable Diffusion XL (Juggernaut XL v9, ~6.6B)
             ├── pipeline.py
-            └── transformer_streamer.py
+            └── unet_streamer.py
 ```
 
 ---
@@ -125,6 +136,18 @@ image = pipe.generate(
     seed=42,
 )
 image.save("output.png")
+
+# SDXL (Juggernaut XL v9)
+pipe = WeePipeline.from_pretrained("RunDiffusion/Juggernaut-XL-v9", device="cuda")
+image = pipe.generate(
+    prompt="A photorealistic cyberpunk city at night with neon signs",
+    height=512,
+    width=512,
+    num_inference_steps=20,
+    guidance_scale=7.0,
+    seed=42,
+)
+image.save("sdxl_output.png")
 ```
 
 ---
