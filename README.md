@@ -1,6 +1,6 @@
 # WeeLLM
 
-**Layer-streaming inference for large diffusion models — 4 GB VRAM, 8 GB RAM, no quantization, zero disk duplication.**
+**Layer-streaming inference for large diffusion models — Under 4 GB VRAM, no quantization**
 
 WeeLLM streams one transformer layer at a time from disk to GPU for large models. The full model weights never reside in VRAM simultaneously — only the currently-executing layer is loaded.
 
@@ -15,7 +15,7 @@ WeeLLM uses a **Live Seek Architecture**: it reads weights directly out of Huggi
 | `flux2-klein` | 4B params | **2.0 GB** | **2.3 GB** | ~61s on RTX 3050 |
 | `z-image-turbo` | ~10B params | **1.6 GB** | **1.7 GB** | ~167s on RTX 3050 |
 
-> Both models run with **no quantization** — full bfloat16 weights streamed layer-by-layer from disk.
+> The models run with **no quantization** — full bfloat16 weights streamed layer-by-layer from disk.
 
 ---
 
@@ -37,6 +37,15 @@ python main.py --model Tongyi-MAI/Z-Image-Turbo --prompt "A serene Japanese zen 
 # Run from a local folder (skips download)
 python main.py --model ./my-local-flux-model --prompt "A cyberpunk city at night"
 ```
+
+---
+
+## ⚠️ Cloud vs. Local Execution Warning
+
+> [!WARNING]
+> **Do NOT try to run this natively on standard Kaggle or Google Colab environments!**
+
+This streaming architecture is specifically optimized for local execution on modern PCs equipped with NVMe SSDs and modern GPUs. You will experience massive slowdowns on standard cloud instances.
 
 ---
 

@@ -47,6 +47,7 @@ venv.bak/
 # -----------------------------------------------------------------------------
 flux2-klein-4b/
 Z-Image-Turbo/
+stable-diffusion-xl-base-1.0/
 
 # Ignore all safetensors weight files
 *.safetensors
