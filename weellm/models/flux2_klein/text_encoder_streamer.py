@@ -413,3 +413,59 @@ class StreamingQwen3TextEncoder:
         self._captured.clear()
         clean_memory(self.device)
         return prompt_embeds
+
+    @torch.no_grad()
+    def encode_ids(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Encode pre-tokenized input_ids and return combined hidden states.
+
+        Used by the Z-Image pipeline which handles tokenization externally
+        (needs to apply Qwen3 chat template with enable_thinking=True and
+        obtain the attention mask for post-hoc padding removal).
+
+        Parameters
+        ----------
+        input_ids      : (B, seq_len) tensor, already on the target device
+        attention_mask : (B, seq_len) bool/int tensor, or None
+
+        Returns
+        -------
+        prompt_embeds : torch.Tensor
+            Shape (B, seq_len, num_extract * hidden_dim)
+            For Z-Image with extract_layers=(34,): (B, seq_len, 2560)
+        """
+        self._ensure_initialized()
+
+        input_ids = input_ids.to(self.device)
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(self.device)
+
+        self._captured.clear()
+
+        _ = self._model.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=False,
+        )
+
+        stacked = torch.stack(
+            [self._captured[k] for k in self.extract_layers], dim=1
+        )
+        B, num_captured, seq, hidden = stacked.shape
+        prompt_embeds = stacked.permute(0, 2, 1, 3).reshape(B, seq, num_captured * hidden)
+        prompt_embeds = prompt_embeds.to(dtype=self.dtype)
+
+        self._captured.clear()
+        clean_memory(self.device)
+        return prompt_embeds
+
+    @property
+    def tokenizer(self):
+        """Expose the tokenizer for external use (e.g. by Z-Image pipeline)."""
+        self._ensure_initialized()
+        return self._tokenizer
+

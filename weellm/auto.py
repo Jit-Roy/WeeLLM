@@ -21,6 +21,7 @@ AUTO_PIPELINE_MAPPING = {
     # When we add standard FLUX support, we can map this dynamically!
     "FluxPipeline": "flux2-klein",
     "Flux2KleinPipeline": "flux2-klein",
+    "ZImagePipeline": "z-image-turbo",
     
     # Future architectures:
     # "StableDiffusionXLPipeline": "sdxl",
