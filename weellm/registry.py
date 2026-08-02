@@ -63,6 +63,7 @@ def list_models() -> List[str]:
 def _register_builtin_models() -> None:
     from .models.flux2_klein import WeeFlux2KleinPipeline
     from .models.z_image_turbo import WeeZImageTurboPipeline
+    from .models.sdxl import WeeSDXLPipeline
 
     # FLUX.2 Klein 4B
     register_model("flux2-klein",  WeeFlux2KleinPipeline)
@@ -72,12 +73,12 @@ def _register_builtin_models() -> None:
     register_model("z-image-turbo",  WeeZImageTurboPipeline)
     register_model("z_image_turbo",  WeeZImageTurboPipeline)  # underscore alias
 
+    # Stable Diffusion XL
+    register_model("sdxl", WeeSDXLPipeline)
+
     # ── Add future models here ──────────────────────────────────────────
     # from .models.sd35  import LightSD35Pipeline
     # register_model("sd35",  LightSD35Pipeline)
-    #
-    # from .models.sdxl  import LightSDXLPipeline
-    # register_model("sdxl",  LightSDXLPipeline)
     # ────────────────────────────────────────────────────────────────────
 
 

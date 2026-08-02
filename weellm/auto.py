@@ -23,9 +23,8 @@ AUTO_PIPELINE_MAPPING = {
     "Flux2KleinPipeline": "flux2-klein",
     "ZImagePipeline": "z-image-turbo",
     
-    # Future architectures:
-    # "StableDiffusionXLPipeline": "sdxl",
-    # "StableDiffusion3Pipeline": "sd35",
+    # Stable Diffusion XL models
+    "StableDiffusionXLPipeline": "sdxl",
 }
 
 class WeePipeline:

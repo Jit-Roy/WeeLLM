@@ -44,12 +44,18 @@ class SafetensorsLiveSeeker:
         else:
             # Maybe it's a single non-sharded model
             single_st = self.model_dir / "model.safetensors"
+            single_fp16 = self.model_dir / "model.fp16.safetensors"
             alt_single_st = self.model_dir / "diffusion_pytorch_model.safetensors"
+            alt_fp16 = self.model_dir / "diffusion_pytorch_model.fp16.safetensors"
             
             if single_st.exists():
                 src_file = single_st.name
+            elif single_fp16.exists():
+                src_file = single_fp16.name
             elif alt_single_st.exists():
                 src_file = alt_single_st.name
+            elif alt_fp16.exists():
+                src_file = alt_fp16.name
             else:
                 raise FileNotFoundError(f"Could not find safetensors index or single file in {self.model_dir}")
             
