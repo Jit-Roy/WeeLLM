@@ -65,6 +65,7 @@ def _register_builtin_models() -> None:
     from .models.z_image_turbo import WeeZImageTurboPipeline
     from .models.sdxl import WeeSDXLPipeline
     from .models.sd15 import WeeSD15Pipeline
+    from .models.flux_schnell import WeeFluxSchnellPipeline
 
     # FLUX.2 Klein 4B
     register_model("flux2-klein",  WeeFlux2KleinPipeline)
@@ -80,6 +81,10 @@ def _register_builtin_models() -> None:
     # Stable Diffusion 1.5 / 2.x
     register_model("sd15",  WeeSD15Pipeline)
     register_model("sd1.5", WeeSD15Pipeline)   # dot alias
+
+    # FLUX.1-schnell / FLUX.1-dev
+    register_model("flux-schnell", WeeFluxSchnellPipeline)
+    register_model("flux1-schnell", WeeFluxSchnellPipeline)  # long alias
 
     # ── Add future models here ──────────────────────────────────────────
     # from .models.sd35  import LightSD35Pipeline

@@ -49,6 +49,7 @@ flux2-klein-4b/
 Z-Image-Turbo/
 stable-diffusion-xl-base-1.0/
 stable-diffusion-v1-5/
+FLUX.1-schnell/
 
 # Ignore all safetensors weight files
 *.safetensors
