@@ -40,12 +40,14 @@ class WeePipeline:
     @classmethod
     def from_pretrained(
         cls,
-        model_dir: Union[str, Path],
+        model_id_or_path: Union[str, Path],
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
-        model_path = Path(model_dir)
+        from .core.utils import resolve_model_path
+        
+        model_path = resolve_model_path(str(model_id_or_path))
         index_path = model_path / "model_index.json"
         
         if not index_path.exists():

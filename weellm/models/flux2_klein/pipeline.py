@@ -173,7 +173,6 @@ class WeeFlux2KleinPipeline(BasePipeline):
             device=self.device,
             dtype=self.dtype,
             prefetch=self.prefetch,
-            force_resplit=force_resplit,
         )
         report_memory("After transformer init")
 

@@ -77,7 +77,6 @@ class WeeZImageTurboPipeline(BasePipeline):
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         prefetch: bool = True,
-        force_resplit: bool = False,
         **kwargs,
     ) -> "WeeZImageTurboPipeline":
         from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler
@@ -127,7 +126,6 @@ class WeeZImageTurboPipeline(BasePipeline):
             device=device,
             dtype=dtype,
             prefetch=prefetch,
-            force_resplit=force_resplit,
         )
         report_memory("After transformer init")
 

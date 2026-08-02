@@ -6,8 +6,8 @@ without quantization or model reduction.
 
 Usage
 -----
-    python main.py --model flux2-klein --prompt "A sunset over mountains"
-    python main.py --model flux2-klein --height 768 --width 768 --steps 4 --seed 42
+    python main.py --model black-forest-labs/FLUX.1-dev --prompt "A sunset over mountains"
+    python main.py --model Tongyi-MAI/Z-Image-Turbo --height 768 --width 768 --steps 4 --seed 42
     python main.py --help
 """
 
@@ -18,57 +18,33 @@ from pathlib import Path
 
 import torch
 
-SCRIPT_DIR = Path(__file__).parent
-
-# ---------------------------------------------------------------------------
-# Default model directory names (auto-detected when --model_dir is not given)
-# ---------------------------------------------------------------------------
-_MODEL_DEFAULT_DIRS: dict = {
-    "flux2-klein": "flux2-klein-4b",
-    "flux2_klein": "flux2-klein-4b",
-    # "sd35":       "sd3.5-medium",   # ← add when supported
-    # "sdxl":       "sdxl-1.0",
-}
-
 
 # ---------------------------------------------------------------------------
 # CLI argument parser
 # ---------------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
-    from weellm import list_models  # import here so --help works even without torch
-
-    available = ", ".join(list_models()) or "(none registered)"
-
     parser = argparse.ArgumentParser(
         prog="weellm",
         description=(
             "WeeLLM — Layer-streaming diffusion inference.\n"
-            "Runs large models under 4 GB VRAM without quantization."
+            "Runs large models under 4 GB VRAM without quantization.\n"
+            "Supports local directories or Hugging Face repository IDs."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"""
-supported models:
-  {available}
-
+        epilog="""
 examples:
-  python main.py --model flux2-klein --prompt "A majestic lion at golden hour"
-  python main.py --model flux2-klein --height 768 --width 768 --steps 4
-  python main.py --model flux2-klein --no_prefetch          # lower RAM usage
-  python main.py --model flux2-klein --force_resplit        # rebuild shards
+  python main.py --model black-forest-labs/FLUX.1-dev --prompt "A majestic lion at golden hour"
+  python main.py --model Tongyi-MAI/Z-Image-Turbo --height 768 --width 768 --steps 4
+  python main.py --model ./my-local-flux-model --no_prefetch          # lower RAM usage
         """,
     )
 
     # Model selection
     parser.add_argument(
-        "--model", type=str, default="flux2-klein",
-        metavar="NAME",
-        help=f"Model to use. Available: {available}  (default: flux2-klein)",
-    )
-    parser.add_argument(
-        "--model_dir", type=str, default=None,
-        metavar="PATH",
-        help="Override the model directory (auto-detected from --model if omitted)",
+        "--model", type=str, required=True,
+        metavar="ID_OR_PATH",
+        help="Hugging Face repo ID or path to local model directory (e.g. Tongyi-MAI/Z-Image-Turbo)",
     )
 
     # Generation parameters
@@ -102,11 +78,7 @@ examples:
     # Advanced / performance
     parser.add_argument(
         "--no_prefetch", action="store_true",
-        help="Disable background prefetching (slower but ~400 MB less RAM)",
-    )
-    parser.add_argument(
-        "--force_resplit", action="store_true",
-        help="Force rebuilding of per-layer shards even if they already exist",
+        help="Disable background prefetching (slower but uses less RAM)",
     )
     parser.add_argument(
         "--vram_budget", type=float, default=4.0,
@@ -128,20 +100,12 @@ def main() -> int:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype  = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
 
-    # ── Resolve model directory ──────────────────────────────────────────────
-    if args.model_dir is not None:
-        model_dir = Path(args.model_dir)
-    elif args.model in _MODEL_DEFAULT_DIRS:
-        model_dir = SCRIPT_DIR / _MODEL_DEFAULT_DIRS[args.model]
-    else:
-        model_dir = SCRIPT_DIR / args.model
-
     # ── Header ──────────────────────────────────────────────────────────────
     sep = "=" * 60
     print(f"\n{sep}")
     print("  WeeLLM — Layer-Streaming Diffusion Inference")
     print(sep)
-    print(f"  Model:    {args.model}  [{model_dir}]")
+    print(f"  Model:    {args.model}")
     print(f"  Prompt:   {args.prompt}")
     print(f"  Size:     {args.width} x {args.height} px")
     print(f"  Steps:    {args.steps}  |  Guidance: {args.guidance_scale}  |  Seed: {args.seed}")
@@ -152,22 +116,20 @@ def main() -> int:
     print()
 
     # ── Load pipeline ────────────────────────────────────────────────────────
-    from weellm import get_pipeline
-
-    try:
-        PipelineClass = get_pipeline(args.model)
-    except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
+    from weellm.auto import WeePipeline
 
     t_load = time.time()
-    pipe = PipelineClass.from_pretrained(
-        model_dir=model_dir,
-        device=device,
-        dtype=dtype,
-        prefetch=not args.no_prefetch,
-        force_resplit=args.force_resplit,
-    )
+    try:
+        pipe = WeePipeline.from_pretrained(
+            model_id_or_path=args.model,
+            device=device,
+            dtype=dtype,
+            prefetch=not args.no_prefetch,
+        )
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+        
     print(f"Pipeline loaded in {time.time() - t_load:.1f}s\n")
 
     # ── Generate ─────────────────────────────────────────────────────────────
