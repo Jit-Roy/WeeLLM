@@ -45,7 +45,7 @@ import torch.nn as nn
 from PIL import Image
 
 from .transformer_streamer import FluxStreamer
-from .text_encoder_streamer import StreamingQwen3TextEncoder
+from weellm.core.encoders.qwen3_streamer import StreamingQwen3TextEncoder
 from weellm.core.base_pipeline import BasePipeline
 from weellm.core.utils import clean_memory, report_memory
 

@@ -61,6 +61,8 @@ WeeLLM/
     ├── registry.py                  # Model name → pipeline class map
     │
     ├── core/                        # Shared infrastructure
+    │   ├── encoders/                # Shared encoders (e.g. Qwen3)
+    │   │   └── qwen3_streamer.py
     │   ├── base_pipeline.py         # Abstract BasePipeline
     │   ├── base_streamer.py         # Abstract BaseStreamer
     │   ├── live_seek.py             # LiveSeeker (zero-duplication disk reader)
@@ -69,8 +71,7 @@ WeeLLM/
     └── models/
         ├── flux2_klein/             # FLUX.2 Klein 4B
         │   ├── pipeline.py
-        │   ├── transformer_streamer.py
-        │   └── text_encoder_streamer.py
+        │   └── transformer_streamer.py
         │
         └── z_image_turbo/           # Z-Image-Turbo ~10B
             ├── pipeline.py
