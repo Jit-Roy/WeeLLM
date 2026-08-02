@@ -28,7 +28,10 @@ AUTO_PIPELINE_MAPPING = {
     "StableDiffusionPipeline": "sd15",
 
     # Stable Diffusion XL models
-    "StableDiffusionXLPipeline": "sdxl"
+    "StableDiffusionXLPipeline": "sdxl",
+
+    # Stable Diffusion 3.x / 3.5
+    "StableDiffusion3Pipeline": "sd35",
 }
 
 class WeePipeline:

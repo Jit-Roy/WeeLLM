@@ -50,6 +50,7 @@ Z-Image-Turbo/
 stable-diffusion-xl-base-1.0/
 stable-diffusion-v1-5/
 FLUX.1-schnell/
+stable-diffusion-3.5-medium/
 
 # Ignore all safetensors weight files
 *.safetensors
