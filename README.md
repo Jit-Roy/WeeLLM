@@ -15,6 +15,7 @@ WeeLLM uses a **Live Seek Architecture**: it reads weights directly out of Huggi
 | `flux2-klein` | 4B params | **2.0 GB** | **2.3 GB** | ~61s · 4 steps · RTX 3050 |
 | `z-image-turbo` | ~10B params | **1.6 GB** | **1.7 GB** | ~167s · 4 steps · RTX 3050 |
 | `sdxl` (Juggernaut XL v9) | ~6.6B params | **2.98 GB** | **1.5 GB** | ~120s · 20 steps · RTX 3050 |
+| `sd15` (SD v1.5) | ~1.7B params | **0.90 GB** | **1.4 GB** | ~68s · 20 steps · RTX 3050 |
 
 > The models run with **no quantization** — full bfloat16 weights streamed layer-by-layer from disk.
 
@@ -39,6 +40,11 @@ python main.py --model Tongyi-MAI/Z-Image-Turbo --prompt "A serene Japanese zen 
 python main.py --model RunDiffusion/Juggernaut-XL-v9 \
   --prompt "A cyberpunk city at night with neon signs" \
   --steps 20 --guidance_scale 7.0
+
+# Stable Diffusion 1.5 — ultra-lightweight, under 1 GB VRAM!
+python main.py --model runwayml/stable-diffusion-v1-5 \
+  --prompt "A cyberpunk city at night with neon signs" \
+  --steps 20 --guidance_scale 7.5
 
 # Run from a local folder (skips download)
 python main.py --model ./my-local-flux-model --prompt "A cyberpunk city at night"
@@ -78,7 +84,7 @@ WeeLLM/
     ├── core/                        # Shared infrastructure
     │   ├── encoders/                # Shared encoders
     │   │   ├── qwen3_streamer.py    # Qwen3 text encoder (Flux / Z-Image)
-    │   │   └── clip_streamer.py     # CLIP text encoder streamer (SDXL)
+    │   │   └── clip_streamer.py     # CLIP text encoder streamer (SD1.5 / SDXL)
     │   ├── base_pipeline.py         # Abstract BasePipeline
     │   ├── base_streamer.py         # Abstract BaseStreamer
     │   ├── live_seek.py             # SafetensorsLiveSeeker (zero-duplication disk reader)
@@ -93,9 +99,12 @@ WeeLLM/
         │   ├── pipeline.py
         │   └── transformer_streamer.py
         │
-        └── sdxl/                   # Stable Diffusion XL (Juggernaut XL v9, ~6.6B)
-            ├── pipeline.py
-            └── unet_streamer.py
+        ├── sdxl/                   # Stable Diffusion XL (Juggernaut XL v9, ~6.6B)
+        │   ├── pipeline.py
+        │   └── unet_streamer.py      # Shared with SD1.5
+        │
+        └── sd15/                   # Stable Diffusion 1.5 (~1.7B)
+            └── pipeline.py          # Reuses unet_streamer + clip_streamer
 ```
 
 ---
@@ -148,6 +157,18 @@ image = pipe.generate(
     seed=42,
 )
 image.save("sdxl_output.png")
+
+# Stable Diffusion 1.5 — under 1 GB VRAM!
+pipe = WeePipeline.from_pretrained("runwayml/stable-diffusion-v1-5", device="cuda")
+image = pipe.generate(
+    prompt="A photorealistic cyberpunk city at night with neon signs",
+    height=512,
+    width=512,
+    num_inference_steps=20,
+    guidance_scale=7.5,
+    seed=42,
+)
+image.save("sd15_output.png")
 ```
 
 ---

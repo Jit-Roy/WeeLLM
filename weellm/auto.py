@@ -22,7 +22,10 @@ AUTO_PIPELINE_MAPPING = {
     "FluxPipeline": "flux2-klein",
     "Flux2KleinPipeline": "flux2-klein",
     "ZImagePipeline": "z-image-turbo",
-    
+
+    # Stable Diffusion 1.x / 2.x
+    "StableDiffusionPipeline": "sd15",
+
     # Stable Diffusion XL models
     "StableDiffusionXLPipeline": "sdxl",
 }
