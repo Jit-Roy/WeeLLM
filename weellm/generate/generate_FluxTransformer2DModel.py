@@ -104,9 +104,15 @@ def generate(
     latent_image_ids = _flux1_prepare_latent_image_ids(latent_h, latent_w, self.device, self.dtype)
     text_ids = _flux1_prepare_text_ids(prompt_embeds.shape[1], self.device, self.dtype)
 
-    self._scheduler.set_timesteps(num_inference_steps, device=self.device)
+    if getattr(self._scheduler.config, "use_dynamic_shifting", False):
+        m = (1.15 - 0.5) / (4096 - 256)
+        b = 0.5 - m * 256
+        mu = seq_len * m + b
+        self._scheduler.set_timesteps(num_inference_steps, device=self.device, mu=mu)
+    else:
+        self._scheduler.set_timesteps(num_inference_steps, device=self.device)
+        
     timesteps = self._scheduler.timesteps
-
     print("  [2/3] Denoising ...")
     for i, t in enumerate(timesteps):
         print(f"        Step {i+1}/{num_inference_steps} (t={t.item():.4f}) ...")
