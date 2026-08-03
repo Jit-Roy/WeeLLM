@@ -62,6 +62,7 @@ def generate(
     height = 2 * (int(height) // (vae_scale_factor * 2))
     width = 2 * (int(width) // (vae_scale_factor * 2))
 
+    self._transformer._ensure_initialized()
     latent_channels = self._transformer.model.config.in_channels
     latent_h = height
     latent_w = width
