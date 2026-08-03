@@ -61,7 +61,18 @@ class WeePipeline(BasePipeline):
         cache_to_ram: bool = False,
         **kwargs
     ):
-        model_dir = Path(model_dir)
+        model_dir_str = str(model_dir)
+        if not Path(model_dir_str).exists():
+            print(f"Path '{model_dir_str}' not found locally. Attempting to download from Hugging Face Hub...")
+            try:
+                from huggingface_hub import snapshot_download
+                model_dir_str = snapshot_download(model_dir_str)
+            except ImportError:
+                raise ImportError("huggingface_hub is required to download models. Please install it with 'pip install huggingface_hub'.")
+            except Exception as e:
+                raise ValueError(f"Failed to download '{model_dir_str}' from Hugging Face Hub: {e}")
+
+        model_dir = Path(model_dir_str)
         index_path = model_dir / "model_index.json"
         with open(index_path, "r", encoding="utf-8") as f:
             index = json.load(f)
