@@ -15,7 +15,7 @@ from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 from diffusers import UNet2DConditionModel
 
-from weellm.live_seek import SafetensorsLiveSeeker
+from weellm.seeker import get_seeker
 from weellm.utils import clean_memory, report_memory
 
 
@@ -45,7 +45,7 @@ class UNet2DConditionModelStreamer:
     def __init__(
         self,
         model: UNet2DConditionModel,
-        seeker: SafetensorsLiveSeeker,
+        seeker,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         prefetch: bool = True,
@@ -105,12 +105,13 @@ class UNet2DConditionModelStreamer:
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         prefetch: bool = True,
+        cache_to_ram: bool = False
     ) -> "UNet2DConditionModelStreamer":
         import os
         path = os.path.join(model_dir, "unet")
 
         print("\nStep 1/3 -- Initializing LiveSeeker on UNet weights ...")
-        seeker = SafetensorsLiveSeeker(path)
+        seeker = get_seeker(path, cache_to_ram=cache_to_ram)
         print(f"  Found {len(seeker.weight_map)} tensors.")
 
         print("\nStep 2/3 -- Instantiating UNet2DConditionModel on meta device ...")

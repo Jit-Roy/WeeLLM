@@ -19,14 +19,14 @@ from accelerate.utils.modeling import set_module_tensor_to_device
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from weellm.utils import clean_memory
-from weellm.live_seek import SafetensorsLiveSeeker
+from weellm.seeker import get_seeker
 
 
-def _get_layer_keys(seeker: SafetensorsLiveSeeker, layer_idx: int) -> List[str]:
+def _get_layer_keys(seeker, layer_idx: int) -> List[str]:
     prefix = f"model.layers.{layer_idx}."
     return [k for k in seeker.weight_map.keys() if k.startswith(prefix)]
 
-def _get_resident_keys(seeker: SafetensorsLiveSeeker) -> List[str]:
+def _get_resident_keys(seeker) -> List[str]:
     return [k for k in seeker.weight_map.keys() if k.startswith("model.embed_tokens.") or k.startswith("model.norm.")]
 
 
@@ -44,6 +44,7 @@ class Qwen3ForCausalLMStreamer:
         extract_layers: Tuple[int, ...] = (14, 21, 35),
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
+        cache_to_ram: bool = False,
         max_length: int = 512,
     ):
         self.text_encoder_dir = Path(text_encoder_dir)
@@ -51,6 +52,7 @@ class Qwen3ForCausalLMStreamer:
         self.extract_layers = extract_layers
         self.device = device
         self.dtype = dtype
+        self.cache_to_ram = cache_to_ram
         self.max_length = max_length
 
         self._seeker: Optional[SafetensorsLiveSeeker] = None
@@ -75,7 +77,7 @@ class Qwen3ForCausalLMStreamer:
         if self._initialized:
             return
         print("Initialising streaming Qwen3 text encoder ...")
-        self._seeker = SafetensorsLiveSeeker(self.text_encoder_dir)
+        self._seeker = get_seeker(self.text_encoder_dir, cache_to_ram=self.cache_to_ram)
         self._load_model_skeleton()
         self._load_tokenizer()
         self._load_resident_modules()
@@ -252,8 +254,9 @@ class Qwen3ForCausalLMStreamer:
         tokenizer,  # We accept it to match signature, but this streamer loads its own
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
+        cache_to_ram: bool = False,
         prefetch: bool = True,
-        max_length: int = 512,
+        max_length: int = 512
     ) -> "Qwen3ForCausalLMStreamer":
         # Note: we use model_dir for both text_encoder and tokenizer because they're 
         # usually in the same HF folder if this is passed directly (or we just pass 
@@ -264,6 +267,7 @@ class Qwen3ForCausalLMStreamer:
             text_encoder_dir=model_dir,
             tokenizer_dir=tokenizer_dir,
             device=device,
+            cache_to_ram=cache_to_ram,
             dtype=dtype,
             max_length=max_length,
         )

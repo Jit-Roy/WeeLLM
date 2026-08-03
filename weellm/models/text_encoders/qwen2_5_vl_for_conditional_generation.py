@@ -23,7 +23,7 @@ from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 
 from weellm.utils import clean_memory, report_memory
-from weellm.live_seek import SafetensorsLiveSeeker
+from weellm.seeker import get_seeker
 
 
 # The same prompt template used by QwenImagePipeline
@@ -36,11 +36,11 @@ PROMPT_TEMPLATE = (
 PROMPT_TEMPLATE_DROP_IDX = 34
 
 
-def _get_layer_keys(seeker: SafetensorsLiveSeeker, prefix: str) -> List[str]:
+def _get_layer_keys(seeker, prefix: str) -> List[str]:
     return [k for k in seeker.weight_map.keys() if k.startswith(prefix + ".")]
 
 
-def _get_resident_keys(seeker: SafetensorsLiveSeeker) -> List[str]:
+def _get_resident_keys(seeker) -> List[str]:
     """Everything except the transformer layer blocks, visual encoder, and lm_head."""
     return [
         k for k in seeker.weight_map.keys() 
@@ -83,11 +83,12 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
     def __init__(
         self,
         model: nn.Module,
-        seeker: SafetensorsLiveSeeker,
+        seeker,
         layer_count: int,
         tokenizer,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
+        cache_to_ram: bool = False,
         prefetch: bool = True,
         max_length: int = 512,
     ):
@@ -97,6 +98,7 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         self.tokenizer = tokenizer
         self.device = device
         self.dtype = dtype
+        self.cache_to_ram = cache_to_ram
         self.prefetch = prefetch
         self.max_length = max_length
 
@@ -208,15 +210,16 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         tokenizer,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
+        cache_to_ram: bool = False,
         prefetch: bool = True,
-        max_length: int = 512,
+        max_length: int = 512
     ) -> "Qwen2_5_VLForConditionalGenerationStreamer":
         from transformers import Qwen2_5_VLForConditionalGeneration
 
         model_dir = Path(model_dir)
 
         print("  [TE 1/3] Initializing LiveSeeker on Qwen text encoder weights ...")
-        seeker = SafetensorsLiveSeeker(model_dir)
+        seeker = get_seeker(model_dir, cache_to_ram=self.cache_to_ram)
         print(f"    Found {len(seeker.weight_map)} tensors.")
 
         print("  [TE 2/3] Instantiating Qwen2_5_VLForConditionalGeneration on meta device ...")
@@ -233,7 +236,8 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
 
         print("  [TE 3/3] Loading resident Qwen text encoder tensors to GPU ...")
         resident_keys = _get_resident_keys(seeker)
-        resident_sd = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
+        resident_sd = seeker.get_tensors(resident_keys, device=device,
+            cache_to_ram=cache_to_ram, dtype=dtype)
         _apply_state_dict(model, resident_sd, device, dtype)
         del resident_sd
         clean_memory(device)
@@ -248,6 +252,7 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             layer_count=layer_count,
             tokenizer=tokenizer,
             device=device,
+            cache_to_ram=cache_to_ram,
             dtype=dtype,
             prefetch=prefetch,
             max_length=max_length,

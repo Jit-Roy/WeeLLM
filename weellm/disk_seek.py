@@ -6,17 +6,14 @@ from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 
-
-# Map Safetensors string types to Numpy types
 _DTYPE_MAP = {
     "F64": np.float64, "F32": np.float32, "F16": np.float16,
-    "BF16": np.uint16,   # read as uint16, convert to bfloat16 via torch
+    "BF16": np.uint16,
     "I64": np.int64, "I32": np.int32, "I16": np.int16,
     "I8": np.int8, "U8": np.uint8, "BOOL": np.bool_,
 }
 
-
-class SafetensorsLiveSeeker:
+class SafetensorsDiskSeeker:
     """
     Reads specific tensors from Hugging Face safetensors files directly from disk 
     using file seeks, completely avoiding memory-mapping and duplicate shards.
@@ -31,7 +28,6 @@ class SafetensorsLiveSeeker:
         self._parse_index()
 
     def _parse_index(self):
-        """Finds all weights and their source files via index.json or direct files."""
         index_path = self.model_dir / "model.safetensors.index.json"
         alt_index_path = self.model_dir / "diffusion_pytorch_model.safetensors.index.json"
         
@@ -42,7 +38,6 @@ class SafetensorsLiveSeeker:
             with open(alt_index_path, "r", encoding="utf-8") as f:
                 self.weight_map = json.load(f)["weight_map"]
         else:
-            # Maybe it's a single non-sharded model
             single_st = self.model_dir / "model.safetensors"
             single_fp16 = self.model_dir / "model.fp16.safetensors"
             alt_single_st = self.model_dir / "diffusion_pytorch_model.safetensors"
@@ -59,14 +54,12 @@ class SafetensorsLiveSeeker:
             else:
                 raise FileNotFoundError(f"Could not find safetensors index or single file in {self.model_dir}")
             
-            # Parse the header to get keys
             header, _ = self._read_header(self.model_dir / src_file)
             for k in header.keys():
                 if k != "__metadata__":
                     self.weight_map[k] = src_file
 
     def _read_header(self, filepath: Path) -> Tuple[dict, int]:
-        """Reads the JSON header of a safetensors file and returns (header_dict, data_start_offset)."""
         filename = filepath.name
         if filename in self._parsed_headers:
             return self._parsed_headers[filename], self._data_bases[filename]
@@ -85,11 +78,6 @@ class SafetensorsLiveSeeker:
         return header, data_base
 
     def get_tensors(self, keys: List[str], device: str = "cpu", dtype: Optional[torch.dtype] = None) -> Dict[str, torch.Tensor]:
-        """
-        Fetches the requested tensors directly from disk.
-        Thread-safe: opens local file handles so multiple threads can read concurrently.
-        """
-        # Group keys by the source file they live in
         by_src: Dict[str, List[str]] = {}
         for key in keys:
             if key not in self.weight_map:
@@ -101,7 +89,6 @@ class SafetensorsLiveSeeker:
 
         result = {}
 
-        # Open each required source file and extract the needed tensors
         for src_file, src_keys in by_src.items():
             filepath = self.model_dir / src_file
             header, data_base = self._read_header(filepath)
@@ -113,11 +100,9 @@ class SafetensorsLiveSeeker:
                     shape = meta["shape"]
                     start, end = meta["data_offsets"]
                     
-                    # Seek to exact bytes and read
                     f.seek(data_base + start)
                     raw_bytes = f.read(end - start)
                     
-                    # Convert to numpy then torch
                     np_dtype = _DTYPE_MAP[dtype_str]
                     arr = np.frombuffer(raw_bytes, dtype=np_dtype).copy()
                     if shape:
@@ -127,11 +112,8 @@ class SafetensorsLiveSeeker:
                     if dtype_str == "BF16":
                         t = t.view(torch.bfloat16)
                     
-                    # Send to device/dtype
                     t = t.to(device=device)
                     if dtype is not None and t.dtype != dtype:
-                        # Be careful not to cast int/bool buffers blindly unless requested, 
-                        # but usually diffusion weights are float
                         if t.is_floating_point():
                             t = t.to(dtype=dtype)
                             

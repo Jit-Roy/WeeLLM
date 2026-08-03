@@ -58,6 +58,7 @@ class WeePipeline(BasePipeline):
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         prefetch: bool = True,
+        cache_to_ram: bool = False,
         **kwargs
     ):
         model_dir = Path(model_dir)
@@ -119,13 +120,13 @@ class WeePipeline(BasePipeline):
                     
                     tok_key = key.replace("text_encoder", "tokenizer")
                     if "Qwen" in hf_cls_name:
-                        text_encoders[key] = te_cls.from_pretrained(model_dir=str(model_dir / key), tokenizer=tokenizers.get(tok_key), device=device, dtype=dtype)
+                        text_encoders[key] = te_cls.from_pretrained(model_dir=str(model_dir / key), tokenizer=tokenizers.get(tok_key), device=device, dtype=dtype, cache_to_ram=cache_to_ram)
                     elif "CLIP" in hf_cls_name:
                         hf_module = importlib.import_module("transformers")
                         hf_cls = getattr(hf_module, hf_cls_name)
-                        text_encoders[key] = te_cls.from_pretrained(hf_cls, str(model_dir), key, device=device, dtype=dtype, output_hidden_states=True)
+                        text_encoders[key] = te_cls.from_pretrained(hf_cls, str(model_dir), key, device=device, dtype=dtype, output_hidden_states=True, cache_to_ram=cache_to_ram)
                     else:
-                        text_encoders[key] = te_cls.from_pretrained(model_dir=str(model_dir / key), device=device, dtype=dtype)
+                        text_encoders[key] = te_cls.from_pretrained(model_dir=str(model_dir / key), device=device, dtype=dtype, cache_to_ram=cache_to_ram)
                 else:
                     hf_module = importlib.import_module("transformers")
                     hf_cls = getattr(hf_module, hf_cls_name)
@@ -154,9 +155,9 @@ class WeePipeline(BasePipeline):
         transformer_cls = getattr(module, transformer_class_name + "Streamer")
         
         if transformer_key == "unet":
-            transformer = transformer_cls.from_pretrained(str(model_dir), device, dtype, prefetch)
+            transformer = transformer_cls.from_pretrained(str(model_dir), device, dtype, prefetch, cache_to_ram=cache_to_ram)
         else:
-            transformer = transformer_cls.from_pretrained(model_dir / transformer_key, device=device, dtype=dtype, prefetch=prefetch)
+            transformer = transformer_cls.from_pretrained(model_dir / transformer_key, device=device, dtype=dtype, prefetch=prefetch, cache_to_ram=cache_to_ram)
         
         print("\n============================================================")
         print("  WeePipeline ready.")

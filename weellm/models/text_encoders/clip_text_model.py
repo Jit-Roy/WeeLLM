@@ -19,7 +19,7 @@ import torch.nn as nn
 from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 
-from weellm.live_seek import SafetensorsLiveSeeker
+from weellm.seeker import get_seeker
 from weellm.utils import clean_memory, report_memory
 
 
@@ -48,7 +48,7 @@ class CLIPTextModelStreamer:
     def __init__(
         self,
         model: nn.Module,
-        seeker: SafetensorsLiveSeeker,
+        seeker,
         seeker_layer_prefix: str,    # prefix in the safetensors FILE  e.g. "text_model.encoder.layers"
         model_layer_prefix: str,     # prefix in the model OBJECT       e.g. "encoder.layers"
         device: str = "cuda",
@@ -61,6 +61,7 @@ class CLIPTextModelStreamer:
         self.model_layer_prefix = model_layer_prefix
         self.device = device
         self.dtype = dtype
+        self.cache_to_ram = cache_to_ram
         self.output_hidden_states = output_hidden_states
         # Strip string to translate file keys -> model keys (e.g. "text_model." -> "")
         self._key_strip = seeker_layer_prefix[: len(seeker_layer_prefix) - len(model_layer_prefix)]
@@ -130,12 +131,13 @@ class CLIPTextModelStreamer:
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         output_hidden_states: bool = True,
+        cache_to_ram: bool = False
     ) -> "CLIPTextModelStreamer":
         import os
         path = os.path.join(model_dir, subfolder)
 
         print(f"Initializing SafetensorsLiveSeeker on {subfolder} weights ...")
-        seeker = SafetensorsLiveSeeker(path)
+        seeker = get_seeker(path, cache_to_ram=cache_to_ram)
 
         print(f"Loading resident tensors to GPU for {subfolder} ...")
 
@@ -176,7 +178,8 @@ class CLIPTextModelStreamer:
         # Load resident weights (everything except the streaming layers)
         # ------------------------------------------------------------------
         resident_keys = [k for k in seeker.weight_map if not k.startswith(seeker_streaming_prefix)]
-        resident_sd_raw = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
+        resident_sd_raw = seeker.get_tensors(resident_keys, device=device,
+            cache_to_ram=cache_to_ram, dtype=dtype)
 
         # Translate file keys -> model keys for resident tensors
         key_strip = seeker_layer_prefix[: len(seeker_layer_prefix) - len(model_layer_prefix)]

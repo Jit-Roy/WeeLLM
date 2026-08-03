@@ -81,6 +81,10 @@ examples:
         help="Disable background prefetching (slower but uses less RAM)",
     )
     parser.add_argument(
+        "--cache_to_ram", action="store_true",
+        help="Load safetensors into CPU RAM instead of streaming from disk (faster on Kaggle/Colab)",
+    )
+    parser.add_argument(
         "--vram_budget", type=float, default=4.0,
         help="VRAM budget in GB for the pass/fail report (default: 4.0)",
     )
@@ -125,6 +129,7 @@ def main() -> int:
             device=device,
             dtype=dtype,
             prefetch=not args.no_prefetch,
+            cache_to_ram=args.cache_to_ram,
         )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

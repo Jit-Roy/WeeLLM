@@ -24,14 +24,14 @@ from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 
 from weellm.utils import clean_memory, report_memory
-from weellm.live_seek import SafetensorsLiveSeeker
+from weellm.seeker import get_seeker
 
 
-def _get_layer_keys(seeker: SafetensorsLiveSeeker, prefix: str) -> List[str]:
+def _get_layer_keys(seeker, prefix: str) -> List[str]:
     return [k for k in seeker.weight_map.keys() if k.startswith(prefix + ".")]
 
 
-def _get_resident_keys(seeker: SafetensorsLiveSeeker) -> List[str]:
+def _get_resident_keys(seeker) -> List[str]:
     return [k for k in seeker.weight_map.keys() if not k.startswith("transformer_blocks.")]
 
 
@@ -57,7 +57,7 @@ class QwenImageTransformer2DModelStreamer:
     def __init__(
         self,
         model: nn.Module,
-        seeker: SafetensorsLiveSeeker,
+        seeker,
         block_count: int,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
@@ -125,13 +125,14 @@ class QwenImageTransformer2DModelStreamer:
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         prefetch: bool = True,
+        cache_to_ram: bool = False
     ) -> "QwenImageTransformer2DModelStreamer":
         from diffusers import QwenImageTransformer2DModel
 
         transformer_dir = Path(transformer_dir)
 
         print("Step 1/3 -- Initializing LiveSeeker on Qwen-Image transformer weights ...")
-        seeker = SafetensorsLiveSeeker(transformer_dir)
+        seeker = get_seeker(transformer_dir, cache_to_ram=cache_to_ram)
         print(f"  Found {len(seeker.weight_map)} tensors across 9 shards.")
 
         print("\nStep 2/3 -- Instantiating QwenImageTransformer2DModel on meta device ...")

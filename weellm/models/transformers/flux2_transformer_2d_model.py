@@ -24,18 +24,18 @@ from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 
 from weellm.utils import clean_memory, report_memory
-from weellm.live_seek import SafetensorsLiveSeeker
+from weellm.seeker import get_seeker
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _get_layer_keys(seeker: SafetensorsLiveSeeker, prefix: str) -> List[str]:
+def _get_layer_keys(seeker, prefix: str) -> List[str]:
     return [k for k in seeker.weight_map.keys() if k.startswith(prefix + ".")]
 
 
-def _get_resident_keys(seeker: SafetensorsLiveSeeker) -> List[str]:
+def _get_resident_keys(seeker) -> List[str]:
     prefixes = ("transformer_blocks.", "single_transformer_blocks.")
     return [k for k in seeker.weight_map.keys() if not any(k.startswith(p) for p in prefixes)]
 
@@ -73,7 +73,7 @@ class Flux2Transformer2DModelStreamer:
     def __init__(
         self,
         model: nn.Module,
-        seeker: SafetensorsLiveSeeker,
+        seeker,
         double_block_count: int,
         single_block_count: int,
         device: str = "cuda",
@@ -169,7 +169,8 @@ class Flux2Transformer2DModelStreamer:
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         prefetch: bool = True,
-        **kwargs,
+        cache_to_ram: bool = False,
+        **kwargs
     ) -> "Flux2Transformer2DModelStreamer":
         from diffusers import Flux2Transformer2DModel
 
@@ -177,7 +178,7 @@ class Flux2Transformer2DModelStreamer:
 
         print("=" * 60)
         print("Step 1/3 -- Initializing LiveSeeker on transformer weights ...")
-        seeker = SafetensorsLiveSeeker(transformer_dir)
+        seeker = get_seeker(transformer_dir, cache_to_ram=cache_to_ram)
         print(f"Found {len(seeker.weight_map)} tensors across HF shards.")
 
         print("\nStep 2/3 -- Instantiating Flux2Transformer2DModel on meta device ...")

@@ -24,7 +24,7 @@ import torch.nn as nn
 from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 
-from weellm.live_seek import SafetensorsLiveSeeker
+from weellm.seeker import get_seeker
 from weellm.utils import clean_memory, report_memory
 
 
@@ -57,7 +57,7 @@ class T5EncoderModelStreamer:
     def __init__(
         self,
         model: nn.Module,
-        seeker: SafetensorsLiveSeeker,
+        seeker,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         max_length: int = 256,
@@ -66,6 +66,7 @@ class T5EncoderModelStreamer:
         self.seeker = seeker
         self.device = device
         self.dtype = dtype
+        self.cache_to_ram = cache_to_ram
         self.max_length = max_length
 
         self._streaming_block_prefix = "encoder.block."
@@ -114,11 +115,12 @@ class T5EncoderModelStreamer:
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         max_length: int = 256,
+        cache_to_ram: bool = False
     ) -> "T5EncoderModelStreamer":
         from transformers import T5EncoderModel
 
         print(f"Initializing SafetensorsLiveSeeker on text_encoder_2 weights ...")
-        seeker = SafetensorsLiveSeeker(model_dir)
+        seeker = get_seeker(model_dir, cache_to_ram=cache_to_ram)
         print(f"  Found {len(seeker.weight_map)} tensors.")
 
         print(f"Instantiating T5EncoderModel on meta device ...")
@@ -144,7 +146,8 @@ class T5EncoderModelStreamer:
 
         resident_keys = [k for k in seeker.weight_map if is_resident(k)]
         print(f"Loading resident T5 tensors to GPU ({len(resident_keys)} tensors) ...")
-        resident_sd = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
+        resident_sd = seeker.get_tensors(resident_keys, device=device,
+            cache_to_ram=cache_to_ram, dtype=dtype)
         _apply_state_dict(model, resident_sd, device, dtype)
         
         # T5 ties encoder.embed_tokens.weight to shared.weight, but loading via accelerate 
