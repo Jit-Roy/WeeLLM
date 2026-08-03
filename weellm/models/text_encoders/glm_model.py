@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import torch
 import torch.nn as nn
@@ -19,7 +19,7 @@ from accelerate.utils.modeling import set_module_tensor_to_device
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
 from weellm.utils import clean_memory
-from weellm.seeker import get_seeker, SafetensorsLiveSeeker
+from weellm.seeker import get_seeker
 
 
 def _get_layer_keys(seeker, layer_idx: int) -> List[str]:
@@ -55,7 +55,7 @@ class GlmModelStreamer:
         self.cache_to_ram = cache_to_ram
         self.max_length = max_length
 
-        self._seeker: Optional[SafetensorsLiveSeeker] = None
+        self._seeker: Optional[Any] = None
         self._model: Optional[nn.Module] = None
         self._tokenizer = None
         self._num_layers: int = 0
