@@ -275,7 +275,7 @@ class GlmModelStreamer:
     def from_pretrained(
         cls,
         model_dir: str | Path,
-        tokenizer,  # We accept it to match signature, but this streamer loads its own
+        tokenizer=None,  # We accept it to match signature, but this streamer loads its own
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         cache_to_ram: bool = False,
