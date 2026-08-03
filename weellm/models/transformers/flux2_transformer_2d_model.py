@@ -23,8 +23,8 @@ import torch.nn as nn
 from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 
-from weellm.core.utils import clean_memory, report_memory
-from weellm.core.live_seek import SafetensorsLiveSeeker
+from weellm.utils import clean_memory, report_memory
+from weellm.live_seek import SafetensorsLiveSeeker
 
 
 # ---------------------------------------------------------------------------
@@ -61,10 +61,10 @@ def _evict_params(model: nn.Module, param_names: List[str]):
 
 
 # ---------------------------------------------------------------------------
-# FluxStreamer
+# Flux2Transformer2DModelStreamer
 # ---------------------------------------------------------------------------
 
-class FluxStreamer:
+class Flux2Transformer2DModelStreamer:
     """
     Wraps Flux2Transformer2DModel for memory-efficient layer streaming.
     Streams directly from original Hugging Face safetensors shards via live seek.
@@ -170,7 +170,7 @@ class FluxStreamer:
         dtype: torch.dtype = torch.bfloat16,
         prefetch: bool = True,
         **kwargs,
-    ) -> "FluxStreamer":
+    ) -> "Flux2Transformer2DModelStreamer":
         from diffusers import Flux2Transformer2DModel
 
         transformer_dir = Path(transformer_dir)

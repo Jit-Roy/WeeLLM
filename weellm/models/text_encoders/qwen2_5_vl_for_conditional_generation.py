@@ -22,8 +22,8 @@ import torch.nn as nn
 from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 
-from weellm.core.utils import clean_memory, report_memory
-from weellm.core.live_seek import SafetensorsLiveSeeker
+from weellm.utils import clean_memory, report_memory
+from weellm.live_seek import SafetensorsLiveSeeker
 
 
 # The same prompt template used by QwenImagePipeline
@@ -69,7 +69,7 @@ def _evict_params(model: nn.Module, param_names: List[str]):
         set_module_tensor_to_device(model, mapped_name, "meta")
 
 
-class StreamingQwenTextEncoder:
+class Qwen2_5_VLForConditionalGenerationStreamer:
     """
     Wraps Qwen2_5_VLForConditionalGeneration for streaming layer-by-layer inference.
     Only the 28 transformer layers are streamed; everything else stays resident.
@@ -205,7 +205,7 @@ class StreamingQwenTextEncoder:
         dtype: torch.dtype = torch.bfloat16,
         prefetch: bool = True,
         max_length: int = 512,
-    ) -> "StreamingQwenTextEncoder":
+    ) -> "Qwen2_5_VLForConditionalGenerationStreamer":
         from transformers import Qwen2_5_VLForConditionalGeneration
 
         model_dir = Path(model_dir)

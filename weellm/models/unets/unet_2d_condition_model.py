@@ -5,7 +5,7 @@ Strategy:
   - Resident on GPU: conv_in, time_embedding, add_embedding, conv_norm_out, conv_out
   - Streamed:        down_blocks, mid_block, up_blocks  (loaded just-in-time, evicted after)
 
-Uses the same accelerate-based set_module_tensor_to_device pattern as FluxStreamer.
+Uses the same accelerate-based set_module_tensor_to_device pattern as Flux2Transformer2DModelStreamer.
 """
 
 import torch
@@ -15,8 +15,8 @@ from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 from diffusers import UNet2DConditionModel
 
-from weellm.core.live_seek import SafetensorsLiveSeeker
-from weellm.core.utils import clean_memory, report_memory
+from weellm.live_seek import SafetensorsLiveSeeker
+from weellm.utils import clean_memory, report_memory
 
 
 def _apply_state_dict(model: nn.Module, state_dict: dict, device: str, dtype: torch.dtype):
@@ -34,7 +34,7 @@ def _evict_params(model: nn.Module, param_names: list):
         set_module_tensor_to_device(model, name, "meta")
 
 
-class UNetStreamer:
+class UNet2DConditionModelStreamer:
     """
     Wraps UNet2DConditionModel for memory-efficient block streaming.
     Streams directly from original safetensors shards via SafetensorsLiveSeeker.
@@ -105,7 +105,7 @@ class UNetStreamer:
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         prefetch: bool = True,
-    ) -> "UNetStreamer":
+    ) -> "UNet2DConditionModelStreamer":
         import os
         path = os.path.join(model_dir, "unet")
 

@@ -18,8 +18,8 @@ from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from weellm.core.utils import clean_memory
-from weellm.core.live_seek import SafetensorsLiveSeeker
+from weellm.utils import clean_memory
+from weellm.live_seek import SafetensorsLiveSeeker
 
 
 def _get_layer_keys(seeker: SafetensorsLiveSeeker, layer_idx: int) -> List[str]:
@@ -30,7 +30,7 @@ def _get_resident_keys(seeker: SafetensorsLiveSeeker) -> List[str]:
     return [k for k in seeker.weight_map.keys() if k.startswith("model.embed_tokens.") or k.startswith("model.norm.")]
 
 
-class StreamingQwen3TextEncoder:
+class Qwen3ForCausalLMStreamer:
     """
     Hook-based streaming text encoder (Qwen3).
     Extracts output from target decoder layers (e.g., layers 14, 21, 35) directly
@@ -244,3 +244,26 @@ class StreamingQwen3TextEncoder:
     def tokenizer(self):
         self._ensure_initialized()
         return self._tokenizer
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_dir: str | Path,
+        tokenizer,  # We accept it to match signature, but this streamer loads its own
+        device: str = "cuda",
+        dtype: torch.dtype = torch.bfloat16,
+        prefetch: bool = True,
+        max_length: int = 512,
+    ) -> "Qwen3ForCausalLMStreamer":
+        # Note: we use model_dir for both text_encoder and tokenizer because they're 
+        # usually in the same HF folder if this is passed directly (or we just pass 
+        # the text_encoder dir and the tokenizer is handled by the caller, but the old 
+        # code expected text_encoder_dir and tokenizer_dir)
+        tokenizer_dir = Path(model_dir).parent / "tokenizer" if Path(model_dir).name == "text_encoder" else model_dir
+        return cls(
+            text_encoder_dir=model_dir,
+            tokenizer_dir=tokenizer_dir,
+            device=device,
+            dtype=dtype,
+            max_length=max_length,
+        )

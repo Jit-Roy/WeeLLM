@@ -24,8 +24,8 @@ import torch.nn as nn
 from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 
-from weellm.core.live_seek import SafetensorsLiveSeeker
-from weellm.core.utils import clean_memory, report_memory
+from weellm.live_seek import SafetensorsLiveSeeker
+from weellm.utils import clean_memory, report_memory
 
 
 def _apply_state_dict(model: nn.Module, state_dict: dict, device: str, dtype: torch.dtype):
@@ -43,7 +43,7 @@ def _evict_params(model: nn.Module, param_names: list):
         set_module_tensor_to_device(model, name, "meta")
 
 
-class StreamingT5Encoder:
+class T5EncoderModelStreamer:
     """
     Wraps T5EncoderModel for layer-by-layer streaming.
 
@@ -114,7 +114,7 @@ class StreamingT5Encoder:
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         max_length: int = 256,
-    ) -> "StreamingT5Encoder":
+    ) -> "T5EncoderModelStreamer":
         from transformers import T5EncoderModel
 
         print(f"Initializing SafetensorsLiveSeeker on text_encoder_2 weights ...")

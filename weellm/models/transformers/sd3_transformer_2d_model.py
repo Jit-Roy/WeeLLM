@@ -25,8 +25,8 @@ import torch.nn as nn
 from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 
-from weellm.core.utils import clean_memory, report_memory
-from weellm.core.live_seek import SafetensorsLiveSeeker
+from weellm.utils import clean_memory, report_memory
+from weellm.live_seek import SafetensorsLiveSeeker
 
 
 def _get_layer_keys(seeker: SafetensorsLiveSeeker, prefix: str) -> List[str]:
@@ -53,7 +53,7 @@ def _evict_params(model: nn.Module, param_names: List[str]):
         set_module_tensor_to_device(model, name, "meta")
 
 
-class SD35Streamer:
+class SD3Transformer2DModelStreamer:
     """
     Wraps SD3Transformer2DModel (SD 3.5 Medium) for memory-efficient layer streaming.
     Streams directly from the original Hugging Face safetensors shard via live seek.
@@ -132,7 +132,7 @@ class SD35Streamer:
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         prefetch: bool = True,
-    ) -> "SD35Streamer":
+    ) -> "SD3Transformer2DModelStreamer":
         from diffusers import SD3Transformer2DModel
 
         transformer_dir = Path(transformer_dir)
@@ -171,7 +171,7 @@ class SD35Streamer:
             dtype=dtype,
             prefetch=prefetch,
         )
-        print("SD35Streamer ready. Mode: Live Seek from original shard\n")
+        print("SD3Transformer2DModelStreamer ready. Mode: Live Seek from original shard\n")
         return streamer
 
     def __call__(self, *args, **kwargs):

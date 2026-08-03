@@ -19,8 +19,8 @@ import torch.nn as nn
 from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 
-from weellm.core.live_seek import SafetensorsLiveSeeker
-from weellm.core.utils import clean_memory, report_memory
+from weellm.live_seek import SafetensorsLiveSeeker
+from weellm.utils import clean_memory, report_memory
 
 
 def _apply_state_dict(model: nn.Module, state_dict: dict, device: str, dtype: torch.dtype):
@@ -38,7 +38,7 @@ def _evict_params(model: nn.Module, param_names: list):
         set_module_tensor_to_device(model, name, "meta")
 
 
-class StreamingCLIPTextEncoder:
+class CLIPTextModelStreamer:
     """
     Wraps CLIPTextModel or CLIPTextModelWithProjection for layer-by-layer streaming.
     Resident: embeddings, final_layer_norm, text_projection
@@ -130,7 +130,7 @@ class StreamingCLIPTextEncoder:
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         output_hidden_states: bool = True,
-    ) -> "StreamingCLIPTextEncoder":
+    ) -> "CLIPTextModelStreamer":
         import os
         path = os.path.join(model_dir, subfolder)
 

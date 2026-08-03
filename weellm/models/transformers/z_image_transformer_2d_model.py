@@ -23,8 +23,8 @@ import torch.nn as nn
 from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 
-from weellm.core.utils import clean_memory, report_memory
-from weellm.core.live_seek import SafetensorsLiveSeeker
+from weellm.utils import clean_memory, report_memory
+from weellm.live_seek import SafetensorsLiveSeeker
 
 
 # ---------------------------------------------------------------------------
@@ -40,10 +40,10 @@ def _get_resident_keys(seeker: SafetensorsLiveSeeker) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# ZImageStreamer
+# ZImageTransformer2DModelStreamer
 # ---------------------------------------------------------------------------
 
-class ZImageStreamer:
+class ZImageTransformer2DModelStreamer:
     """
     Hook-based weight streamer for ZImageTransformer2DModel.
     Streams directly from original Hugging Face safetensors shards via live seek.
@@ -162,7 +162,7 @@ class ZImageStreamer:
         dtype: torch.dtype = torch.bfloat16,
         prefetch: bool = True,
         **kwargs,
-    ) -> "ZImageStreamer":
+    ) -> "ZImageTransformer2DModelStreamer":
         from diffusers import ZImageTransformer2DModel
 
         transformer_dir = Path(transformer_dir)
