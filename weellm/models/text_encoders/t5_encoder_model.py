@@ -66,7 +66,6 @@ class T5EncoderModelStreamer:
         self.seeker = seeker
         self.device = device
         self.dtype = dtype
-        self.cache_to_ram = cache_to_ram
         self.max_length = max_length
 
         self._streaming_block_prefix = "encoder.block."
