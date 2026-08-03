@@ -16,6 +16,7 @@ WeeLLM uses a **Live Seek Architecture**: it reads weights directly out of Huggi
 | `FLUX.1-dev` | ~12B params | **1.51 GB** | **~2.0 GB** | - |
 | `FLUX.1-Kontext-dev` | ~12B params | **1.51 GB** | **~2.0 GB** | - |
 | `FLUX.1-schnell` | ~12B params | **1.64 GB** | **1.68 GB** | ~159s · 4 steps · RTX 3050 |
+| `CogView4-6B` | ~15B params | **2.12 GB** | **~2.0 GB** | - |
 | `sd3.5-medium` | ~8B params | **3.48 GB** | **3.96 GB** | ~219s · 20 steps · RTX 3050 |
 | `z-image-turbo` | ~10B params | **1.6 GB** | **1.7 GB** | ~167s · 4 steps · RTX 3050 |
 | `sdxl` (Juggernaut XL v9) | ~6.6B params | **2.98 GB** | **1.5 GB** | ~120s · 20 steps · RTX 3050 |
