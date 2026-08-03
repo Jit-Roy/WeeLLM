@@ -120,7 +120,7 @@ class T5EncoderModelStreamer:
         from transformers import T5EncoderModel
 
         print(f"Initializing SafetensorsLiveSeeker on text_encoder_2 weights ...")
-        seeker = get_seeker(model_dir)
+        seeker = get_seeker(model_dir, cache_to_ram=cache_to_ram)
         print(f"  Found {len(seeker.weight_map)} tensors.")
 
         print(f"Instantiating T5EncoderModel on meta device ...")
