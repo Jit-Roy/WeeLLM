@@ -66,7 +66,22 @@ class WeePipeline(BasePipeline):
             print(f"Path '{model_dir_str}' not found locally. Attempting to download from Hugging Face Hub...")
             try:
                 from huggingface_hub import snapshot_download
-                model_dir_str = snapshot_download(model_dir_str)
+                import json
+                
+                print(f"Fetching model_index.json from '{model_dir_str}'...")
+                index_dir = snapshot_download(model_dir_str, allow_patterns=["model_index.json"])
+                index_path = Path(index_dir) / "model_index.json"
+                
+                with open(index_path, "r", encoding="utf-8") as f:
+                    index_data = json.load(f)
+                    
+                allow_patterns = ["model_index.json"]
+                for key in index_data:
+                    if isinstance(index_data[key], list) and len(index_data[key]) == 2:
+                        allow_patterns.append(f"{key}/*")
+                
+                print(f"Downloading only required components: {allow_patterns}")
+                model_dir_str = snapshot_download(model_dir_str, allow_patterns=allow_patterns)
             except ImportError:
                 raise ImportError("huggingface_hub is required to download models. Please install it with 'pip install huggingface_hub'.")
             except Exception as e:
