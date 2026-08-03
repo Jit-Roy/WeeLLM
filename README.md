@@ -18,6 +18,9 @@ WeeLLM uses a **Live Seek Architecture**: it reads weights directly out of Huggi
 | `z-image-turbo` | ~10B params | **1.6 GB** | **1.7 GB** | ~167s · 4 steps · RTX 3050 |
 | `sdxl` (Juggernaut XL v9) | ~6.6B params | **2.98 GB** | **1.5 GB** | ~120s · 20 steps · RTX 3050 |
 | `sd15` (SD v1.5) | ~1.7B params | **0.90 GB** | **1.4 GB** | ~68s · 20 steps · RTX 3050 |
+| `qwen-image` (nvidia/Qwen-Image-Flash) | ~20B params | **4.82 GB*** | **5.09 GB** | ~558s  · 4 steps · RTX 3050 |
+
+> \* *Qwen-Image transformer streams at ~3.89 GB VRAM, but peaks at 4.8 GB during batched Transformer attention (utilizing Windows WDDM Shared GPU Memory on a 4GB card).*
 
 > The models run with **no quantization** — full bfloat16 weights streamed layer-by-layer from disk.
 
@@ -86,6 +89,7 @@ WeeLLM/
     ├── core/                        # Shared infrastructure
     │   ├── encoders/                # Shared encoders
     │   │   ├── qwen3_streamer.py    # Qwen3 text encoder (Flux / Z-Image)
+    │   │   ├── qwen2_5_vl_streamer.py # Qwen2.5-VL text encoder (Qwen-Image)
     │   │   └── clip_streamer.py     # CLIP text encoder streamer (SD1.5 / SDXL)
     │   ├── base_pipeline.py         # Abstract BasePipeline
     │   ├── base_streamer.py         # Abstract BaseStreamer
@@ -105,8 +109,12 @@ WeeLLM/
         │   ├── pipeline.py
         │   └── unet_streamer.py      # Shared with SD1.5
         │
-        └── sd15/                   # Stable Diffusion 1.5 (~1.7B)
-            └── pipeline.py          # Reuses unet_streamer + clip_streamer
+        ├── sd15/                   # Stable Diffusion 1.5 (~1.7B)
+        │   └── pipeline.py          # Reuses unet_streamer + clip_streamer
+        │
+        └── qwen_image/             # Qwen-Image (~20B)
+            ├── pipeline.py
+            └── transformer_streamer.py
 ```
 
 ---
@@ -160,7 +168,7 @@ image = pipe.generate(
 )
 image.save("sdxl_output.png")
 
-# Stable Diffusion 1.5 — under 1 GB VRAM!
+# Stable Diffusion 1.5 — ultra-lightweight, under 1 GB VRAM!
 pipe = WeePipeline.from_pretrained("runwayml/stable-diffusion-v1-5", device="cuda")
 image = pipe.generate(
     prompt="A photorealistic cyberpunk city at night with neon signs",
@@ -171,6 +179,18 @@ image = pipe.generate(
     seed=42,
 )
 image.save("sd15_output.png")
+
+# Qwen-Image (~20B parameters)
+pipe = WeePipeline.from_pretrained("Qwen/Qwen-Image", device="cuda")
+image = pipe.generate(
+    prompt="A photorealistic cyberpunk city at night with neon signs",
+    height=512,
+    width=512,
+    num_inference_steps=4,
+    true_cfg_scale=4.0,
+    seed=42,
+)
+image.save("qwen_output.png")
 ```
 
 ---

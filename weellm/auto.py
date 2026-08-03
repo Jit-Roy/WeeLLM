@@ -32,6 +32,9 @@ AUTO_PIPELINE_MAPPING = {
 
     # Stable Diffusion 3.x / 3.5
     "StableDiffusion3Pipeline": "sd35",
+
+    # Qwen-Image
+    "QwenImagePipeline": "qwen-image",
 }
 
 class WeePipeline:

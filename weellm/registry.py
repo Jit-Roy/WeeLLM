@@ -67,6 +67,7 @@ def _register_builtin_models() -> None:
     from .models.sd15 import WeeSD15Pipeline
     from .models.flux_schnell import WeeFluxSchnellPipeline
     from .models.sd35 import WeeSD35Pipeline
+    from .models.qwen_image import WeeQwenImagePipeline
 
     # FLUX.2 Klein 4B
     register_model("flux2-klein",  WeeFlux2KleinPipeline)
@@ -91,6 +92,10 @@ def _register_builtin_models() -> None:
     register_model("sd35",        WeeSD35Pipeline)
     register_model("sd3.5",       WeeSD35Pipeline)   # dot alias
     register_model("sd35-medium", WeeSD35Pipeline)   # long alias
+
+    # Qwen-Image
+    register_model("qwen-image", WeeQwenImagePipeline)
+    register_model("qwen_image", WeeQwenImagePipeline) # underscore alias
 
     # ── Add future models here ──────────────────────────────────────────
     # ────────────────────────────────────────────────────────────────────
