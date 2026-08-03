@@ -228,3 +228,15 @@ class WeePipeline(BasePipeline):
             raise NotImplementedError(f"No generation logic implemented for {self.transformer_class_name}. Expected module {module_name}")
         
         return gen_module.generate(self, prompt, **kwargs)
+
+    def free_text_encoder_ram(self):
+        """Frees the RAM cache of all text encoders after encoding to save memory (they will lazy-reload if needed)."""
+        import gc
+        cleared = False
+        for te_key in ["text_encoder", "text_encoder_2", "text_encoder_3"]:
+            te = self.text_encoders.get(te_key)
+            if te is not None and hasattr(te, "seeker") and hasattr(te.seeker, "clear_ram_cache"):
+                te.seeker.clear_ram_cache()
+                cleared = True
+        if cleared:
+            gc.collect()

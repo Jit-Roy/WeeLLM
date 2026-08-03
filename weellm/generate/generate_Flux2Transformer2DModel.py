@@ -78,6 +78,8 @@ def generate(
     prompt_embeds = self._text_encoder.encode(prompt)
     clean_memory(self.device)
     report_memory("After text encode")
+    if hasattr(self, 'free_text_encoder_ram'):
+        self.free_text_encoder_ram()
 
     text_ids = _flux2_prepare_text_ids(prompt_embeds).to(self.device)
 

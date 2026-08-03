@@ -62,25 +62,36 @@ class SafetensorsRAMSeeker:
 
     def _read_header(self, filepath: Path) -> dict:
         filename = filepath.name
+        
+        # Ensure it is buffered in RAM cache
+        if filename not in self._ram_cache:
+            print(f"    [RAM Cache] Loading {filename} into CPU RAM...")
+            with open(filepath, "rb") as f:
+                header_size_bytes = f.read(8)
+                if len(header_size_bytes) < 8:
+                    raise ValueError(f"File {filepath} is too small to be a safetensors file.")
+                header_size = struct.unpack("<Q", header_size_bytes)[0]
+                data_base = 8 + header_size
+                f.seek(data_base)
+                self._ram_cache[filename] = f.read()
+
         if filename in self._parsed_headers:
             return self._parsed_headers[filename]
 
         with open(filepath, "rb") as f:
             header_size_bytes = f.read(8)
-            if len(header_size_bytes) < 8:
-                raise ValueError(f"File {filepath} is too small to be a safetensors file.")
             header_size = struct.unpack("<Q", header_size_bytes)[0]
             header_bytes = f.read(header_size)
             header = json.loads(header_bytes.decode("utf-8"))
-            data_base = 8 + header_size
             
-            if filename not in self._ram_cache:
-                print(f"    [RAM Cache] Loading {filename} into CPU RAM...")
-                f.seek(data_base)
-                self._ram_cache[filename] = f.read()
-
         self._parsed_headers[filename] = header
         return header
+
+    def clear_ram_cache(self):
+        """Frees the RAM cache buffer. Bytes will be lazy-reloaded on next access."""
+        self._ram_cache.clear()
+        import gc
+        gc.collect()
 
     def _bytes_to_tensor(self, raw_bytes: bytes, dtype_str: str, shape: list, device: str, dtype: Optional[torch.dtype]) -> torch.Tensor:
         np_dtype = _DTYPE_MAP[dtype_str]

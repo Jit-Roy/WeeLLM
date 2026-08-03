@@ -47,6 +47,8 @@ def generate(
     cap_feats = [raw_embeds[0][prompt_masks[0]]]
 
     report_memory("After text encode")
+    if hasattr(self, 'free_text_encoder_ram'):
+        self.free_text_encoder_ram()
 
     vae_scale = self._vae_scale_factor * 2
     lat_h = 2 * (height // vae_scale)

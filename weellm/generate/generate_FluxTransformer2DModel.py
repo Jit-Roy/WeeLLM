@@ -88,6 +88,8 @@ def generate(
     report_memory("Before text encode")
     prompt_embeds, pooled_prompt_embeds = _flux1_encode_prompt(self, prompt, max_t5_length)
     report_memory("After text encode")
+    if hasattr(self, 'free_text_encoder_ram'):
+        self.free_text_encoder_ram()
 
     latent_h = height // 8
     latent_w = width // 8
