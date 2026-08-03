@@ -120,7 +120,7 @@ class T5EncoderModelStreamer:
         from transformers import T5EncoderModel
 
         print(f"Initializing SafetensorsLiveSeeker on text_encoder_2 weights ...")
-        seeker = get_seeker(model_dir, cache_to_ram=cache_to_ram)
+        seeker = get_seeker(model_dir)
         print(f"  Found {len(seeker.weight_map)} tensors.")
 
         print(f"Instantiating T5EncoderModel on meta device ...")
@@ -147,7 +147,7 @@ class T5EncoderModelStreamer:
         resident_keys = [k for k in seeker.weight_map if is_resident(k)]
         print(f"Loading resident T5 tensors to GPU ({len(resident_keys)} tensors) ...")
         resident_sd = seeker.get_tensors(resident_keys, device=device,
-            cache_to_ram=cache_to_ram, dtype=dtype)
+            dtype=dtype)
         _apply_state_dict(model, resident_sd, device, dtype)
         
         # T5 ties encoder.embed_tokens.weight to shared.weight, but loading via accelerate 

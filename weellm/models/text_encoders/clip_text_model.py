@@ -137,7 +137,7 @@ class CLIPTextModelStreamer:
         path = os.path.join(model_dir, subfolder)
 
         print(f"Initializing SafetensorsLiveSeeker on {subfolder} weights ...")
-        seeker = get_seeker(path, cache_to_ram=cache_to_ram)
+        seeker = get_seeker(path)
 
         print(f"Loading resident tensors to GPU for {subfolder} ...")
 
@@ -179,7 +179,7 @@ class CLIPTextModelStreamer:
         # ------------------------------------------------------------------
         resident_keys = [k for k in seeker.weight_map if not k.startswith(seeker_streaming_prefix)]
         resident_sd_raw = seeker.get_tensors(resident_keys, device=device,
-            cache_to_ram=cache_to_ram, dtype=dtype)
+            dtype=dtype)
 
         # Translate file keys -> model keys for resident tensors
         key_strip = seeker_layer_prefix[: len(seeker_layer_prefix) - len(model_layer_prefix)]
