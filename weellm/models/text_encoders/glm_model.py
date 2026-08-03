@@ -92,8 +92,8 @@ class GlmModelStreamer:
     def _load_model_skeleton(self):
         config = AutoConfig.from_pretrained(str(self.text_encoder_dir), trust_remote_code=True)
         self._num_layers = config.num_hidden_layers
-        # Ensure we're extracting the last layer (e.g. 39 for 40-layer model)
-        self.extract_layers = (self._num_layers - 1,)
+        # Ensure we're extracting the penultimate layer (index 38 for 40-layer model) to match diffusers hidden_states[-2]
+        self.extract_layers = (self._num_layers - 2,)
         
         with init_empty_weights():
             self._model = AutoModel.from_config(config, trust_remote_code=True)

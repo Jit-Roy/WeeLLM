@@ -75,7 +75,8 @@ def generate(
         print(f"        Step {i+1}/{num_inference_steps} (t={t.item():.4f}) ...")
 
         latent_model_input = latents.to(self.dtype)
-        timestep = t.expand(1).to(self.dtype)
+        # Use float32 for timestep to avoid precision issues in sincos embeddings
+        timestep = t.expand(1).to(torch.float32)
 
         with self._transformer.model.cache_context("cond"):
             noise_pred_cond = self._transformer(
