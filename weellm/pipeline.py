@@ -133,7 +133,8 @@ class WeePipeline(BasePipeline):
             "Qwen3ForCausalLM": "weellm.models.text_encoders.qwen3_for_causal_lm",
             "Qwen2_5_VLForConditionalGeneration": "weellm.models.text_encoders.qwen2_5_vl_for_conditional_generation",
             "Mistral3ForConditionalGeneration": "weellm.models.text_encoders.mistral3_for_conditional_generation",
-            "GlmModel": "weellm.models.text_encoders.glm_model"
+            "GlmModel": "weellm.models.text_encoders.glm_model",
+            "Gemma2Model": "weellm.models.text_encoders.gemma2_model"
         }
         
         text_encoders = {}
@@ -173,6 +174,7 @@ class WeePipeline(BasePipeline):
             "SD3Transformer2DModel": "weellm.models.transformers.sd3_transformer_2d_model",
             "QwenImageTransformer2DModel": "weellm.models.transformers.qwen_image_transformer_2d_model",
             "CogView4Transformer2DModel": "weellm.models.transformers.cogview4_transformer_2d_model",
+            "Lumina2Transformer2DModel": "weellm.models.transformers.lumina2_transformer_2d_model",
             "UNet2DConditionModel": "weellm.models.unets.unet_2d_condition_model"
         }
         
