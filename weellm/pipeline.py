@@ -66,7 +66,6 @@ class WeePipeline(BasePipeline):
             print(f"Path '{model_dir_str}' not found locally. Attempting to download from Hugging Face Hub...")
             try:
                 from huggingface_hub import snapshot_download
-                import json
                 
                 print(f"Fetching model_index.json from '{model_dir_str}'...")
                 index_dir = snapshot_download(model_dir_str, allow_patterns=["model_index.json"])
@@ -129,6 +128,7 @@ class WeePipeline(BasePipeline):
             "CLIPTextModel": "weellm.models.text_encoders.clip_text_model",
             "CLIPTextModelWithProjection": "weellm.models.text_encoders.clip_text_model",
             "T5EncoderModel": "weellm.models.text_encoders.t5_encoder_model",
+            "UMT5EncoderModel": "weellm.models.text_encoders.umt5_encoder_model",
             "Qwen2ForCausalLM": "weellm.models.text_encoders.qwen3_for_causal_lm",
             "Qwen3ForCausalLM": "weellm.models.text_encoders.qwen3_for_causal_lm",
             "Qwen2_5_VLForConditionalGeneration": "weellm.models.text_encoders.qwen2_5_vl_for_conditional_generation",
@@ -175,6 +175,7 @@ class WeePipeline(BasePipeline):
             "QwenImageTransformer2DModel": "weellm.models.transformers.qwen_image_transformer_2d_model",
             "CogView4Transformer2DModel": "weellm.models.transformers.cogview4_transformer_2d_model",
             "Lumina2Transformer2DModel": "weellm.models.transformers.lumina2_transformer_2d_model",
+            "AuraFlowTransformer2DModel": "weellm.models.transformers.auraflow_transformer_2d_model",
             "UNet2DConditionModel": "weellm.models.unets.unet_2d_condition_model"
         }
         

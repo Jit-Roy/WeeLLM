@@ -23,6 +23,7 @@ WeeLLM uses a **Live Seek Architecture**: it reads weights directly out of Huggi
 | `sdxl` (Juggernaut XL v9) | ~6.6B params | **2.98 GB** | **1.5 GB** | ~120s · 20 steps · RTX 3050 |
 | `sd15` (SD v1.5) | ~1.7B params | **0.90 GB** | **1.4 GB** | ~68s · 20 steps · RTX 3050 |
 | `qwen-image` (Qwen/Qwen-Image) | ~20B params | **2.47 GB** | **1.60 GB** | ~795s  · 10 steps · RTX 3050 |
+| `AuraFlow` (fal/AuraFlow) | ~4B params | **1.34 GB** | **1.61 GB** | ~405s · 10 steps · RTX 3050 |
 
 > The models run with **no quantization** — full bfloat16 weights streamed layer-by-layer from disk.
 
