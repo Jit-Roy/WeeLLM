@@ -113,6 +113,11 @@ def generate(
         self._scheduler.set_timesteps(num_inference_steps, device=self.device)
         
     timesteps = self._scheduler.timesteps
+    guidance = None
+    if getattr(self._transformer.model.config, "guidance_embeds", False):
+        guidance = torch.full([1], guidance_scale, device=self.device, dtype=self.dtype)
+        guidance = guidance.expand(packed_latents.shape[0])
+
     print("  [2/3] Denoising ...")
     for i, t in enumerate(timesteps):
         print(f"        Step {i+1}/{num_inference_steps} (t={t.item():.4f}) ...")
@@ -127,6 +132,7 @@ def generate(
             pooled_projections=pooled_prompt_embeds,
             txt_ids=text_ids,
             img_ids=latent_image_ids,
+            guidance=guidance,
             return_dict=False,
         )[0]
 
