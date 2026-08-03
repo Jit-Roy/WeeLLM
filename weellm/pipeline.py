@@ -116,7 +116,8 @@ class WeePipeline(BasePipeline):
             "T5EncoderModel": "weellm.models.text_encoders.t5_encoder_model",
             "Qwen2ForCausalLM": "weellm.models.text_encoders.qwen3_for_causal_lm",
             "Qwen3ForCausalLM": "weellm.models.text_encoders.qwen3_for_causal_lm",
-            "Qwen2_5_VLForConditionalGeneration": "weellm.models.text_encoders.qwen2_5_vl_for_conditional_generation"
+            "Qwen2_5_VLForConditionalGeneration": "weellm.models.text_encoders.qwen2_5_vl_for_conditional_generation",
+            "Mistral3ForConditionalGeneration": "weellm.models.text_encoders.mistral3_for_conditional_generation"
         }
         
         text_encoders = {}
@@ -130,7 +131,7 @@ class WeePipeline(BasePipeline):
                     te_cls = getattr(module, streamer_cls_name)
                     
                     tok_key = key.replace("text_encoder", "tokenizer")
-                    if "Qwen" in hf_cls_name:
+                    if "Qwen" in hf_cls_name or "Mistral" in hf_cls_name:
                         text_encoders[key] = te_cls.from_pretrained(model_dir=str(model_dir / key), tokenizer=tokenizers.get(tok_key), device=device, dtype=dtype, cache_to_ram=cache_to_ram)
                     elif "CLIP" in hf_cls_name:
                         hf_module = importlib.import_module("transformers")
