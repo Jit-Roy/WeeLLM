@@ -235,8 +235,10 @@ class WeePipeline(BasePipeline):
         cleared = False
         for te_key in ["text_encoder", "text_encoder_2", "text_encoder_3"]:
             te = self.text_encoders.get(te_key)
-            if te is not None and hasattr(te, "seeker") and hasattr(te.seeker, "clear_ram_cache"):
-                te.seeker.clear_ram_cache()
-                cleared = True
+            if te is not None:
+                seeker = getattr(te, "seeker", getattr(te, "_seeker", None))
+                if seeker is not None and hasattr(seeker, "clear_ram_cache"):
+                    seeker.clear_ram_cache()
+                    cleared = True
         if cleared:
             gc.collect()
