@@ -13,14 +13,14 @@ WeeLLM uses a **Live Seek Architecture**: it reads weights directly out of Huggi
 | Model | Size | Peak VRAM | Peak RAM | Time (512×512, steps) |
 |---|---|---|---|---|
 | `FLUX.2-klein-4B` | 4B params | **2.0 GB** | **2.3 GB** | ~61s · 4 steps · RTX 3050 |
+| `FLUX.1-dev` | ~12B params | **1.51 GB** | **~2.0 GB** | - |
+| `FLUX.1-Kontext-dev` | ~12B params | **1.51 GB** | **~2.0 GB** | - |
 | `FLUX.1-schnell` | ~12B params | **1.64 GB** | **1.68 GB** | ~159s · 4 steps · RTX 3050 |
 | `sd3.5-medium` | ~8B params | **3.48 GB** | **3.96 GB** | ~219s · 20 steps · RTX 3050 |
 | `z-image-turbo` | ~10B params | **1.6 GB** | **1.7 GB** | ~167s · 4 steps · RTX 3050 |
 | `sdxl` (Juggernaut XL v9) | ~6.6B params | **2.98 GB** | **1.5 GB** | ~120s · 20 steps · RTX 3050 |
 | `sd15` (SD v1.5) | ~1.7B params | **0.90 GB** | **1.4 GB** | ~68s · 20 steps · RTX 3050 |
 | `qwen-image` (Qwen/Qwen-Image) | ~20B params | **2.47 GB** | **1.60 GB** | ~795s  · 10 steps · RTX 3050 |
-
-> \* *Qwen-Image text encoder has been highly optimized to completely exclude the unused 1.6GB vision encoder during text-to-image generation, enabling this massive 20B model to run with incredible efficiency.*
 
 > The models run with **no quantization** — full bfloat16 weights streamed layer-by-layer from disk.
 
@@ -60,9 +60,11 @@ python main.py --model ./my-local-flux-model --prompt "A cyberpunk city at night
 ## ⚠️ Cloud vs. Local Execution Warning
 
 > [!WARNING]
-> **Do NOT try to run this natively on standard Kaggle or Google Colab environments!**
+> **Do NOT try to run this natively on standard Kaggle or Google Colab environments in Disk Mode!**
 
-This streaming architecture is specifically optimized for local execution on modern PCs equipped with NVMe SSDs and modern GPUs. You will experience massive slowdowns on standard cloud instances.
+This streaming architecture is specifically optimized for local execution on modern PCs equipped with NVMe SSDs and modern GPUs. You will experience massive slowdowns on standard cloud instances due to restricted disk I/O speeds.
+
+**💡 Cloud Workaround:** If you are running on Kaggle or Colab, you can pass `cache_to_ram=True` to the pipeline. This trades CPU RAM (which cloud instances usually have plenty of, e.g., 30GB+) for disk speed by caching the raw bytes into RAM before streaming them to the GPU.
 
 ---
 
@@ -132,7 +134,7 @@ WeeLLM/
 from weellm import WeePipeline
 
 # Auto-detects model type from HF repo or local directory
-pipe = WeePipeline.from_pretrained("Tongyi-MAI/Z-Image-Turbo", device="cuda")
+pipe = WeePipeline.from_pretrained("Tongyi-MAI/Z-Image-Turbo", device="cuda", cache_to_ram=False)
 image = pipe.generate(
     prompt="A serene Japanese zen garden at sunrise",
     height=512,
@@ -143,7 +145,7 @@ image = pipe.generate(
 image.save("output.png")
 
 # SDXL (Juggernaut XL v9)
-pipe = WeePipeline.from_pretrained("RunDiffusion/Juggernaut-XL-v9", device="cuda")
+pipe = WeePipeline.from_pretrained("RunDiffusion/Juggernaut-XL-v9", device="cuda", cache_to_ram=False)
 image = pipe.generate(
     prompt="A photorealistic cyberpunk city at night with neon signs",
     height=512,
@@ -155,7 +157,7 @@ image = pipe.generate(
 image.save("sdxl_output.png")
 
 # Stable Diffusion 1.5 — ultra-lightweight, under 1 GB VRAM!
-pipe = WeePipeline.from_pretrained("runwayml/stable-diffusion-v1-5", device="cuda")
+pipe = WeePipeline.from_pretrained("runwayml/stable-diffusion-v1-5", device="cuda", cache_to_ram=False)
 image = pipe.generate(
     prompt="A photorealistic cyberpunk city at night with neon signs",
     height=512,
@@ -167,7 +169,7 @@ image = pipe.generate(
 image.save("sd15_output.png")
 
 # Qwen-Image (~20B parameters)
-pipe = WeePipeline.from_pretrained("Qwen/Qwen-Image", device="cuda")
+pipe = WeePipeline.from_pretrained("Qwen/Qwen-Image", device="cuda", cache_to_ram=False)
 image = pipe.generate(
     prompt="A photorealistic cyberpunk city at night with neon signs",
     height=512,
