@@ -4,6 +4,18 @@ from PIL import Image
 from typing import Optional, Union
 from weellm.utils import report_memory, clean_memory
 
+def _calculate_shift(
+    image_seq_len: int,
+    base_seq_len: int = 256,
+    max_seq_len: int = 4096,
+    base_shift: float = 0.5,
+    max_shift: float = 1.15,
+) -> float:
+    """Linear interpolation of mu for FlowMatch shift."""
+    m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+    b = base_shift - m * base_seq_len
+    return m * image_seq_len + b
+
 def _qwen_pack_latents(self, latents: torch.Tensor, patch_size: int=2) -> torch.Tensor:
     """(B, C, H, W) -> (B, H*W/p^2, C*p^2)"""
     B, C, H, W = latents.shape
@@ -25,6 +37,7 @@ def _qwen_unpack_latents(self, latents: torch.Tensor, height: int, width: int, p
     latents = latents.reshape(B, C, ph * patch_size, pw * patch_size)
     return latents
 
+@torch.no_grad()
 def generate(self, prompt: str, height: int=512, width: int=512, num_inference_steps: int=50, true_cfg_scale: float=4.0, negative_prompt: str='', seed: int=42, max_sequence_length: int=512) -> Image.Image:
     generator = torch.Generator(device=self.device).manual_seed(seed)
     do_cfg = true_cfg_scale > 1.0
@@ -62,7 +75,7 @@ def generate(self, prompt: str, height: int=512, width: int=512, num_inference_s
     latent_h = height // self._vae_scale_factor
     latent_w = width // self._vae_scale_factor
     latents = torch.randn((1, num_channels_latents, latent_h, latent_w), generator=generator, device=self.device, dtype=self.dtype)
-    latents = self._qwen_pack_latents(latents, patch_size=2)
+    latents = _qwen_pack_latents(self, latents, patch_size=2)
     img_shapes = [[(1, latent_h // 2, latent_w // 2)]]
     if do_cfg:
         img_shapes = img_shapes * 2
@@ -89,7 +102,7 @@ def generate(self, prompt: str, height: int=512, width: int=512, num_inference_s
         latents = self._scheduler.step(noise_pred, t, latents, return_dict=False)[0]
         report_memory(f'  step {i + 1}')
     print('  [3/3] Decoding ...')
-    latents = self._qwen_unpack_latents(latents, height, width, patch_size=2)
+    latents = _qwen_unpack_latents(self, latents, height, width, patch_size=2)
     latents = latents.to(self._vae.dtype)
     latents_mean = torch.tensor(self._vae.config.latents_mean).view(1, self._vae.config.z_dim, 1, 1).to(device=self.device, dtype=latents.dtype)
     latents_std_inv = 1.0 / torch.tensor(self._vae.config.latents_std).view(1, self._vae.config.z_dim, 1, 1).to(device=self.device, dtype=latents.dtype)

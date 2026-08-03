@@ -41,8 +41,13 @@ def _get_layer_keys(seeker: SafetensorsLiveSeeker, prefix: str) -> List[str]:
 
 
 def _get_resident_keys(seeker: SafetensorsLiveSeeker) -> List[str]:
-    """Everything except the transformer layer blocks."""
-    return [k for k in seeker.weight_map.keys() if not k.startswith("model.layers.")]
+    """Everything except the transformer layer blocks, visual encoder, and lm_head."""
+    return [
+        k for k in seeker.weight_map.keys() 
+        if not k.startswith("model.layers.") 
+        and not k.startswith("visual.") 
+        and not k.startswith("lm_head.")
+    ]
 
 
 def map_qwen_key(k: str) -> str:

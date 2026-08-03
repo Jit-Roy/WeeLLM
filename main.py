@@ -116,11 +116,11 @@ def main() -> int:
     print()
 
     # ── Load pipeline ────────────────────────────────────────────────────────
-    from weellm import UniversalWeePipeline
+    from weellm import WeePipeline
 
     t_load = time.time()
     try:
-        pipe = UniversalWeePipeline.from_pretrained(
+        pipe = WeePipeline.from_pretrained(
             model_dir=args.model,
             device=device,
             dtype=dtype,

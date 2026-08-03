@@ -4,6 +4,7 @@ from PIL import Image
 from typing import Optional, Union
 from weellm.utils import report_memory, clean_memory
 
+@torch.no_grad()
 def _sd3_encode_prompt(self, prompt: str, max_t5_length: int=256):
     """
         Returns:
@@ -13,14 +14,14 @@ def _sd3_encode_prompt(self, prompt: str, max_t5_length: int=256):
     clip1_inputs = self._tokenizer(prompt, padding='max_length', max_length=self._tokenizer.model_max_length, truncation=True, return_tensors='pt').to(self.device)
     with torch.no_grad():
         clip1_out = self._text_encoder(clip1_inputs.input_ids, output_hidden_states=True)
-    clip1_hidden = clip1_out.hidden_states[-2]
-    clip1_pooled = clip1_out.text_embeds
+    clip1_hidden = clip1_out[2][-2]
+    clip1_pooled = clip1_out[0]
     del clip1_inputs, clip1_out
     clip2_inputs = self._tokenizer_2(prompt, padding='max_length', max_length=self._tokenizer_2.model_max_length, truncation=True, return_tensors='pt').to(self.device)
     with torch.no_grad():
         clip2_out = self._text_encoder_2(clip2_inputs.input_ids, output_hidden_states=True)
-    clip2_hidden = clip2_out.hidden_states[-2]
-    clip2_pooled = clip2_out.text_embeds
+    clip2_hidden = clip2_out[2][-2]
+    clip2_pooled = clip2_out[0]
     del clip2_inputs, clip2_out
     clip_combined = torch.cat([clip1_hidden, clip2_hidden], dim=-1)
     pooled_prompt_embeds = torch.cat([clip1_pooled, clip2_pooled], dim=-1).to(dtype=self.dtype)
@@ -35,13 +36,14 @@ def _sd3_encode_prompt(self, prompt: str, max_t5_length: int=256):
     clean_memory(self.device)
     return (prompt_embeds, pooled_prompt_embeds)
 
+@torch.no_grad()
 def generate(self, prompt: str, height: int=512, width: int=512, num_inference_steps: int=28, guidance_scale: float=4.5, seed: int=42, max_t5_length: int=256) -> Image.Image:
     generator = torch.Generator(device=self.device).manual_seed(seed)
     print(f'\nGenerating {width}x{height} -- {num_inference_steps} steps (guidance={guidance_scale}) ...')
     print('  [1/3] Encoding prompt ...')
     report_memory('Before text encode')
-    prompt_embeds, pooled_prompt_embeds = self._sd3_encode_prompt(prompt, max_t5_length)
-    negative_prompt_embeds, negative_pooled = self._sd3_encode_prompt('', max_t5_length)
+    prompt_embeds, pooled_prompt_embeds = _sd3_encode_prompt(self, prompt, max_t5_length)
+    negative_prompt_embeds, negative_pooled = _sd3_encode_prompt(self, '', max_t5_length)
     report_memory('After text encode')
     latent_h = height // self._vae_scale_factor
     latent_w = width // self._vae_scale_factor

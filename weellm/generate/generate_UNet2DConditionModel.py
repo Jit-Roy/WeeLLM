@@ -4,6 +4,7 @@ from PIL import Image
 from typing import Optional, Union
 from weellm.utils import report_memory, clean_memory
 
+@torch.no_grad()
 def _sd_encode_prompt(self, prompt: str):
     """
         Encodes a prompt into CLIP embeddings.
@@ -17,6 +18,7 @@ def _sd_encode_prompt(self, prompt: str):
     clean_memory(self.device)
     return prompt_embeds
 
+@torch.no_grad()
 def _sdxl_encode_prompt(self, prompt: str):
     text_inputs_1 = self._tokenizer(prompt, padding='max_length', max_length=self._tokenizer.model_max_length, truncation=True, return_tensors='pt').to(self.device)
     te1_out = self._text_encoder(text_inputs_1.input_ids)
@@ -35,9 +37,9 @@ def _generate_sd(self, prompt: str, height: int=512, width: int=512, num_inferen
     print(f'\nGenerating {width}x{height} -- {num_inference_steps} steps ...')
     print('  [1/3] Encoding prompt ...')
     report_memory('Before text encode')
-    prompt_embeds = self._sd_encode_prompt(prompt)
+    prompt_embeds = _sd_encode_prompt(self, prompt)
     if guidance_scale > 1.0:
-        uncond_embeds = self._sd_encode_prompt('')
+        uncond_embeds = _sd_encode_prompt(self, '')
         prompt_embeds = torch.cat([uncond_embeds, prompt_embeds], dim=0)
         del uncond_embeds
     report_memory('After text encode')
@@ -77,10 +79,10 @@ def _generate_sdxl(self, prompt: str, height: int=1024, width: int=1024, num_inf
     print(f'\nGenerating {width}x{height} -- {num_inference_steps} steps ...')
     print('  [1/3] Encoding prompt ...')
     report_memory('Before text encode')
-    prompt_embeds, pooled_prompt_embeds = self._sdxl_encode_prompt(prompt)
+    prompt_embeds, pooled_prompt_embeds = _sdxl_encode_prompt(self, prompt)
     report_memory('After text encode')
     if guidance_scale > 1.0:
-        uncond_embeds, uncond_pooled = self._sdxl_encode_prompt('')
+        uncond_embeds, uncond_pooled = _sdxl_encode_prompt(self, '')
         prompt_embeds = torch.cat([uncond_embeds, prompt_embeds], dim=0)
         pooled_prompt_embeds = torch.cat([uncond_pooled, pooled_prompt_embeds], dim=0)
     shape = (1, self._unet.model.config.in_channels, height // 8, width // 8)
@@ -119,6 +121,7 @@ def _generate_sdxl(self, prompt: str, height: int=1024, width: int=1024, num_inf
     return Image.fromarray(image)
 
 
+@torch.no_grad()
 def generate(self, prompt: str, **kwargs):
     if "tokenizer_2" in self.tokenizers:
         return _generate_sdxl(self, prompt, **kwargs)

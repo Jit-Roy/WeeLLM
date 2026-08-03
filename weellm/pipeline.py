@@ -26,7 +26,7 @@ def _calculate_shift(
     return mu
 
 
-class UniversalWeePipeline(BasePipeline):
+class WeePipeline(BasePipeline):
     def __init__(
         self,
         model_dir: Path,
@@ -66,7 +66,7 @@ class UniversalWeePipeline(BasePipeline):
             index = json.load(f)
             
         print("\n============================================================")
-        print(f"  UniversalWeePipeline -- Loading {index.get('_class_name', 'Unknown')}")
+        print(f"  WeePipeline -- Loading {index.get('_class_name', 'Unknown')}")
         print("============================================================\n")
         
         # 1. Tokenizers & Scheduler
@@ -86,9 +86,14 @@ class UniversalWeePipeline(BasePipeline):
         # 2. VAE (Resident on GPU)
         print("\n[2/4] Loading VAE (resident on GPU) ...")
         vae_cls = getattr(importlib.import_module("diffusers"), index["vae"][1])
-        try:
+        
+        # Check if fp16 variant exists to prevent diffusers from logging fetch errors
+        vae_dir = model_dir / "vae"
+        has_fp16 = (vae_dir / "diffusion_pytorch_model.fp16.safetensors").exists()
+        
+        if has_fp16:
             vae = vae_cls.from_pretrained(str(model_dir), subfolder="vae", torch_dtype=dtype, variant="fp16", use_safetensors=True).to(device)
-        except OSError:
+        else:
             vae = vae_cls.from_pretrained(str(model_dir), subfolder="vae", torch_dtype=dtype, use_safetensors=True).to(device)
 
         # 3. Text Encoders (Streamed or Resident)
@@ -154,7 +159,7 @@ class UniversalWeePipeline(BasePipeline):
             transformer = transformer_cls.from_pretrained(model_dir / transformer_key, device=device, dtype=dtype, prefetch=prefetch)
         
         print("\n============================================================")
-        print("  UniversalWeePipeline ready.")
+        print("  WeePipeline ready.")
         print("============================================================\n")
         
         return cls(

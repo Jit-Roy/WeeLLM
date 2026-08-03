@@ -4,6 +4,7 @@ from PIL import Image
 from typing import Optional, Union
 from weellm.utils import report_memory, clean_memory
 
+@torch.no_grad()
 def generate(
     self,
     prompt: str,

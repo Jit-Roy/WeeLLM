@@ -18,9 +18,9 @@ WeeLLM uses a **Live Seek Architecture**: it reads weights directly out of Huggi
 | `z-image-turbo` | ~10B params | **1.6 GB** | **1.7 GB** | ~167s · 4 steps · RTX 3050 |
 | `sdxl` (Juggernaut XL v9) | ~6.6B params | **2.98 GB** | **1.5 GB** | ~120s · 20 steps · RTX 3050 |
 | `sd15` (SD v1.5) | ~1.7B params | **0.90 GB** | **1.4 GB** | ~68s · 20 steps · RTX 3050 |
-| `qwen-image` (nvidia/Qwen-Image-Flash) | ~20B params | **4.82 GB*** | **5.09 GB** | ~558s  · 4 steps · RTX 3050 |
+| `qwen-image` (Qwen/Qwen-Image) | ~20B params | **2.47 GB** | **1.60 GB** | ~795s  · 10 steps · RTX 3050 |
 
-> \* *Qwen-Image transformer streams at ~3.89 GB VRAM, but peaks at 4.8 GB during batched Transformer attention (utilizing Windows WDDM Shared GPU Memory on a 4GB card).*
+> \* *Qwen-Image text encoder has been highly optimized to completely exclude the unused 1.6GB vision encoder during text-to-image generation, enabling this massive 20B model to run with incredible efficiency.*
 
 > The models run with **no quantization** — full bfloat16 weights streamed layer-by-layer from disk.
 
