@@ -76,45 +76,31 @@ If you pass a Hugging Face repo ID, WeeLLM will automatically download the neces
 
 ## Project Structure
 
-```
+```text
 WeeLLM/
-├── main.py                          # Model-agnostic CLI
+├── main.py                          # Universal CLI (auto-detects model type)
 ├── requirements.txt
 │
 └── weellm/
     ├── __init__.py                  # Public API
-    ├── auto.py                      # Auto-router (detects model from config & downloads)
-    ├── registry.py                  # Model name → pipeline class map
+    ├── pipeline.py                  # Universal WeePipeline (loads any model via model_index.json)
+    ├── universal_pipeline.py        # Base implementation of the universal pipeline
+    ├── live_seek.py                 # SafetensorsLiveSeeker (zero-duplication disk reader)
+    ├── base_pipeline.py             # Abstract BasePipeline
+    ├── base_streamer.py             # Abstract BaseStreamer
+    ├── utils.py                     # Memory & HF utilities
     │
-    ├── core/                        # Shared infrastructure
-    │   ├── encoders/                # Shared encoders
-    │   │   ├── qwen3_streamer.py    # Qwen3 text encoder (Flux / Z-Image)
-    │   │   ├── qwen2_5_vl_streamer.py # Qwen2.5-VL text encoder (Qwen-Image)
-    │   │   └── clip_streamer.py     # CLIP text encoder streamer (SD1.5 / SDXL)
-    │   ├── base_pipeline.py         # Abstract BasePipeline
-    │   ├── base_streamer.py         # Abstract BaseStreamer
-    │   ├── live_seek.py             # SafetensorsLiveSeeker (zero-duplication disk reader)
-    │   └── utils.py                 # Memory & HF resolution utilities
+    ├── models/                      # Modular hook-based streamers
+    │   ├── text_encoders/           # e.g., clip_text_model.py, t5_encoder_model.py, qwen3_streamer.py
+    │   ├── transformers/            # e.g., flux_transformer_2d_model.py, sd3_transformer_2d_model.py
+    │   └── unets/                   # e.g., unet_2d_condition_model.py
     │
-    └── models/
-        ├── flux2_klein/             # FLUX.2 Klein 4B
-        │   ├── pipeline.py
-        │   └── transformer_streamer.py
-        │
-        ├── z_image_turbo/           # Z-Image-Turbo ~10B
-        │   ├── pipeline.py
-        │   └── transformer_streamer.py
-        │
-        ├── sdxl/                   # Stable Diffusion XL (Juggernaut XL v9, ~6.6B)
-        │   ├── pipeline.py
-        │   └── unet_streamer.py      # Shared with SD1.5
-        │
-        ├── sd15/                   # Stable Diffusion 1.5 (~1.7B)
-        │   └── pipeline.py          # Reuses unet_streamer + clip_streamer
-        │
-        └── qwen_image/             # Qwen-Image (~20B)
-            ├── pipeline.py
-            └── transformer_streamer.py
+    └── generate/                    # Separated denoising loop logic per architecture
+        ├── generate_FluxTransformer2DModel.py
+        ├── generate_SD3Transformer2DModel.py
+        ├── generate_QwenImageTransformer2DModel.py
+        ├── generate_ZImageTransformer2DModel.py
+        └── generate_UNet2DConditionModel.py
 ```
 
 ---
@@ -143,7 +129,7 @@ WeeLLM/
 ## Python API
 
 ```python
-from weellm.auto import WeePipeline
+from weellm import WeePipeline
 
 # Auto-detects model type from HF repo or local directory
 pipe = WeePipeline.from_pretrained("Tongyi-MAI/Z-Image-Turbo", device="cuda")
