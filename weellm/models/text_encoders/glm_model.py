@@ -101,7 +101,7 @@ class GlmModelStreamer:
 
     def _load_tokenizer(self):
         self._tokenizer = AutoTokenizer.from_pretrained(
-            str(self.tokenizer_dir), trust_remote_code=True
+            str(self.tokenizer_dir), trust_remote_code=False
         )
 
     def _load_resident_modules(self):
