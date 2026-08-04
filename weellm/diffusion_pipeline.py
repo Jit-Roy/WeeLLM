@@ -133,13 +133,7 @@ class DiffusionPipeline:
                     # Inject the actual model module directly for the diffusers pipeline
                     te_model = getattr(streamer, "model", getattr(streamer, "_model", streamer))
                     
-                    # Monkey-patch .to() so pipeline.to() doesn't crash on meta tensors
-                    if hasattr(te_model, "to"):
-                        te_model._original_to = te_model.to
-                        def _dummy_to_te(self_obj, *args, **kwargs):
-                            return self_obj
-                        import types
-                        te_model.to = types.MethodType(_dummy_to_te, te_model)
+
                         
                     diffusers_kwargs[key] = te_model
                 else:
@@ -181,13 +175,7 @@ class DiffusionPipeline:
         # Inject the actual model module directly for the diffusers pipeline
         tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
         
-        # Monkey-patch .to() so pipeline.to() doesn't crash on meta tensors
-        if hasattr(tr_model, "to"):
-            tr_model._original_to = tr_model.to
-            def _dummy_to_tr(self_obj, *args, **kwargs):
-                return self_obj
-            import types
-            tr_model.to = types.MethodType(_dummy_to_tr, tr_model)
+
             
         diffusers_kwargs[transformer_key] = tr_model
         
@@ -202,9 +190,58 @@ class DiffusionPipeline:
         
         pipeline = pipeline_cls(**diffusers_kwargs)
         
+        import types
+        import torch
+        original_pipeline_to = pipeline.to
+        def safe_pipeline_to(self_obj, *args, **kwargs):
+            # Only move modules that do NOT contain meta tensors
+            for name, module in self_obj.components.items():
+                if isinstance(module, torch.nn.Module):
+                    has_meta = any(p.device.type == "meta" for p in module.parameters())
+                    if not has_meta:
+                        module.to(*args, **kwargs)
+            return self_obj
+            
+        pipeline.to = types.MethodType(safe_pipeline_to, pipeline)
+        
         # 5. Apply the Aggressive RAM Eviction Optimization
         print("\n[5/5] Applying Aggressive RAM Eviction (Model CPU Offload)...")
         pipeline.enable_model_cpu_offload(device=device)
+        
+        # 6. Aggressive One-Shot RAM Deletion for Kaggle
+        if cache_to_ram:
+            print("\n[6/6] Injecting Aggressive One-Shot RAM Eviction (cache_to_ram=True)...")
+            import types
+            import gc
+            
+            # Patch encode_prompt to destroy text encoders immediately after
+            if hasattr(pipeline, "encode_prompt"):
+                original_encode_prompt = pipeline.encode_prompt
+                
+                def aggressive_encode_prompt(self_obj, *args, **kwargs):
+                    res = original_encode_prompt(*args, **kwargs)
+                    print("\n[WeeLLM] One-Shot: Freeing Text Encoders from RAM...")
+                    for te_name in ["text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4", "tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4"]:
+                        if hasattr(self_obj, te_name):
+                            setattr(self_obj, te_name, None)
+                    gc.collect()
+                    return res
+                    
+                pipeline.encode_prompt = types.MethodType(aggressive_encode_prompt, pipeline)
+            
+            # Patch VAE decode to destroy transformer immediately before decoding
+            if hasattr(pipeline, "vae") and hasattr(pipeline.vae, "decode"):
+                original_vae_decode = pipeline.vae.decode
+                
+                def aggressive_vae_decode(self_obj, *args, **kwargs):
+                    print("\n[WeeLLM] One-Shot: Freeing Transformer from RAM before VAE Decode...")
+                    for tr_name in ["transformer", "unet"]:
+                        if hasattr(pipeline, tr_name):
+                            setattr(pipeline, tr_name, None)
+                    gc.collect()
+                    return original_vae_decode(*args, **kwargs)
+                    
+                pipeline.vae.decode = types.MethodType(aggressive_vae_decode, pipeline.vae)
         
         # 6. Aggressive One-Shot RAM Deletion for Kaggle
         if cache_to_ram:
