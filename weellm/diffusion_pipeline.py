@@ -206,4 +206,40 @@ class DiffusionPipeline:
         print("\n[5/5] Applying Aggressive RAM Eviction (Model CPU Offload)...")
         pipeline.enable_model_cpu_offload(device=device)
         
+        # 6. Aggressive One-Shot RAM Deletion for Kaggle
+        if cache_to_ram:
+            print("\n[6/6] Injecting Aggressive One-Shot RAM Eviction (cache_to_ram=True)...")
+            import types
+            import gc
+            
+            # Patch encode_prompt to destroy text encoders immediately after
+            if hasattr(pipeline, "encode_prompt"):
+                original_encode_prompt = pipeline.encode_prompt
+                
+                def aggressive_encode_prompt(self_obj, *args, **kwargs):
+                    res = original_encode_prompt(*args, **kwargs)
+                    print("\n[WeeLLM] One-Shot: Freeing Text Encoders from RAM...")
+                    for te_name in ["text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4", "tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4"]:
+                        if hasattr(self_obj, te_name):
+                            # Set to None to drop the reference
+                            setattr(self_obj, te_name, None)
+                    gc.collect()
+                    return res
+                    
+                pipeline.encode_prompt = types.MethodType(aggressive_encode_prompt, pipeline)
+            
+            # Patch VAE decode to destroy transformer immediately before decoding
+            if hasattr(pipeline, "vae") and hasattr(pipeline.vae, "decode"):
+                original_vae_decode = pipeline.vae.decode
+                
+                def aggressive_vae_decode(self_obj, *args, **kwargs):
+                    print("\n[WeeLLM] One-Shot: Freeing Transformer from RAM before VAE Decode...")
+                    for tr_name in ["transformer", "unet"]:
+                        if hasattr(pipeline, tr_name):
+                            setattr(pipeline, tr_name, None)
+                    gc.collect()
+                    return original_vae_decode(*args, **kwargs)
+                    
+                pipeline.vae.decode = types.MethodType(aggressive_vae_decode, pipeline.vae)
+        
         return pipeline
