@@ -94,6 +94,7 @@ class DiffusionPipeline:
             "Qwen2ForCausalLM": "weellm.models.text_encoders.qwen3_for_causal_lm",
             "Qwen3ForCausalLM": "weellm.models.text_encoders.qwen3_for_causal_lm",
             "Qwen2_5_VLForConditionalGeneration": "weellm.models.text_encoders.qwen2_5_vl_for_conditional_generation",
+            "Qwen3VLModel": "weellm.models.text_encoders.qwen3_vl_model",
             "Mistral3ForConditionalGeneration": "weellm.models.text_encoders.mistral3_for_conditional_generation",
             "GlmModel": "weellm.models.text_encoders.glm_model",
             "Gemma2Model": "weellm.models.text_encoders.gemma2_model",
@@ -133,8 +134,14 @@ class DiffusionPipeline:
                     # Inject the actual model module directly for the diffusers pipeline
                     te_model = getattr(streamer, "model", getattr(streamer, "_model", streamer))
                     
-
-                        
+                    # Monkey-patch .to() so accelerate doesn't crash on meta tensors during cpu offload
+                    if hasattr(te_model, "to"):
+                        te_model._original_to = te_model.to
+                        def _dummy_to_te(self_obj, *args, **kwargs):
+                            return self_obj
+                        import types
+                        te_model.to = types.MethodType(_dummy_to_te, te_model)
+                            
                     diffusers_kwargs[key] = te_model
                 else:
                     hf_module = importlib.import_module("transformers")
@@ -157,6 +164,7 @@ class DiffusionPipeline:
             "Lumina2Transformer2DModel": "weellm.models.transformers.lumina2_transformer_2d_model",
             "AuraFlowTransformer2DModel": "weellm.models.transformers.auraflow_transformer_2d_model",
             "HiDreamImageTransformer2DModel": "weellm.models.transformers.hidream_transformer_2d_model",
+            "Ideogram4Transformer2DModel": "weellm.models.transformers.ideogram4_transformer",
             "UNet2DConditionModel": "weellm.models.unets.unet_2d_condition_model"
         }
         
@@ -175,9 +183,19 @@ class DiffusionPipeline:
         # Inject the actual model module directly for the diffusers pipeline
         tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
         
-
+        # Monkey-patch .to() so accelerate doesn't crash on meta tensors
+        if hasattr(tr_model, "to"):
+            tr_model._original_to = tr_model.to
+            def _dummy_to_tr(self_obj, *args, **kwargs):
+                return self_obj
+            import types
+            tr_model.to = types.MethodType(_dummy_to_tr, tr_model)
             
         diffusers_kwargs[transformer_key] = tr_model
+        
+        # Some pipelines (e.g. Ideogram4) require an unconditional_transformer
+        if "unconditional_transformer" in index:
+            diffusers_kwargs["unconditional_transformer"] = tr_model
         
         print("\n============================================================")
         print("  Instantiating Native Diffusers Pipeline ...")

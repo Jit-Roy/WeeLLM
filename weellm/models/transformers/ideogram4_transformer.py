@@ -206,6 +206,7 @@ class Ideogram4Transformer2DModelStreamer:
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         cache_to_ram: bool = False,
+        **kwargs,
     ) -> "Ideogram4Transformer2DModelStreamer":
         return cls(
             model_dir=model_dir,

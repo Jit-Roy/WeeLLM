@@ -164,6 +164,7 @@ class Qwen3VLModelStreamer:
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         cache_to_ram: bool = False,
+        **kwargs,
     ) -> "Qwen3VLModelStreamer":
         return cls(
             text_encoder_dir=model_dir,
