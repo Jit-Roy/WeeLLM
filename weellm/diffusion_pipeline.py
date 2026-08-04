@@ -140,7 +140,11 @@ class DiffusionPipeline:
                     if hasattr(te_model, "to"):
                         class PatchedTEModel(te_model.__class__):
                             def to(self_obj, *args, **kwargs):
-                                return self_obj
+                                def safe_convert(t):
+                                    if t.device.type != "meta":
+                                        return t.to(*args, **kwargs)
+                                    return t
+                                return self_obj._apply(safe_convert)
                                 
                         PatchedTEModel.__name__ = te_model.__class__.__name__
                         PatchedTEModel.__qualname__ = getattr(te_model.__class__, "__qualname__", te_model.__class__.__name__)
@@ -196,7 +200,11 @@ class DiffusionPipeline:
         if hasattr(tr_model, "to"):
             class PatchedTRModel(tr_model.__class__):
                 def to(self_obj, *args, **kwargs):
-                    return self_obj
+                    def safe_convert(t):
+                        if t.device.type != "meta":
+                            return t.to(*args, **kwargs)
+                        return t
+                    return self_obj._apply(safe_convert)
                     
             PatchedTRModel.__name__ = tr_model.__class__.__name__
             PatchedTRModel.__qualname__ = getattr(tr_model.__class__, "__qualname__", tr_model.__class__.__name__)
