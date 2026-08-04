@@ -130,17 +130,18 @@ class DiffusionPipeline:
                         streamer = te_cls.from_pretrained(hf_cls, str(model_dir), key, device=device, dtype=torch_dtype, output_hidden_states=True, cache_to_ram=cache_to_ram)
                     else:
                         streamer = te_cls.from_pretrained(model_dir=te_path, device=device, dtype=torch_dtype, cache_to_ram=cache_to_ram)
+                        if hasattr(streamer, "_ensure_initialized"):
+                            streamer._ensure_initialized()
                         
                     # Inject the actual model module directly for the diffusers pipeline
                     te_model = getattr(streamer, "model", getattr(streamer, "_model", streamer))
                     
-                    # Monkey-patch .to() so accelerate doesn't crash on meta tensors during cpu offload
+                    # Patch .to() via dynamic subclassing so accelerate doesn't delete it on hook removal
                     if hasattr(te_model, "to"):
-                        te_model._original_to = te_model.to
-                        def _dummy_to_te(self_obj, *args, **kwargs):
-                            return self_obj
-                        import types
-                        te_model.to = types.MethodType(_dummy_to_te, te_model)
+                        class PatchedTEModel(te_model.__class__):
+                            def to(self_obj, *args, **kwargs):
+                                return self_obj
+                        te_model.__class__ = PatchedTEModel
                             
                     diffusers_kwargs[key] = te_model
                 else:
@@ -179,17 +180,20 @@ class DiffusionPipeline:
             transformer_streamer = transformer_cls_streamer.from_pretrained(str(model_dir), device, torch_dtype, prefetch, cache_to_ram=cache_to_ram)
         else:
             transformer_streamer = transformer_cls_streamer.from_pretrained(model_dir / transformer_key, device=device, dtype=torch_dtype, prefetch=prefetch, cache_to_ram=cache_to_ram)
+            
+        if hasattr(transformer_streamer, "_ensure_initialized"):
+            transformer_streamer._ensure_initialized()
+        
         
         # Inject the actual model module directly for the diffusers pipeline
         tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
         
-        # Monkey-patch .to() so accelerate doesn't crash on meta tensors
+        # Patch .to() via dynamic subclassing so accelerate doesn't delete it on hook removal
         if hasattr(tr_model, "to"):
-            tr_model._original_to = tr_model.to
-            def _dummy_to_tr(self_obj, *args, **kwargs):
-                return self_obj
-            import types
-            tr_model.to = types.MethodType(_dummy_to_tr, tr_model)
+            class PatchedTRModel(tr_model.__class__):
+                def to(self_obj, *args, **kwargs):
+                    return self_obj
+            tr_model.__class__ = PatchedTRModel
             
         diffusers_kwargs[transformer_key] = tr_model
         
