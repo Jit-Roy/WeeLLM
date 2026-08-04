@@ -141,6 +141,10 @@ class DiffusionPipeline:
                         class PatchedTEModel(te_model.__class__):
                             def to(self_obj, *args, **kwargs):
                                 return self_obj
+                                
+                        PatchedTEModel.__name__ = te_model.__class__.__name__
+                        PatchedTEModel.__qualname__ = getattr(te_model.__class__, "__qualname__", te_model.__class__.__name__)
+                        PatchedTEModel.__module__ = te_model.__class__.__module__
                         te_model.__class__ = PatchedTEModel
                             
                     diffusers_kwargs[key] = te_model
@@ -193,6 +197,10 @@ class DiffusionPipeline:
             class PatchedTRModel(tr_model.__class__):
                 def to(self_obj, *args, **kwargs):
                     return self_obj
+                    
+            PatchedTRModel.__name__ = tr_model.__class__.__name__
+            PatchedTRModel.__qualname__ = getattr(tr_model.__class__, "__qualname__", tr_model.__class__.__name__)
+            PatchedTRModel.__module__ = tr_model.__class__.__module__
             tr_model.__class__ = PatchedTRModel
             
         diffusers_kwargs[transformer_key] = tr_model
