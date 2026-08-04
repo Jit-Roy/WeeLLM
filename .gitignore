@@ -55,6 +55,12 @@ Qwen-Image/
 AuraFlow/
 HiDream-I1-Full/
 ideogram-4-fp8/
+Wan2.2-TI2V-5B/
+
+
+download.py
+test_flux2.py
+test_ideogram.py
 
 # Ignore all safetensors weight files
 *.safetensors

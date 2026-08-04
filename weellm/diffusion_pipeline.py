@@ -1,0 +1,189 @@
+import os
+import json
+import importlib
+from pathlib import Path
+from typing import Union
+import torch
+
+class DiffusionPipeline:
+    """
+    Factory class that returns a native Hugging Face pipeline armed with WeeLLM streamers.
+    """
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_dir: Union[str, Path],
+        device: str = "cuda",
+        torch_dtype: torch.dtype = torch.bfloat16,
+        prefetch: bool = True,
+        cache_to_ram: bool = False,
+        **kwargs
+    ):
+        model_dir_str = str(model_dir)
+        if not Path(model_dir_str).exists():
+            print(f"Path '{model_dir_str}' not found locally. Attempting to download from Hugging Face Hub...")
+            try:
+                from huggingface_hub import snapshot_download
+                
+                print(f"Fetching model_index.json from '{model_dir_str}'...")
+                index_dir = snapshot_download(model_dir_str, allow_patterns=["model_index.json"])
+                index_path = Path(index_dir) / "model_index.json"
+                
+                with open(index_path, "r", encoding="utf-8") as f:
+                    index_data = json.load(f)
+                    
+                allow_patterns = ["model_index.json"]
+                for key in index_data:
+                    if isinstance(index_data[key], list) and len(index_data[key]) == 2:
+                        allow_patterns.append(f"{key}/*")
+                
+                print(f"Downloading only required components: {allow_patterns}")
+                model_dir_str = snapshot_download(model_dir_str, allow_patterns=allow_patterns)
+            except ImportError:
+                raise ImportError("huggingface_hub is required to download models. Please install it with 'pip install huggingface_hub'.")
+            except Exception as e:
+                raise ValueError(f"Failed to download '{model_dir_str}' from Hugging Face Hub: {e}")
+
+        model_dir = Path(model_dir_str)
+        index_path = model_dir / "model_index.json"
+        with open(index_path, "r", encoding="utf-8") as f:
+            index = json.load(f)
+            
+        pipeline_class_name = index.get('_class_name')
+        if not pipeline_class_name:
+            raise ValueError("No _class_name found in model_index.json")
+
+        print("\n============================================================")
+        print(f"  WeeLLM -- Building Native {pipeline_class_name} with Streamers")
+        print("============================================================\n")
+        
+        diffusers_kwargs = kwargs.copy()
+        diffusers_kwargs["torch_dtype"] = torch_dtype
+
+        # 1. Tokenizers & Scheduler
+        print("[1/4] Loading Tokenizers and Scheduler ...")
+        for key in ["tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4"]:
+            if key in index:
+                from transformers import AutoTokenizer
+                try:
+                    diffusers_kwargs[key] = AutoTokenizer.from_pretrained(str(model_dir), subfolder=key)
+                except Exception as e:
+                    print(f"Warning: Failed to load {key}: {e}")
+
+        scheduler_cls = getattr(importlib.import_module("diffusers"), index["scheduler"][1])
+        diffusers_kwargs["scheduler"] = scheduler_cls.from_pretrained(str(model_dir), subfolder="scheduler")
+        
+        # 2. VAE (Resident on GPU)
+        print("\n[2/4] Loading VAE (resident on GPU) ...")
+        vae_cls = getattr(importlib.import_module("diffusers"), index["vae"][1])
+        vae_dir = model_dir / "vae"
+        has_fp16 = (vae_dir / "diffusion_pytorch_model.fp16.safetensors").exists()
+        
+        if has_fp16:
+            diffusers_kwargs["vae"] = vae_cls.from_pretrained(str(model_dir), subfolder="vae", torch_dtype=torch_dtype, variant="fp16", use_safetensors=True).to(device)
+        else:
+            diffusers_kwargs["vae"] = vae_cls.from_pretrained(str(model_dir), subfolder="vae", torch_dtype=torch_dtype, use_safetensors=True).to(device)
+
+        # 3. Text Encoders (Streamed or Resident)
+        print("\n[3/4] Preparing Text Encoders ...")
+        TE_MAP = {
+            "CLIPTextModel": "weellm.models.text_encoders.clip_text_model",
+            "CLIPTextModelWithProjection": "weellm.models.text_encoders.clip_text_model",
+            "T5EncoderModel": "weellm.models.text_encoders.t5_encoder_model",
+            "UMT5EncoderModel": "weellm.models.text_encoders.umt5_encoder_model",
+            "Qwen2ForCausalLM": "weellm.models.text_encoders.qwen3_for_causal_lm",
+            "Qwen3ForCausalLM": "weellm.models.text_encoders.qwen3_for_causal_lm",
+            "Qwen2_5_VLForConditionalGeneration": "weellm.models.text_encoders.qwen2_5_vl_for_conditional_generation",
+            "Mistral3ForConditionalGeneration": "weellm.models.text_encoders.mistral3_for_conditional_generation",
+            "GlmModel": "weellm.models.text_encoders.glm_model",
+            "Gemma2Model": "weellm.models.text_encoders.gemma2_model",
+            "LlamaForCausalLM": "weellm.models.text_encoders.llama_for_causal_lm",
+        }
+        
+        for key in ["text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4"]:
+            if key in index:
+                hf_cls_name = index[key][1]
+                if hf_cls_name in TE_MAP:
+                    module_path = TE_MAP[hf_cls_name]
+                    streamer_cls_name = "CLIPTextModelStreamer" if "CLIP" in hf_cls_name else hf_cls_name + "Streamer"
+                    module = importlib.import_module(module_path)
+                    te_cls = getattr(module, streamer_cls_name)
+                    
+                    tok_key = key.replace("text_encoder", "tokenizer")
+                    te_path = str(model_dir / key)
+                        
+                    if "Qwen" in hf_cls_name or "Mistral" in hf_cls_name or "Llama" in hf_cls_name:
+                        # Some CausalLM streamers just take text_encoder_dir directly
+                        if hasattr(te_cls, "from_pretrained"):
+                            streamer = te_cls.from_pretrained(model_dir=te_path, tokenizer=diffusers_kwargs.get(tok_key), device=device, dtype=torch_dtype, cache_to_ram=cache_to_ram)
+                            if hasattr(streamer, "_ensure_initialized"):
+                                streamer._ensure_initialized()
+                        else:
+                            # Direct instantiation
+                            streamer = te_cls(text_encoder_dir=te_path, tokenizer_dir=str(model_dir / tok_key), device=device, dtype=torch_dtype, cache_to_ram=cache_to_ram)
+                            if hasattr(streamer, "_ensure_initialized"):
+                                streamer._ensure_initialized()
+                    elif "CLIP" in hf_cls_name:
+                        hf_module = importlib.import_module("transformers")
+                        hf_cls = getattr(hf_module, hf_cls_name)
+                        streamer = te_cls.from_pretrained(hf_cls, str(model_dir), key, device=device, dtype=torch_dtype, output_hidden_states=True, cache_to_ram=cache_to_ram)
+                    else:
+                        streamer = te_cls.from_pretrained(model_dir=te_path, device=device, dtype=torch_dtype, cache_to_ram=cache_to_ram)
+                        
+                    # Inject the actual model module directly for the diffusers pipeline
+                    diffusers_kwargs[key] = getattr(streamer, "model", getattr(streamer, "_model", streamer))
+                else:
+                    hf_module = importlib.import_module("transformers")
+                    hf_cls = getattr(hf_module, hf_cls_name)
+                    diffusers_kwargs[key] = hf_cls.from_pretrained(str(model_dir), subfolder=key, torch_dtype=torch_dtype).to(device)
+                    diffusers_kwargs[key].eval()
+
+        # 4. Transformer / UNet
+        print("\n[4/4] Preparing Transformer / UNet ...")
+        transformer_key = "transformer" if "transformer" in index else "unet"
+        transformer_class_name = index[transformer_key][1]
+        
+        TR_MAP = {
+            "FluxTransformer2DModel": "weellm.models.transformers.flux_transformer_2d_model",
+            "Flux2Transformer2DModel": "weellm.models.transformers.flux2_transformer_2d_model",
+            "ZImageTransformer2DModel": "weellm.models.transformers.z_image_transformer_2d_model",
+            "SD3Transformer2DModel": "weellm.models.transformers.sd3_transformer_2d_model",
+            "QwenImageTransformer2DModel": "weellm.models.transformers.qwen_image_transformer_2d_model",
+            "CogView4Transformer2DModel": "weellm.models.transformers.cogview4_transformer_2d_model",
+            "Lumina2Transformer2DModel": "weellm.models.transformers.lumina2_transformer_2d_model",
+            "AuraFlowTransformer2DModel": "weellm.models.transformers.auraflow_transformer_2d_model",
+            "HiDreamImageTransformer2DModel": "weellm.models.transformers.hidream_transformer_2d_model",
+            "UNet2DConditionModel": "weellm.models.unets.unet_2d_condition_model"
+        }
+        
+        module_path = TR_MAP.get(transformer_class_name, "")
+        if not module_path:
+            raise ValueError(f"Unsupported architecture: {transformer_class_name}")
+            
+        module = importlib.import_module(module_path)
+        transformer_cls_streamer = getattr(module, transformer_class_name + "Streamer")
+        
+        if transformer_key == "unet":
+            transformer_streamer = transformer_cls_streamer.from_pretrained(str(model_dir), device, torch_dtype, prefetch, cache_to_ram=cache_to_ram)
+        else:
+            transformer_streamer = transformer_cls_streamer.from_pretrained(model_dir / transformer_key, device=device, dtype=torch_dtype, prefetch=prefetch, cache_to_ram=cache_to_ram)
+        
+        # Inject the actual model module directly for the diffusers pipeline
+        diffusers_kwargs[transformer_key] = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
+        
+        print("\n============================================================")
+        print("  Instantiating Native Diffusers Pipeline ...")
+        print("============================================================\n")
+        
+        diffusers_kwargs.pop("torch_dtype", None)
+        
+        pipeline_module = importlib.import_module("diffusers")
+        pipeline_cls = getattr(pipeline_module, pipeline_class_name)
+        
+        pipeline = pipeline_cls(**diffusers_kwargs)
+        
+        # 5. Apply the Aggressive RAM Eviction Optimization
+        print("\n[5/5] Applying Aggressive RAM Eviction (Model CPU Offload)...")
+        pipeline.enable_model_cpu_offload(device=device)
+        
+        return pipeline

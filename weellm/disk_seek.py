@@ -11,6 +11,7 @@ _DTYPE_MAP = {
     "BF16": np.uint16,
     "I64": np.int64, "I32": np.int32, "I16": np.int16,
     "I8": np.int8, "U8": np.uint8, "BOOL": np.bool_,
+    "F8_E4M3": np.uint8,
 }
 
 class SafetensorsDiskSeeker:
@@ -111,6 +112,8 @@ class SafetensorsDiskSeeker:
                     t = torch.from_numpy(arr)
                     if dtype_str == "BF16":
                         t = t.view(torch.bfloat16)
+                    elif dtype_str == "F8_E4M3":
+                        t = t.view(torch.float8_e4m3fn)
                     
                     t = t.to(device=device)
                     if dtype is not None and t.dtype != dtype:
