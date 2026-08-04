@@ -191,16 +191,25 @@ class DiffusionPipeline:
         pipeline = pipeline_cls(**diffusers_kwargs)
         
         import types
-        import torch
         original_pipeline_to = pipeline.to
+        
         def safe_pipeline_to(self_obj, *args, **kwargs):
-            # Only move modules that do NOT contain meta tensors
-            for name, module in self_obj.components.items():
+            # Temporarily hide modules that contain meta tensors so diffusers' original .to() ignores them
+            hidden_meta_modules = {}
+            for name, module in list(self_obj.components.items()):
                 if isinstance(module, torch.nn.Module):
-                    has_meta = any(p.device.type == "meta" for p in module.parameters())
-                    if not has_meta:
-                        module.to(*args, **kwargs)
-            return self_obj
+                    has_meta = any(p.device.type == "meta" for p in getattr(module, "parameters", lambda: [])())
+                    if has_meta:
+                        hidden_meta_modules[name] = module
+                        del self_obj.components[name]
+            try:
+                # Call original pipeline.to() which handles diffusers-specific kwargs (e.g. silence_dtype_warnings)
+                res = original_pipeline_to(*args, **kwargs)
+            finally:
+                # Restore the meta modules
+                for name, module in hidden_meta_modules.items():
+                    self_obj.components[name] = module
+            return res
             
         pipeline.to = types.MethodType(safe_pipeline_to, pipeline)
         
