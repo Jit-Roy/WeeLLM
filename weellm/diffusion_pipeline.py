@@ -202,14 +202,14 @@ class DiffusionPipeline:
                     has_meta_buffer = any(b.device.type == "meta" for b in getattr(module, "buffers", lambda: [])())
                     if has_meta_param or has_meta_buffer:
                         hidden_meta_modules[name] = module
-                        del self_obj.components[name]
+                        setattr(self_obj, name, None)  # self_obj.components is a dynamic property!
             try:
                 # Call original pipeline.to() which handles diffusers-specific kwargs (e.g. silence_dtype_warnings)
                 res = original_pipeline_to(*args, **kwargs)
             finally:
                 # Restore the meta modules
                 for name, module in hidden_meta_modules.items():
-                    self_obj.components[name] = module
+                    setattr(self_obj, name, module)
             return res
             
         pipeline.to = types.MethodType(safe_pipeline_to, pipeline)
