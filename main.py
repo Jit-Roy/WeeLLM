@@ -57,8 +57,8 @@ examples:
     parser.add_argument("--width",  type=int, default=512, help="Output width in pixels  (default: 512)")
     parser.add_argument("--steps",  type=int, default=4,   help="Denoising steps         (default: 4)")
     parser.add_argument(
-        "--guidance_scale", type=float, default=1.0,
-        help="Classifier-free guidance scale, 1.0 = disabled (default: 1.0)",
+        "--guidance_scale", type=float, default=5.0,
+        help="Classifier-free guidance scale (default: 5.0, 1.0 = disabled)",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
 

@@ -98,11 +98,11 @@ class WeePipeline(BasePipeline):
         # 1. Tokenizers & Scheduler
         print("[1/4] Loading Tokenizers and Scheduler ...")
         tokenizers = {}
-        for key in ["tokenizer", "tokenizer_2", "tokenizer_3"]:
+        for key in ["tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4"]:
             if key in index:
                 from transformers import AutoTokenizer
                 try:
-                    tokenizers[key] = AutoTokenizer.from_pretrained(str(model_dir), subfolder=key)
+                    tokenizers[key] = AutoTokenizer.from_pretrained(str(model_dir / key))
                 except Exception as e:
                     print(f"Warning: Failed to load {key}: {e}")
 
@@ -134,11 +134,12 @@ class WeePipeline(BasePipeline):
             "Qwen2_5_VLForConditionalGeneration": "weellm.models.text_encoders.qwen2_5_vl_for_conditional_generation",
             "Mistral3ForConditionalGeneration": "weellm.models.text_encoders.mistral3_for_conditional_generation",
             "GlmModel": "weellm.models.text_encoders.glm_model",
-            "Gemma2Model": "weellm.models.text_encoders.gemma2_model"
+            "Gemma2Model": "weellm.models.text_encoders.gemma2_model",
+            "LlamaForCausalLM": "weellm.models.text_encoders.llama_for_causal_lm",
         }
         
         text_encoders = {}
-        for key in ["text_encoder", "text_encoder_2", "text_encoder_3"]:
+        for key in ["text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4"]:
             if key in index:
                 hf_cls_name = index[key][1]
                 if hf_cls_name in TE_MAP:
@@ -148,14 +149,16 @@ class WeePipeline(BasePipeline):
                     te_cls = getattr(module, streamer_cls_name)
                     
                     tok_key = key.replace("text_encoder", "tokenizer")
-                    if "Qwen" in hf_cls_name or "Mistral" in hf_cls_name:
-                        text_encoders[key] = te_cls.from_pretrained(model_dir=str(model_dir / key), tokenizer=tokenizers.get(tok_key), device=device, dtype=dtype, cache_to_ram=cache_to_ram)
+                    te_path = str(model_dir / key)
+                        
+                    if "Qwen" in hf_cls_name or "Mistral" in hf_cls_name or "Llama" in hf_cls_name:
+                        text_encoders[key] = te_cls.from_pretrained(model_dir=te_path, tokenizer=tokenizers.get(tok_key), device=device, dtype=dtype, cache_to_ram=cache_to_ram)
                     elif "CLIP" in hf_cls_name:
                         hf_module = importlib.import_module("transformers")
                         hf_cls = getattr(hf_module, hf_cls_name)
                         text_encoders[key] = te_cls.from_pretrained(hf_cls, str(model_dir), key, device=device, dtype=dtype, output_hidden_states=True, cache_to_ram=cache_to_ram)
                     else:
-                        text_encoders[key] = te_cls.from_pretrained(model_dir=str(model_dir / key), device=device, dtype=dtype, cache_to_ram=cache_to_ram)
+                        text_encoders[key] = te_cls.from_pretrained(model_dir=te_path, device=device, dtype=dtype, cache_to_ram=cache_to_ram)
                 else:
                     hf_module = importlib.import_module("transformers")
                     hf_cls = getattr(hf_module, hf_cls_name)
@@ -176,6 +179,7 @@ class WeePipeline(BasePipeline):
             "CogView4Transformer2DModel": "weellm.models.transformers.cogview4_transformer_2d_model",
             "Lumina2Transformer2DModel": "weellm.models.transformers.lumina2_transformer_2d_model",
             "AuraFlowTransformer2DModel": "weellm.models.transformers.auraflow_transformer_2d_model",
+            "HiDreamImageTransformer2DModel": "weellm.models.transformers.hidream_transformer_2d_model",
             "UNet2DConditionModel": "weellm.models.unets.unet_2d_condition_model"
         }
         
@@ -217,6 +221,8 @@ class WeePipeline(BasePipeline):
     @property
     def _text_encoder_3(self): return self.text_encoders.get("text_encoder_3")
     @property
+    def _text_encoder_4(self): return self.text_encoders.get("text_encoder_4")
+    @property
     def _tokenizer(self): return self.tokenizers.get("tokenizer")
     @property
     def _tokenizer_1(self): return self.tokenizers.get("tokenizer")
@@ -224,6 +230,8 @@ class WeePipeline(BasePipeline):
     def _tokenizer_2(self): return self.tokenizers.get("tokenizer_2")
     @property
     def _tokenizer_3(self): return self.tokenizers.get("tokenizer_3")
+    @property
+    def _tokenizer_4(self): return self.tokenizers.get("tokenizer_4")
     @property
     def _vae(self): return self.vae
     @property
@@ -254,7 +262,7 @@ class WeePipeline(BasePipeline):
         """Frees the RAM cache of all text encoders after encoding to save memory (they will lazy-reload if needed)."""
         import gc
         cleared = False
-        for te_key in ["text_encoder", "text_encoder_2", "text_encoder_3"]:
+        for te_key in ["text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4"]:
             te = self.text_encoders.get(te_key)
             if te is not None:
                 seeker = getattr(te, "seeker", getattr(te, "_seeker", None))

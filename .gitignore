@@ -53,6 +53,8 @@ FLUX.1-schnell/
 stable-diffusion-3.5-medium/
 Qwen-Image/
 AuraFlow/
+HiDream-I1-Full/
+ideogram-4-fp8/
 
 # Ignore all safetensors weight files
 *.safetensors

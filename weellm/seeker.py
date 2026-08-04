@@ -8,9 +8,17 @@ def get_seeker(model_dir: Union[str, Path], cache_to_ram: bool = False):
     full tensor file into CPU RAM to bypass slow disk I/O on cloud instances.
     Otherwise, it returns SafetensorsDiskSeeker which streams directly from disk.
     """
+    model_dir_path = Path(model_dir)
+    if not model_dir_path.exists():
+        print(f"Directory {model_dir} not found. Attempting to download from Hugging Face Hub...")
+        from huggingface_hub import snapshot_download
+        repo_id = str(model_dir).replace("\\", "/")
+        model_dir = snapshot_download(repo_id=repo_id, allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.json"])
+        model_dir_path = Path(model_dir)
+        
     if cache_to_ram:
         from weellm.ram_seek import SafetensorsRAMSeeker
-        return SafetensorsRAMSeeker(model_dir)
+        return SafetensorsRAMSeeker(model_dir_path)
     else:
         from weellm.disk_seek import SafetensorsDiskSeeker
-        return SafetensorsDiskSeeker(model_dir)
+        return SafetensorsDiskSeeker(model_dir_path)
