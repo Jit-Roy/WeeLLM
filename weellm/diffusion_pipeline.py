@@ -131,7 +131,17 @@ class DiffusionPipeline:
                         streamer = te_cls.from_pretrained(model_dir=te_path, device=device, dtype=torch_dtype, cache_to_ram=cache_to_ram)
                         
                     # Inject the actual model module directly for the diffusers pipeline
-                    diffusers_kwargs[key] = getattr(streamer, "model", getattr(streamer, "_model", streamer))
+                    te_model = getattr(streamer, "model", getattr(streamer, "_model", streamer))
+                    
+                    # Monkey-patch .to() so pipeline.to() doesn't crash on meta tensors
+                    if hasattr(te_model, "to"):
+                        te_model._original_to = te_model.to
+                        def _dummy_to_te(self_obj, *args, **kwargs):
+                            return self_obj
+                        import types
+                        te_model.to = types.MethodType(_dummy_to_te, te_model)
+                        
+                    diffusers_kwargs[key] = te_model
                 else:
                     hf_module = importlib.import_module("transformers")
                     hf_cls = getattr(hf_module, hf_cls_name)
@@ -169,7 +179,17 @@ class DiffusionPipeline:
             transformer_streamer = transformer_cls_streamer.from_pretrained(model_dir / transformer_key, device=device, dtype=torch_dtype, prefetch=prefetch, cache_to_ram=cache_to_ram)
         
         # Inject the actual model module directly for the diffusers pipeline
-        diffusers_kwargs[transformer_key] = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
+        tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
+        
+        # Monkey-patch .to() so pipeline.to() doesn't crash on meta tensors
+        if hasattr(tr_model, "to"):
+            tr_model._original_to = tr_model.to
+            def _dummy_to_tr(self_obj, *args, **kwargs):
+                return self_obj
+            import types
+            tr_model.to = types.MethodType(_dummy_to_tr, tr_model)
+            
+        diffusers_kwargs[transformer_key] = tr_model
         
         print("\n============================================================")
         print("  Instantiating Native Diffusers Pipeline ...")
