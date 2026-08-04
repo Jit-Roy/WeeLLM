@@ -198,8 +198,9 @@ class DiffusionPipeline:
             hidden_meta_modules = {}
             for name, module in list(self_obj.components.items()):
                 if isinstance(module, torch.nn.Module):
-                    has_meta = any(p.device.type == "meta" for p in getattr(module, "parameters", lambda: [])())
-                    if has_meta:
+                    has_meta_param = any(p.device.type == "meta" for p in getattr(module, "parameters", lambda: [])())
+                    has_meta_buffer = any(b.device.type == "meta" for b in getattr(module, "buffers", lambda: [])())
+                    if has_meta_param or has_meta_buffer:
                         hidden_meta_modules[name] = module
                         del self_obj.components[name]
             try:
