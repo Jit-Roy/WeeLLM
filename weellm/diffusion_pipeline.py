@@ -258,6 +258,24 @@ class DiffusionPipeline:
         pipeline_cls = getattr(pipeline_module, pipeline_class_name)
         
         pipeline = pipeline_cls(**diffusers_kwargs)
+
+        def _move_scheduler_tensors_to_device(scheduler_obj, target_device):
+            for attr_name, attr_value in list(vars(scheduler_obj).items()):
+                if torch.is_tensor(attr_value) and attr_value.device.type != target_device:
+                    setattr(scheduler_obj, attr_name, attr_value.to(target_device))
+
+        if hasattr(pipeline, "scheduler"):
+            _move_scheduler_tensors_to_device(pipeline.scheduler, device)
+            if hasattr(pipeline.scheduler, "set_timesteps"):
+                original_set_timesteps = pipeline.scheduler.set_timesteps
+
+                def safe_set_timesteps(self_obj, *args, **kwargs):
+                    result = original_set_timesteps(*args, **kwargs)
+                    _move_scheduler_tensors_to_device(self_obj, device)
+                    return result
+
+                import types
+                pipeline.scheduler.set_timesteps = types.MethodType(safe_set_timesteps, pipeline.scheduler)
         
         import types
         original_pipeline_to = pipeline.to
