@@ -259,6 +259,72 @@ class DiffusionPipeline:
         
         pipeline = pipeline_cls(**diffusers_kwargs)
 
+        if hasattr(pipeline, "text_encoder") and pipeline.text_encoder is not None:
+            te = pipeline.text_encoder
+            print("[WeeLLM Debug] Pipeline text_encoder:", te.__class__.__name__)
+            try:
+                meta_params = sum(1 for p in te.parameters() if getattr(p, "device", None) is not None and p.device.type == "meta")
+                meta_buffers = sum(1 for b in te.buffers() if getattr(b, "device", None) is not None and b.device.type == "meta")
+                print(f"[WeeLLM Debug] text_encoder meta params={meta_params} meta buffers={meta_buffers}")
+            except Exception as exc:
+                print(f"[WeeLLM Debug] Unable to summarize text_encoder tensors: {exc}")
+
+            if te.__class__.__name__ == "Qwen2_5_VLForConditionalGeneration":
+                import types
+
+                original_forward = te.forward
+
+                def debug_qwen_forward(self_obj, *args, **kwargs):
+                    print("[WeeLLM Qwen Debug] Qwen2_5_VLForConditionalGeneration.forward called")
+                    for key in (
+                        "input_ids",
+                        "attention_mask",
+                        "position_ids",
+                        "past_key_values",
+                        "inputs_embeds",
+                        "image_grid_thw",
+                        "video_grid_thw",
+                        "second_per_grid_ts",
+                        "rope_deltas",
+                        "cache_position",
+                    ):
+                        value = kwargs.get(key)
+                        if torch.is_tensor(value):
+                            print(f"[WeeLLM Qwen Debug] kwargs[{key}] shape={tuple(value.shape)} device={value.device} dtype={value.dtype}")
+                        elif value is not None:
+                            print(f"[WeeLLM Qwen Debug] kwargs[{key}] type={type(value).__name__}")
+                    try:
+                        rope_deltas = getattr(self_obj.model, "rope_deltas", None)
+                        if torch.is_tensor(rope_deltas):
+                            print(f"[WeeLLM Qwen Debug] self.model.rope_deltas shape={tuple(rope_deltas.shape)} device={rope_deltas.device} dtype={rope_deltas.dtype}")
+                        else:
+                            print(f"[WeeLLM Qwen Debug] self.model.rope_deltas={type(rope_deltas).__name__ if rope_deltas is not None else 'None'}")
+                    except Exception as exc:
+                        print(f"[WeeLLM Qwen Debug] Unable to inspect rope_deltas: {exc}")
+                    return original_forward(*args, **kwargs)
+
+                te.forward = types.MethodType(debug_qwen_forward, te)
+
+                try:
+                    from transformers import masking_utils
+
+                    if not hasattr(masking_utils, "_weellm_original_create_causal_mask"):
+                        masking_utils._weellm_original_create_causal_mask = masking_utils.create_causal_mask
+
+                        def debug_create_causal_mask(*args, **kwargs):
+                            print("[WeeLLM Qwen Debug] create_causal_mask called")
+                            for key in ("input_embeds", "attention_mask", "cache_position", "past_key_values", "position_ids"):
+                                value = kwargs.get(key)
+                                if torch.is_tensor(value):
+                                    print(f"[WeeLLM Qwen Debug] mask_kwargs[{key}] shape={tuple(value.shape)} device={value.device} dtype={value.dtype}")
+                                elif value is not None:
+                                    print(f"[WeeLLM Qwen Debug] mask_kwargs[{key}] type={type(value).__name__}")
+                            return masking_utils._weellm_original_create_causal_mask(*args, **kwargs)
+
+                        masking_utils.create_causal_mask = debug_create_causal_mask
+                except Exception as exc:
+                    print(f"[WeeLLM Qwen Debug] Unable to patch create_causal_mask: {exc}")
+
         def _move_scheduler_tensors_to_device(scheduler_obj, target_device):
             def _contains_tensor(value):
                 if torch.is_tensor(value):
