@@ -257,6 +257,12 @@ class DiffusionPipeline:
         # 5. Apply the Aggressive RAM Eviction Optimization
         print("\n[5/5] Applying Aggressive RAM Eviction (Model CPU Offload)...")
         pipeline.enable_model_cpu_offload(device=device)
+        if hasattr(pipeline, "enable_vae_tiling"):
+            try:
+                pipeline.enable_vae_tiling()
+                print("      -> [WeeLLM] Enabled VAE Tiling to prevent decoding VRAM spikes.")
+            except Exception as e:
+                pass
         
         # 6. Aggressive One-Shot RAM Deletion for Kaggle
         if cache_to_ram:
