@@ -271,3 +271,6 @@ class Qwen3ForCausalLMStreamer:
             dtype=dtype,
             max_length=max_length,
         )
+
+Qwen3ModelStreamer = Qwen3ForCausalLMStreamer
+Qwen2ForCausalLMStreamer = Qwen3ForCausalLMStreamer
