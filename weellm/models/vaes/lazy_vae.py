@@ -17,12 +17,48 @@ def _apply_state_dict(model: nn.Module, state_dict: dict, device: str, dtype: to
         if tensor is not None:
             if "num_batches_tracked" in name:
                 continue
-            set_module_tensor_to_device(model, name, device, value=tensor, dtype=dtype)
+            mapped_name = _resolve_vae_key(model, name)
+            set_module_tensor_to_device(model, mapped_name, device, value=tensor, dtype=dtype)
 
 def _evict_params(model: nn.Module, param_names: List[str]):
     """Move named parameters back to the meta device (free VRAM)."""
     for name in param_names:
-        set_module_tensor_to_device(model, name, "meta")
+        mapped_name = _resolve_vae_key(model, name)
+        set_module_tensor_to_device(model, mapped_name, "meta")
+
+
+def _map_vae_key(name: str) -> str:
+    mapped_name = name
+    if ".query." in mapped_name:
+        mapped_name = mapped_name.replace(".query.", ".to_q.")
+    if ".key." in mapped_name:
+        mapped_name = mapped_name.replace(".key.", ".to_k.")
+    if ".value." in mapped_name:
+        mapped_name = mapped_name.replace(".value.", ".to_v.")
+    if ".proj_attn." in mapped_name:
+        mapped_name = mapped_name.replace(".proj_attn.", ".to_out.0.")
+    return mapped_name
+
+
+def _resolve_vae_key(model: nn.Module, name: str) -> str:
+    mapped_name = _map_vae_key(name)
+    if _has_module_path(model, mapped_name):
+        return mapped_name
+    if _has_module_path(model, name):
+        return name
+    return mapped_name
+
+
+def _has_module_path(model: nn.Module, name: str) -> bool:
+    current = model
+    parts = name.split(".")
+    for part in parts[:-1]:
+        if not hasattr(current, part):
+            return False
+        current = getattr(current, part)
+        if current is None:
+            return False
+    return hasattr(current, parts[-1])
 
 class LazyVAEStreamer:
     def __init__(self, model: nn.Module, seeker, device: str, dtype: torch.dtype):
