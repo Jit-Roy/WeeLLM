@@ -15,6 +15,7 @@ Key naming:
 
 import torch
 import torch.nn as nn
+import types
 
 from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
@@ -36,6 +37,30 @@ def _evict_params(model: nn.Module, param_names: list):
     """Move named parameters back to meta device (free VRAM)."""
     for name in param_names:
         set_module_tensor_to_device(model, name, "meta")
+
+
+def _patch_forward_input_device(model: nn.Module):
+    """Move CLIP text inputs onto the model device before forward runs."""
+    original_forward = model.forward
+
+    def patched_forward(self_obj, *args, **kwargs):
+        try:
+            model_device = next(self_obj.parameters()).device
+        except StopIteration:
+            model_device = torch.device("cpu")
+
+        args = list(args)
+        if args and torch.is_tensor(args[0]) and args[0].device != model_device:
+            args[0] = args[0].to(model_device)
+
+        for key in ("input_ids", "attention_mask", "position_ids", "inputs_embeds"):
+            value = kwargs.get(key)
+            if torch.is_tensor(value) and value.device != model_device:
+                kwargs[key] = value.to(model_device)
+
+        return original_forward(*args, **kwargs)
+
+    model.forward = types.MethodType(patched_forward, model)
 
 
 class CLIPTextModelStreamer:
@@ -193,6 +218,8 @@ class CLIPTextModelStreamer:
         _apply_state_dict(model, resident_sd, device, dtype)
         del resident_sd_raw, resident_sd
         clean_memory(device)
+
+        _patch_forward_input_device(model)
 
         if model_has_text_model:
             num_layers = len(model.text_model.encoder.layers)
