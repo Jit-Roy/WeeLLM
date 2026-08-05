@@ -229,9 +229,9 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             model = Qwen2_5_VLForConditionalGeneration(cfg)
         model.eval()
 
-        # Move non-meta buffers to device
+        # Move meta buffers to device (buffers may be on 'meta' after init_empty_weights)
         for buf_name, buf in model.named_buffers():
-            if buf is not None and buf.device.type != "meta":
+            if buf is not None and getattr(buf, 'device', None) is not None and buf.device.type == "meta":
                 set_module_tensor_to_device(model, buf_name, device, value=buf)
 
         print("  [TE 3/3] Loading resident Qwen text encoder tensors to GPU ...")
