@@ -46,7 +46,7 @@ class Qwen3VLModelStreamer:
         self.dtype = dtype
         self.cache_to_ram = cache_to_ram
 
-        self._seeker = None
+        self._seeker: Optional[object] = None
         self._model: Optional[nn.Module] = None
         self._initialized = False
         

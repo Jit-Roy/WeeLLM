@@ -219,7 +219,7 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         model_dir = Path(model_dir)
 
         print("  [TE 1/3] Initializing LiveSeeker on Qwen text encoder weights ...")
-        seeker = get_seeker(model_dir, cache_to_ram=self.cache_to_ram)
+        seeker = get_seeker(model_dir, cache_to_ram=cache_to_ram)
         print(f"    Found {len(seeker.weight_map)} tensors.")
 
         print("  [TE 2/3] Instantiating Qwen2_5_VLForConditionalGeneration on meta device ...")

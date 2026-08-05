@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -55,7 +55,7 @@ class GlmModelStreamer:
         self.cache_to_ram = cache_to_ram
         self.max_length = max_length
 
-        self._seeker: Optional[Any] = None
+        self._seeker: Optional[object] = None
         self._model: Optional[nn.Module] = None
         self._tokenizer = None
         self._num_layers: int = 0

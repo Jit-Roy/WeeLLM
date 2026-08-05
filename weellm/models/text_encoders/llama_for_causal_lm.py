@@ -56,7 +56,7 @@ class LlamaForCausalLMStreamer:
         self.cache_to_ram = cache_to_ram
         self.max_length = max_length
 
-        self._seeker = None
+        self._seeker: Optional[object] = None
         self._model: Optional[nn.Module] = None
         self._tokenizer = None
         self._num_layers: int = 0
