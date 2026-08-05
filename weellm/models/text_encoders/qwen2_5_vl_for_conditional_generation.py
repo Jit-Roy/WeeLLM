@@ -150,6 +150,7 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         self._lock = threading.Lock()
 
         self._install_hooks()
+        self._install_qwen_root_forward_patch()
 
     def _install_hooks(self):
         for i, shard_name in enumerate(self._shard_order):
@@ -209,6 +210,98 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
                 lm_head.forward = types.MethodType(debug_lm_forward, lm_head)
         except Exception as exc:
             print(f"[WeeLLM Qwen Debug] Unable to patch lm_head.forward: {exc}")
+
+    def _install_qwen_root_forward_patch(self):
+        try:
+            original_forward = self.model.forward
+
+            def debug_qwen_forward(self_obj, *args, **kwargs):
+                print("[WeeLLM Qwen Debug] Qwen2_5_VLForConditionalGeneration.forward called")
+                for key in (
+                    "input_ids",
+                    "attention_mask",
+                    "position_ids",
+                    "past_key_values",
+                    "inputs_embeds",
+                    "image_grid_thw",
+                    "video_grid_thw",
+                    "second_per_grid_ts",
+                    "rope_deltas",
+                    "cache_position",
+                ):
+                    value = kwargs.get(key)
+                    if torch.is_tensor(value):
+                        print(f"[WeeLLM Qwen Debug] kwargs[{key}] shape={tuple(value.shape)} device={value.device} dtype={value.dtype}")
+                    elif value is not None:
+                        print(f"[WeeLLM Qwen Debug] kwargs[{key}] type={type(value).__name__}")
+                try:
+                    rope_deltas = getattr(self_obj.model, "rope_deltas", None)
+                    if torch.is_tensor(rope_deltas):
+                        print(f"[WeeLLM Qwen Debug] self_obj.model.rope_deltas shape={tuple(rope_deltas.shape)} device={rope_deltas.device} dtype={rope_deltas.dtype}")
+                    else:
+                        print(f"[WeeLLM Qwen Debug] self_obj.model.rope_deltas={type(rope_deltas).__name__ if rope_deltas is not None else 'None'}")
+                except Exception as exc:
+                    print(f"[WeeLLM Qwen Debug] Unable to inspect rope_deltas: {exc}")
+
+                if kwargs.get("pixel_values") is None and kwargs.get("pixel_values_videos") is None:
+                    print("[WeeLLM Qwen Debug] Using pure-text bypass through inner language_model; lm_head is skipped.")
+                    inner_kwargs = {
+                        "input_ids": kwargs.get("input_ids"),
+                        "attention_mask": kwargs.get("attention_mask"),
+                        "position_ids": kwargs.get("position_ids"),
+                        "past_key_values": kwargs.get("past_key_values"),
+                        "inputs_embeds": kwargs.get("inputs_embeds"),
+                        "use_cache": False,
+                        "output_attentions": kwargs.get("output_attentions", False),
+                        "output_hidden_states": True,
+                        "return_dict": True,
+                        "cache_position": kwargs.get("cache_position"),
+                    }
+                    inner_kwargs = {k: v for k, v in inner_kwargs.items() if v is not None}
+                    inner_out = self_obj.model.language_model(**inner_kwargs)
+                    try:
+                        if hasattr(inner_out, "hidden_states") and inner_out.hidden_states is not None:
+                            print(f"[WeeLLM Qwen Debug] bypass hidden_states count={len(inner_out.hidden_states)}")
+                            final_hidden = inner_out.hidden_states[-1]
+                            print(
+                                f"[WeeLLM Qwen Debug] bypass final hidden shape={tuple(final_hidden.shape)} "
+                                f"device={final_hidden.device} dtype={final_hidden.dtype}"
+                            )
+                    except Exception as exc:
+                        print(f"[WeeLLM Qwen Debug] bypass output inspect failed: {exc}")
+
+                    return types.SimpleNamespace(
+                        hidden_states=inner_out.hidden_states,
+                        past_key_values=getattr(inner_out, "past_key_values", None),
+                        attentions=getattr(inner_out, "attentions", None),
+                        logits=None,
+                    )
+
+                return original_forward(*args, **kwargs)
+
+            self.model.forward = types.MethodType(debug_qwen_forward, self.model)
+        except Exception as exc:
+            print(f"[WeeLLM Qwen Debug] Unable to patch Qwen model forward: {exc}")
+
+        try:
+            from transformers import masking_utils
+
+            if not hasattr(masking_utils, "_weellm_original_create_causal_mask"):
+                masking_utils._weellm_original_create_causal_mask = masking_utils.create_causal_mask
+
+                def debug_create_causal_mask(*args, **kwargs):
+                    print("[WeeLLM Qwen Debug] create_causal_mask called")
+                    for key in ("input_embeds", "attention_mask", "cache_position", "past_key_values", "position_ids"):
+                        value = kwargs.get(key)
+                        if torch.is_tensor(value):
+                            print(f"[WeeLLM Qwen Debug] mask_kwargs[{key}] shape={tuple(value.shape)} device={value.device} dtype={value.dtype}")
+                        elif value is not None:
+                            print(f"[WeeLLM Qwen Debug] mask_kwargs[{key}] type={type(value).__name__}")
+                    return masking_utils._weellm_original_create_causal_mask(*args, **kwargs)
+
+                masking_utils.create_causal_mask = debug_create_causal_mask
+        except Exception as exc:
+            print(f"[WeeLLM Qwen Debug] Unable to patch create_causal_mask: {exc}")
 
     def _pre_hook(self, module: nn.Module, args):
         shard_name: str = module._qwen_te_shard
