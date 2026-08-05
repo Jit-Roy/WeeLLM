@@ -343,6 +343,42 @@ class DiffusionPipeline:
                 except Exception as exc:
                     print(f"[WeeLLM Qwen Debug] Unable to patch create_causal_mask: {exc}")
 
+        try:
+            execution_device = getattr(pipeline, "_execution_device", None)
+            pipeline_device = getattr(pipeline, "device", None)
+            print(f"[WeeLLM Debug] pipeline.device={pipeline_device} pipeline._execution_device={execution_device}")
+        except Exception as exc:
+            print(f"[WeeLLM Debug] Unable to inspect pipeline device properties: {exc}")
+
+        if hasattr(pipeline, "_get_qwen_prompt_embeds"):
+            original_get_qwen_prompt_embeds = pipeline._get_qwen_prompt_embeds
+
+            def debug_get_qwen_prompt_embeds(self_obj, *args, **kwargs):
+                print("[WeeLLM Qwen Debug] _get_qwen_prompt_embeds entered")
+                if args:
+                    print(f"[WeeLLM Qwen Debug] positional args count={len(args)} first={args[0]!r}")
+                for key in ("prompt", "device", "dtype"):
+                    value = kwargs.get(key)
+                    if value is not None:
+                        print(f"[WeeLLM Qwen Debug] kwarg {key}={value!r}")
+                try:
+                    print(
+                        f"[WeeLLM Qwen Debug] pipeline._execution_device at prompt encode={getattr(self_obj, '_execution_device', None)}"
+                    )
+                except Exception as exc:
+                    print(f"[WeeLLM Qwen Debug] unable to read _execution_device inside prompt embedder: {exc}")
+                result = original_get_qwen_prompt_embeds(*args, **kwargs)
+                try:
+                    if isinstance(result, tuple) and len(result) >= 2:
+                        prompt_embeds, prompt_mask = result[:2]
+                        print(f"[WeeLLM Qwen Debug] _get_qwen_prompt_embeds output embeds shape={tuple(prompt_embeds.shape)} device={prompt_embeds.device} dtype={prompt_embeds.dtype}")
+                        print(f"[WeeLLM Qwen Debug] _get_qwen_prompt_embeds output mask shape={tuple(prompt_mask.shape)} device={prompt_mask.device} dtype={prompt_mask.dtype}")
+                except Exception as exc:
+                    print(f"[WeeLLM Qwen Debug] unable to inspect prompt embed outputs: {exc}")
+                return result
+
+            pipeline._get_qwen_prompt_embeds = types.MethodType(debug_get_qwen_prompt_embeds, pipeline)
+
         def _move_scheduler_tensors_to_device(scheduler_obj, target_device):
             def _contains_tensor(value):
                 if torch.is_tensor(value):
