@@ -260,22 +260,63 @@ class DiffusionPipeline:
         pipeline = pipeline_cls(**diffusers_kwargs)
 
         def _move_scheduler_tensors_to_device(scheduler_obj, target_device):
+            def _move_value(value):
+                if torch.is_tensor(value):
+                    return value.to(target_device) if value.device.type != target_device else value
+                if isinstance(value, list):
+                    return [_move_value(item) for item in value]
+                if isinstance(value, tuple):
+                    return tuple(_move_value(item) for item in value)
+                if isinstance(value, dict):
+                    return {key: _move_value(item) for key, item in value.items()}
+                return value
+
             for attr_name, attr_value in list(vars(scheduler_obj).items()):
-                if torch.is_tensor(attr_value) and attr_value.device.type != target_device:
-                    setattr(scheduler_obj, attr_name, attr_value.to(target_device))
+                setattr(scheduler_obj, attr_name, _move_value(attr_value))
 
         if hasattr(pipeline, "scheduler"):
             _move_scheduler_tensors_to_device(pipeline.scheduler, device)
             if hasattr(pipeline.scheduler, "set_timesteps"):
                 original_set_timesteps = pipeline.scheduler.set_timesteps
+                original_step = pipeline.scheduler.step
 
                 def safe_set_timesteps(self_obj, *args, **kwargs):
                     result = original_set_timesteps(*args, **kwargs)
                     _move_scheduler_tensors_to_device(self_obj, device)
                     return result
 
+                def safe_step(self_obj, *args, **kwargs):
+                    args = list(args)
+                    tensor_device = None
+                    for value in args[:3]:
+                        if torch.is_tensor(value):
+                            tensor_device = value.device.type
+                            break
+                    if tensor_device is None:
+                        for key in ("model_output", "sample", "timestep"):
+                            value = kwargs.get(key)
+                            if torch.is_tensor(value):
+                                tensor_device = value.device.type
+                                break
+                    if tensor_device is None:
+                        tensor_device = device
+
+                    _move_scheduler_tensors_to_device(self_obj, tensor_device)
+
+                    for index, value in enumerate(args[:3]):
+                        if torch.is_tensor(value) and value.device.type != tensor_device:
+                            args[index] = value.to(tensor_device)
+                    for key, value in list(kwargs.items()):
+                        if torch.is_tensor(value) and value.device.type != tensor_device:
+                            kwargs[key] = value.to(tensor_device)
+
+                    result = original_step(*args, **kwargs)
+                    _move_scheduler_tensors_to_device(self_obj, tensor_device)
+                    return result
+
                 import types
                 pipeline.scheduler.set_timesteps = types.MethodType(safe_set_timesteps, pipeline.scheduler)
+                pipeline.scheduler.step = types.MethodType(safe_step, pipeline.scheduler)
         
         import types
         original_pipeline_to = pipeline.to
