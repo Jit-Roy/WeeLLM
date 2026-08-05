@@ -275,6 +275,27 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
                 # If we can't safely materialize, skip — the buffer may be large or complex.
                 pass
 
+        # Additionally, some models store control tensors as plain attributes (not registered buffers).
+        # Walk modules and replace any plain `torch.Tensor` attributes that are on 'meta' with
+        # device-backed zero tensors. Skip `nn.Parameter` to avoid touching model weights.
+        for mod in model.modules():
+            for attr_name, attr_val in list(mod.__dict__.items()):
+                try:
+                    if isinstance(attr_val, torch.Tensor) and not isinstance(attr_val, nn.Parameter):
+                        dev = getattr(attr_val, 'device', None)
+                        if dev is not None and dev.type == 'meta':
+                            shape = tuple(attr_val.shape) if hasattr(attr_val, 'shape') else None
+                            if shape is None:
+                                continue
+                            try:
+                                new_t = torch.zeros(shape, dtype=attr_val.dtype, device=device)
+                                setattr(mod, attr_name, new_t)
+                            except Exception:
+                                # best-effort; skip attributes we can't materialize
+                                continue
+                except Exception:
+                    continue
+
         layer_count = len(model.model.language_model.layers)
         print(f"    -> {layer_count} Qwen layers will stream on-demand.")
         report_memory("After Qwen text encoder init")
