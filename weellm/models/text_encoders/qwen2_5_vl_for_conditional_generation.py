@@ -229,16 +229,19 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             model = Qwen2_5_VLForConditionalGeneration(cfg)
         model.eval()
 
-        # Move any parameters or buffers still on 'meta' to the real device
-        for name, param in model.named_parameters():
-            if getattr(param, 'device', None) is not None and param.device.type == "meta":
-                if param.is_floating_point():
-                    set_module_tensor_to_device(model, name, device, value=param, dtype=dtype)
-                else:
-                    set_module_tensor_to_device(model, name, device, value=param)
-
+        # Move non-meta buffers (those with real storage) to the target device.
+        # Do NOT attempt to move parameters that are still on 'meta' (they have no data).
         for buf_name, buf in model.named_buffers():
-            if buf is not None and getattr(buf, 'device', None) is not None and buf.device.type == "meta":
+            if buf is None:
+                continue
+            dev = getattr(buf, 'device', None)
+            if dev is None:
+                continue
+            # skip buffers that are still meta (no data yet)
+            if dev.type == "meta":
+                continue
+            # move buffers that are on a different device to the target device
+            if dev.type != device:
                 if buf.is_floating_point():
                     set_module_tensor_to_device(model, buf_name, device, value=buf, dtype=dtype)
                 else:
