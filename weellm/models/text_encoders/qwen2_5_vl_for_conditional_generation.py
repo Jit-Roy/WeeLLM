@@ -258,6 +258,20 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         resident_sd = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
         _apply_state_dict(model, resident_sd, device, dtype)
         del resident_sd
+
+        # Some Qwen components (most notably lm_head) can remain on the target
+        # device but keep their original float32 dtype after loading. Normalize
+        # all resident floating-point parameters to the requested compute dtype
+        # so mixed-dtype matmuls do not fail in the prompt encoder.
+        for param_name, param in model.named_parameters():
+            if param is None:
+                continue
+            dev = getattr(param, "device", None)
+            if dev is None or dev.type == "meta":
+                continue
+            if param.is_floating_point() and param.dtype != dtype:
+                set_module_tensor_to_device(model, param_name, device, value=param, dtype=dtype)
+
         clean_memory(device)
 
         # Materialize any small control buffers that remain on 'meta' (e.g., cache position,
