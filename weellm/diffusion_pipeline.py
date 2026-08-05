@@ -62,6 +62,24 @@ class DiffusionPipeline:
 
         # 1. Tokenizers & Scheduler
         print("[1/4] Loading Tokenizers and Scheduler ...")
+        if "feature_extractor" in index:
+            try:
+                from transformers import AutoFeatureExtractor
+                diffusers_kwargs["feature_extractor"] = AutoFeatureExtractor.from_pretrained(
+                    str(model_dir), subfolder="feature_extractor"
+                )
+            except Exception as e:
+                print(f"Warning: Failed to load feature_extractor: {e}")
+
+        if "safety_checker" in index:
+            try:
+                from diffusers import StableDiffusionSafetyChecker
+                diffusers_kwargs["safety_checker"] = StableDiffusionSafetyChecker.from_pretrained(
+                    str(model_dir), subfolder="safety_checker"
+                )
+            except Exception as e:
+                print(f"Warning: Failed to load safety_checker: {e}")
+
         for key in ["tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4"]:
             if key in index:
                 from transformers import AutoTokenizer
