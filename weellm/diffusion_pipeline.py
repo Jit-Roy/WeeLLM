@@ -95,6 +95,7 @@ class DiffusionPipeline:
             "UMT5EncoderModel": "weellm.models.text_encoders.umt5_encoder_model",
             "Qwen2ForCausalLM": "weellm.models.text_encoders.qwen3_for_causal_lm",
             "Qwen3ForCausalLM": "weellm.models.text_encoders.qwen3_for_causal_lm",
+            "Qwen3Model": "weellm.models.text_encoders.qwen3_for_causal_lm",
             "Qwen2_5_VLForConditionalGeneration": "weellm.models.text_encoders.qwen2_5_vl_for_conditional_generation",
             "Qwen3VLModel": "weellm.models.text_encoders.qwen3_vl_model",
             "Mistral3ForConditionalGeneration": "weellm.models.text_encoders.mistral3_for_conditional_generation",
