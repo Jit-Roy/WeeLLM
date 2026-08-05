@@ -269,6 +269,24 @@ class DiffusionPipeline:
             except Exception as exc:
                 print(f"[WeeLLM Debug] Unable to summarize text_encoder tensors: {exc}")
 
+            if meta_params > 0:
+                real_device = torch.device(device)
+                pipeline_cls = pipeline.__class__
+
+                if not hasattr(pipeline_cls, "_weellm_original_execution_device"):
+                    pipeline_cls._weellm_original_execution_device = pipeline_cls._execution_device
+                    pipeline_cls._weellm_original_device = pipeline_cls.device
+
+                    def _forced_execution_device(self_obj):
+                        return real_device
+
+                    def _forced_device(self_obj):
+                        return real_device
+
+                    pipeline_cls._execution_device = property(_forced_execution_device)
+                    pipeline_cls.device = property(_forced_device)
+                    print(f"[WeeLLM Debug] Forced pipeline execution device to {real_device} because text_encoder still has meta weights.")
+
             if te.__class__.__name__ == "Qwen2_5_VLForConditionalGeneration":
                 import types
 
