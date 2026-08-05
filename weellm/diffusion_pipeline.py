@@ -623,6 +623,7 @@ class DiffusionPipeline:
                 
         # 7. Aggressive VRAM Defragmentation
         import types
+        import gc
         
         def print_weellm_vram(tag):
             import torch, psutil, os
