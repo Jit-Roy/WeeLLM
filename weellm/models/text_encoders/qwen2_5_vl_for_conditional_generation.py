@@ -543,6 +543,29 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         except Exception:
             pass
 
+        # Override the runtime dtype reported by the Qwen model instance so
+        # Diffusers prompt encoding uses bfloat16 instead of a meta float32 param.
+        try:
+            orig_cls = model.__class__
+            class _WeeLLMQwenDTypeModel(orig_cls):
+                @property
+                def dtype(self):
+                    return getattr(self, "_weellm_forced_dtype", dtype)
+
+            model.__class__ = _WeeLLMQwenDTypeModel
+            model._weellm_forced_dtype = dtype
+            if hasattr(model, "model") and hasattr(model.model, "language_model"):
+                lm_cls = model.model.language_model.__class__
+                class _WeeLLMQwenLanguageModelDType(lm_cls):
+                    @property
+                    def dtype(self):
+                        return getattr(self, "_weellm_forced_dtype", dtype)
+                model.model.language_model.__class__ = _WeeLLMQwenLanguageModelDType
+                model.model.language_model._weellm_forced_dtype = dtype
+            print(f"[WeeLLM Debug] Overrode model.dtype to {dtype}")
+        except Exception as exc:
+            print(f"[WeeLLM Debug] Failed to override model.dtype: {exc}")
+
         clean_memory(device)
 
         # Materialize any small control buffers that remain on 'meta' (e.g., cache position,
