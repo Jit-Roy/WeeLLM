@@ -296,21 +296,41 @@ class DiffusionPipeline:
         # 7. Aggressive VRAM Defragmentation
         import types
         
+        def print_weellm_vram(tag):
+            import torch, psutil, os
+            try:
+                alloc = torch.cuda.memory_allocated() / (1024**3)
+                res = torch.cuda.memory_reserved() / (1024**3)
+                ram = psutil.Process(os.getpid()).memory_info().rss / (1024**3)
+                print(f"[WeeLLM VRAM Track] {tag:^45} | Alloc: {alloc:.3f} GB | Reserved: {res:.3f} GB | RAM: {ram:.3f} GB")
+            except Exception:
+                pass
+        
         if hasattr(pipeline, "encode_prompt"):
             original_encode_prompt_vram = pipeline.encode_prompt
             def defrag_encode_prompt(self_obj, *args, **kwargs):
+                print_weellm_vram("Before Text Encoder")
                 res = original_encode_prompt_vram(*args, **kwargs)
+                print_weellm_vram("After Text Encoder (Before GC)")
+                import gc; gc.collect()
                 torch.cuda.empty_cache()
+                print_weellm_vram("After Text Encoder (After GC)")
                 return res
             pipeline.encode_prompt = types.MethodType(defrag_encode_prompt, pipeline)
             
         if hasattr(pipeline, "vae") and hasattr(pipeline.vae, "decode"):
             original_vae_decode_vram = pipeline.vae.decode
             def defrag_vae_decode(self_obj, *args, **kwargs):
+                print_weellm_vram("Before VAE Decode (Before GC)")
+                import gc; gc.collect()
                 torch.cuda.empty_cache()
+                print_weellm_vram("Before VAE Decode (After GC)")
                 res = original_vae_decode_vram(*args, **kwargs)
+                print_weellm_vram("After VAE Decode (Before GC)")
+                import gc; gc.collect()
                 torch.cuda.empty_cache()
+                print_weellm_vram("After VAE Decode (After GC)")
                 return res
             pipeline.vae.decode = types.MethodType(defrag_vae_decode, pipeline.vae)
-        
+            
         return pipeline
