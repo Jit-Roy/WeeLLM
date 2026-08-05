@@ -10,6 +10,7 @@ Uses the same accelerate-based set_module_tensor_to_device pattern as Flux2Trans
 
 import torch
 import torch.nn as nn
+import types
 
 from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
@@ -32,6 +33,30 @@ def _evict_params(model: nn.Module, param_names: list):
     """Move named parameters back to meta device (free VRAM)."""
     for name in param_names:
         set_module_tensor_to_device(model, name, "meta")
+
+
+def _patch_forward_input_device(model: nn.Module):
+    """Move UNet forward inputs onto the model device before execution."""
+    original_forward = model.forward
+
+    def patched_forward(self_obj, *args, **kwargs):
+        try:
+            model_device = next(self_obj.parameters()).device
+        except StopIteration:
+            model_device = torch.device("cpu")
+
+        args = list(args)
+        for index, value in enumerate(args[:4]):
+            if torch.is_tensor(value) and value.device != model_device:
+                args[index] = value.to(model_device)
+
+        for key, value in list(kwargs.items()):
+            if torch.is_tensor(value) and value.device != model_device:
+                kwargs[key] = value.to(model_device)
+
+        return original_forward(*args, **kwargs)
+
+    model.forward = types.MethodType(patched_forward, model)
 
 
 class UNet2DConditionModelStreamer:
@@ -132,6 +157,7 @@ class UNet2DConditionModelStreamer:
         _apply_state_dict(model, resident_sd, device, dtype)
         del resident_sd
         clean_memory(device)
+        _patch_forward_input_device(model)
         report_memory("After resident load")
 
         print(f"\nInstalled {len(model.down_blocks)} down blocks, 1 mid block, {len(model.up_blocks)} up blocks for streaming.")
