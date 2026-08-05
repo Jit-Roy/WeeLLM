@@ -229,10 +229,20 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             model = Qwen2_5_VLForConditionalGeneration(cfg)
         model.eval()
 
-        # Move meta buffers to device (buffers may be on 'meta' after init_empty_weights)
+        # Move any parameters or buffers still on 'meta' to the real device
+        for name, param in model.named_parameters():
+            if getattr(param, 'device', None) is not None and param.device.type == "meta":
+                if param.is_floating_point():
+                    set_module_tensor_to_device(model, name, device, value=param, dtype=dtype)
+                else:
+                    set_module_tensor_to_device(model, name, device, value=param)
+
         for buf_name, buf in model.named_buffers():
             if buf is not None and getattr(buf, 'device', None) is not None and buf.device.type == "meta":
-                set_module_tensor_to_device(model, buf_name, device, value=buf)
+                if buf.is_floating_point():
+                    set_module_tensor_to_device(model, buf_name, device, value=buf, dtype=dtype)
+                else:
+                    set_module_tensor_to_device(model, buf_name, device, value=buf)
 
         print("  [TE 3/3] Loading resident Qwen text encoder tensors to GPU ...")
         resident_keys = _get_resident_keys(seeker)
