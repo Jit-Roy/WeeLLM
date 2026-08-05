@@ -236,8 +236,7 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
 
         print("  [TE 3/3] Loading resident Qwen text encoder tensors to GPU ...")
         resident_keys = _get_resident_keys(seeker)
-        resident_sd = seeker.get_tensors(resident_keys, device=device,
-            cache_to_ram=cache_to_ram, dtype=dtype)
+        resident_sd = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
         _apply_state_dict(model, resident_sd, device, dtype)
         del resident_sd
         clean_memory(device)
