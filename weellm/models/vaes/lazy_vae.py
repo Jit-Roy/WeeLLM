@@ -83,6 +83,27 @@ class LazyVAEStreamer:
             del state_dict
             
             report_memory("After VAE Load")
+
+            def _cast_tensor(value):
+                if torch.is_tensor(value):
+                    if value.device.type != self.device or (value.is_floating_point() and value.dtype != self.dtype):
+                        return value.to(device=self.device, dtype=self.dtype if value.is_floating_point() else value.dtype)
+                return value
+
+            if args:
+                first_arg = args[0]
+                if torch.is_tensor(first_arg):
+                    print(
+                        f"[WeeLLM VAE Debug] decode input shape={tuple(first_arg.shape)} "
+                        f"device={first_arg.device} dtype={first_arg.dtype}"
+                    )
+                    args = ( _cast_tensor(first_arg), ) + args[1:]
+            if "z" in kwargs and torch.is_tensor(kwargs["z"]):
+                z = kwargs["z"]
+                print(
+                    f"[WeeLLM VAE Debug] decode kwarg z shape={tuple(z.shape)} device={z.device} dtype={z.dtype}"
+                )
+                kwargs["z"] = _cast_tensor(z)
             
             # 2. Execute actual decoding
             res = original_decode(*args, **kwargs)
