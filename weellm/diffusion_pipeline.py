@@ -408,8 +408,20 @@ class DiffusionPipeline:
                 try:
                     if isinstance(result, tuple) and len(result) >= 2:
                         prompt_embeds, prompt_mask = result[:2]
+                        target_dtype = getattr(getattr(self_obj, "transformer", None), "dtype", None)
+                        if target_dtype is None:
+                            target_dtype = getattr(getattr(self_obj, "text_encoder", None), "dtype", None)
+                        if target_dtype is None:
+                            target_dtype = torch.bfloat16
+                        if torch.is_tensor(prompt_embeds) and prompt_embeds.dtype != target_dtype:
+                            print(
+                                f"[WeeLLM Qwen Debug] casting prompt_embeds {prompt_embeds.dtype} -> {target_dtype} "
+                                f"to keep latent/transformer dtypes aligned"
+                            )
+                            prompt_embeds = prompt_embeds.to(dtype=target_dtype)
                         print(f"[WeeLLM Qwen Debug] _get_qwen_prompt_embeds output embeds shape={tuple(prompt_embeds.shape)} device={prompt_embeds.device} dtype={prompt_embeds.dtype}")
                         print(f"[WeeLLM Qwen Debug] _get_qwen_prompt_embeds output mask shape={tuple(prompt_mask.shape)} device={prompt_mask.device} dtype={prompt_mask.dtype}")
+                        result = (prompt_embeds, prompt_mask)
                 except Exception as exc:
                     print(f"[WeeLLM Qwen Debug] unable to inspect prompt embed outputs: {exc}")
                 return result
