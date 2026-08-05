@@ -259,12 +259,27 @@ class DiffusionPipeline:
         pipeline.enable_model_cpu_offload(device=device)
         # Also enable VAE tiling to prevent massive decoding spikes
         try:
-            if hasattr(pipeline, "enable_vae_tiling"):
+            if hasattr(pipeline, "vae") and hasattr(pipeline.vae, "enable_tiling"):
+                pipeline.vae.enable_tiling()
+                
+                # WeeLLM Aggressive Tiling: Force smaller tiles for massive VAEs (e.g. CogView4)
+                pipeline.vae.tile_sample_min_size = 256
+                if hasattr(pipeline.vae.config, "block_out_channels"):
+                    pipeline.vae.tile_latent_min_size = int(
+                        pipeline.vae.tile_sample_min_size / (2 ** (len(pipeline.vae.config.block_out_channels) - 1))
+                    )
+                
+                # WeeLLM Aggressive Datatype: Disable float32 upcasting which doubles VRAM usage
+                if hasattr(pipeline.vae.config, "force_upcast") and pipeline.vae.config.force_upcast:
+                    pipeline.vae.config.force_upcast = False
+                    pipeline.vae.to(dtype=torch_dtype)
+                    print("      -> [WeeLLM] Disabled VAE float32 upcasting to save 50% memory.")
+                
+                print("      -> [WeeLLM] Enabled Aggressive VAE Tiling (via VAE) to prevent decoding VRAM spikes.")
+                
+            elif hasattr(pipeline, "enable_vae_tiling"):
                 pipeline.enable_vae_tiling()
                 print("      -> [WeeLLM] Enabled VAE Tiling (via pipeline) to prevent decoding VRAM spikes.")
-            elif hasattr(pipeline, "vae") and hasattr(pipeline.vae, "enable_tiling"):
-                pipeline.vae.enable_tiling()
-                print("      -> [WeeLLM] Enabled VAE Tiling (via VAE) to prevent decoding VRAM spikes.")
         except Exception:
             pass
         
