@@ -63,22 +63,32 @@ class DiffusionPipeline:
         # 1. Tokenizers & Scheduler
         print("[1/4] Loading Tokenizers and Scheduler ...")
         if "feature_extractor" in index:
+            feature_extractor = None
             try:
-                from transformers import AutoFeatureExtractor
-                diffusers_kwargs["feature_extractor"] = AutoFeatureExtractor.from_pretrained(
+                from transformers import AutoImageProcessor
+                feature_extractor = AutoImageProcessor.from_pretrained(
                     str(model_dir), subfolder="feature_extractor"
                 )
-            except Exception as e:
-                print(f"Warning: Failed to load feature_extractor: {e}")
+            except Exception:
+                try:
+                    from transformers import CLIPImageProcessor
+                    feature_extractor = CLIPImageProcessor.from_pretrained(
+                        str(model_dir), subfolder="feature_extractor"
+                    )
+                except Exception as e:
+                    print(f"Warning: Failed to load feature_extractor, continuing with None: {e}")
+            diffusers_kwargs["feature_extractor"] = feature_extractor
 
         if "safety_checker" in index:
+            safety_checker = None
             try:
-                from diffusers import StableDiffusionSafetyChecker
-                diffusers_kwargs["safety_checker"] = StableDiffusionSafetyChecker.from_pretrained(
+                from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
+                safety_checker = StableDiffusionSafetyChecker.from_pretrained(
                     str(model_dir), subfolder="safety_checker"
                 )
             except Exception as e:
-                print(f"Warning: Failed to load safety_checker: {e}")
+                print(f"Warning: Failed to load safety_checker, continuing with None: {e}")
+            diffusers_kwargs["safety_checker"] = safety_checker
 
         for key in ["tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4"]:
             if key in index:
