@@ -1,6 +1,7 @@
 import os
 import json
 import importlib
+import gc
 from pathlib import Path
 from typing import Union
 import torch
@@ -258,6 +259,31 @@ class DiffusionPipeline:
         pipeline_cls = getattr(pipeline_module, pipeline_class_name)
         
         pipeline = pipeline_cls(**diffusers_kwargs)
+
+        def _evict_module_to_meta(module, label: str):
+            if module is None or not isinstance(module, torch.nn.Module):
+                return
+            try:
+                from accelerate.utils.modeling import set_module_tensor_to_device
+
+                evicted = 0
+                for name, param in module.named_parameters(recurse=True):
+                    dev = getattr(param, "device", None)
+                    if dev is not None and dev.type != "meta":
+                        set_module_tensor_to_device(module, name, "meta")
+                        evicted += 1
+
+                for name, buf in module.named_buffers(recurse=True):
+                    dev = getattr(buf, "device", None)
+                    if dev is not None and dev.type != "meta":
+                        set_module_tensor_to_device(module, name, "meta")
+
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print(f"[WeeLLM Offload] Evicted {label} tensors to meta (params={evicted}).")
+            except Exception as exc:
+                print(f"[WeeLLM Offload] Failed to evict {label}: {exc}")
 
         if hasattr(pipeline, "text_encoder") and pipeline.text_encoder is not None:
             te = pipeline.text_encoder
@@ -614,9 +640,14 @@ class DiffusionPipeline:
                 print_weellm_vram("Before Text Encoder")
                 res = original_encode_prompt_vram(*args, **kwargs)
                 print_weellm_vram("After Text Encoder (Before GC)")
-                import gc; gc.collect()
+                gc.collect()
                 torch.cuda.empty_cache()
                 print_weellm_vram("After Text Encoder (After GC)")
+
+                # Prompt embeds are computed at this point; free resident text encoder
+                # tensors so denoising starts from a lower baseline.
+                _evict_module_to_meta(getattr(self_obj, "text_encoder", None), "text_encoder")
+                print_weellm_vram("After Text Encoder Offload")
                 return res
             pipeline.encode_prompt = types.MethodType(defrag_encode_prompt, pipeline)
             
@@ -624,12 +655,17 @@ class DiffusionPipeline:
             original_vae_decode_vram = pipeline.vae.decode
             def defrag_vae_decode(self_obj, *args, **kwargs):
                 print_weellm_vram("Before VAE Decode (Before GC)")
-                import gc; gc.collect()
+                gc.collect()
                 torch.cuda.empty_cache()
                 print_weellm_vram("Before VAE Decode (After GC)")
+
+                # Denoising is done; evict transformer before lazy VAE load.
+                _evict_module_to_meta(getattr(pipeline, "transformer", None), "transformer")
+                print_weellm_vram("Before VAE Decode (After Transformer Offload)")
+
                 res = original_vae_decode_vram(*args, **kwargs)
                 print_weellm_vram("After VAE Decode (Before GC)")
-                import gc; gc.collect()
+                gc.collect()
                 torch.cuda.empty_cache()
                 print_weellm_vram("After VAE Decode (After GC)")
                 return res
