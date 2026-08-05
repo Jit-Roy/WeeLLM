@@ -73,16 +73,18 @@ class DiffusionPipeline:
         scheduler_cls = getattr(importlib.import_module("diffusers"), index["scheduler"][1])
         diffusers_kwargs["scheduler"] = scheduler_cls.from_pretrained(str(model_dir), subfolder="scheduler")
         
-        # 2. VAE (Resident on GPU)
-        print("\n[2/4] Loading VAE (resident on GPU) ...")
-        vae_cls = getattr(importlib.import_module("diffusers"), index["vae"][1])
+        # 2. VAE (Lazy Loaded on Meta Device)
+        print("\n[2/4] Initializing VAE (Lazy loading on meta device) ...")
+        from weellm.models.vaes.lazy_vae import LazyVAEStreamer
         vae_dir = model_dir / "vae"
-        has_fp16 = (vae_dir / "diffusion_pytorch_model.fp16.safetensors").exists()
         
-        if has_fp16:
-            diffusers_kwargs["vae"] = vae_cls.from_pretrained(str(model_dir), subfolder="vae", torch_dtype=torch_dtype, variant="fp16", use_safetensors=True).to(device)
-        else:
-            diffusers_kwargs["vae"] = vae_cls.from_pretrained(str(model_dir), subfolder="vae", torch_dtype=torch_dtype, use_safetensors=True).to(device)
+        lazy_vae = LazyVAEStreamer.from_pretrained(
+            vae_dir,
+            device=device,
+            dtype=torch_dtype,
+            cache_to_ram=cache_to_ram
+        )
+        diffusers_kwargs["vae"] = lazy_vae.model
 
         # 3. Text Encoders (Streamed or Resident)
         print("\n[3/4] Preparing Text Encoders ...")
@@ -255,8 +257,8 @@ class DiffusionPipeline:
 
         
         # 5. Apply the Aggressive RAM Eviction Optimization
-        print("\n[5/5] Applying Aggressive RAM Eviction (Model CPU Offload)...")
-        pipeline.enable_model_cpu_offload(device=device)
+        print("\n[5/5] Applying Aggressive RAM Eviction...")
+        # pipeline.enable_model_cpu_offload(device=device) # Removed: this moves the VAE to CPU RAM, inflating RAM by 2GB!
         # Also enable VAE tiling to prevent massive decoding spikes
         try:
             if hasattr(pipeline, "vae") and hasattr(pipeline.vae, "enable_tiling"):

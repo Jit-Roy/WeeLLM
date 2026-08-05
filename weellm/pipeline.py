@@ -109,18 +109,18 @@ class WeePipeline(BasePipeline):
         scheduler_cls = getattr(importlib.import_module("diffusers"), index["scheduler"][1])
         scheduler = scheduler_cls.from_pretrained(str(model_dir), subfolder="scheduler")
         
-        # 2. VAE (Resident on GPU)
-        print("\n[2/4] Loading VAE (resident on GPU) ...")
-        vae_cls = getattr(importlib.import_module("diffusers"), index["vae"][1])
-        
-        # Check if fp16 variant exists to prevent diffusers from logging fetch errors
+        # 2. VAE (Lazy Loaded on Meta Device)
+        print("\n[2/4] Initializing VAE (Lazy loading on meta device) ...")
+        from weellm.models.vaes.lazy_vae import LazyVAEStreamer
         vae_dir = model_dir / "vae"
-        has_fp16 = (vae_dir / "diffusion_pytorch_model.fp16.safetensors").exists()
         
-        if has_fp16:
-            vae = vae_cls.from_pretrained(str(model_dir), subfolder="vae", torch_dtype=dtype, variant="fp16", use_safetensors=True).to(device)
-        else:
-            vae = vae_cls.from_pretrained(str(model_dir), subfolder="vae", torch_dtype=dtype, use_safetensors=True).to(device)
+        lazy_vae = LazyVAEStreamer.from_pretrained(
+            vae_dir,
+            device=device,
+            dtype=dtype,
+            cache_to_ram=cache_to_ram
+        )
+        vae = lazy_vae.model
 
         # 3. Text Encoders (Streamed or Resident)
         print("\n[3/4] Preparing Text Encoders ...")
