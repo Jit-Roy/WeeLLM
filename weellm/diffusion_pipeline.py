@@ -449,8 +449,14 @@ class DiffusionPipeline:
                 original_set_timesteps = pipeline.scheduler.set_timesteps
                 original_step = pipeline.scheduler.step
 
-                def safe_set_timesteps(self_obj, *args, **kwargs):
-                    result = original_set_timesteps(*args, **kwargs)
+                def safe_set_timesteps(self_obj, num_inference_steps=None, device=None, sigmas=None, mu=None, timesteps=None):
+                    result = original_set_timesteps(
+                        num_inference_steps=num_inference_steps,
+                        device=device,
+                        sigmas=sigmas,
+                        mu=mu,
+                        timesteps=timesteps,
+                    )
                     _move_scheduler_tensors_to_device(self_obj, device)
                     return result
 
