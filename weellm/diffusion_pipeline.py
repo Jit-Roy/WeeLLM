@@ -260,6 +260,15 @@ class DiffusionPipeline:
         pipeline = pipeline_cls(**diffusers_kwargs)
 
         def _move_scheduler_tensors_to_device(scheduler_obj, target_device):
+            def _contains_tensor(value):
+                if torch.is_tensor(value):
+                    return True
+                if isinstance(value, (list, tuple)):
+                    return any(_contains_tensor(item) for item in value)
+                if isinstance(value, dict):
+                    return any(_contains_tensor(item) for item in value.values())
+                return False
+
             def _move_value(value):
                 if torch.is_tensor(value):
                     return value.to(target_device) if value.device.type != target_device else value
@@ -272,7 +281,10 @@ class DiffusionPipeline:
                 return value
 
             for attr_name, attr_value in list(vars(scheduler_obj).items()):
-                setattr(scheduler_obj, attr_name, _move_value(attr_value))
+                if attr_name == "config":
+                    continue
+                if _contains_tensor(attr_value):
+                    setattr(scheduler_obj, attr_name, _move_value(attr_value))
 
         if hasattr(pipeline, "scheduler"):
             _move_scheduler_tensors_to_device(pipeline.scheduler, device)
