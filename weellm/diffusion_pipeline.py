@@ -319,6 +319,43 @@ class DiffusionPipeline:
                             print(f"[WeeLLM Qwen Debug] self.model.rope_deltas={type(rope_deltas).__name__ if rope_deltas is not None else 'None'}")
                     except Exception as exc:
                         print(f"[WeeLLM Qwen Debug] Unable to inspect rope_deltas: {exc}")
+
+                    if kwargs.get("pixel_values") is None and kwargs.get("pixel_values_videos") is None:
+                        print("[WeeLLM Qwen Debug] Using pure-text bypass through inner language_model; lm_head is skipped.")
+                        inner_kwargs = {
+                            "input_ids": kwargs.get("input_ids"),
+                            "attention_mask": kwargs.get("attention_mask"),
+                            "position_ids": kwargs.get("position_ids"),
+                            "past_key_values": kwargs.get("past_key_values"),
+                            "inputs_embeds": kwargs.get("inputs_embeds"),
+                            "use_cache": False,
+                            "output_attentions": kwargs.get("output_attentions", False),
+                            "output_hidden_states": True,
+                            "return_dict": True,
+                            "cache_position": kwargs.get("cache_position"),
+                        }
+                        inner_kwargs = {k: v for k, v in inner_kwargs.items() if v is not None}
+                        inner_out = self_obj.model.language_model(**inner_kwargs)
+                        try:
+                            if hasattr(inner_out, "hidden_states") and inner_out.hidden_states is not None:
+                                print(f"[WeeLLM Qwen Debug] bypass hidden_states count={len(inner_out.hidden_states)}")
+                                final_hidden = inner_out.hidden_states[-1]
+                                print(
+                                    f"[WeeLLM Qwen Debug] bypass final hidden shape={tuple(final_hidden.shape)} "
+                                    f"device={final_hidden.device} dtype={final_hidden.dtype}"
+                                )
+                        except Exception as exc:
+                            print(f"[WeeLLM Qwen Debug] bypass output inspect failed: {exc}")
+
+                        import types as _types
+
+                        return _types.SimpleNamespace(
+                            hidden_states=inner_out.hidden_states,
+                            past_key_values=getattr(inner_out, "past_key_values", None),
+                            attentions=getattr(inner_out, "attentions", None),
+                            logits=None,
+                        )
+
                     return original_forward(*args, **kwargs)
 
                 te.forward = types.MethodType(debug_qwen_forward, te)

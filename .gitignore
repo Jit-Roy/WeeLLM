@@ -69,6 +69,7 @@ test_ideogram.py
 *.pth
 *.ckpt
 *.pkl
+*.txt
 
 # Ignore shard directories created by WeeLLM's splitter
 **/splitted_model/
