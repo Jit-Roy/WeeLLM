@@ -272,6 +272,26 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             if param.is_floating_point() and param.dtype != dtype:
                 set_module_tensor_to_device(model, param_name, device, value=param, dtype=dtype)
 
+        # Qwen's tied lm_head can still retain float32 after the generic pass above.
+        # Cast it explicitly so the prompt encoder and language model agree on dtype.
+        if hasattr(model, "lm_head") and isinstance(model.lm_head, nn.Module):
+            try:
+                model.lm_head.to(device=device, dtype=dtype)
+            except Exception:
+                pass
+        if hasattr(model, "model") and hasattr(model.model, "language_model") and hasattr(model.model.language_model, "lm_head"):
+            try:
+                model.model.language_model.lm_head.to(device=device, dtype=dtype)
+            except Exception:
+                pass
+
+        try:
+            lm_head = getattr(model, "lm_head", None)
+            if lm_head is not None and hasattr(lm_head, "weight"):
+                print(f"[WeeLLM Debug] lm_head dtype after normalization: {lm_head.weight.dtype}")
+        except Exception:
+            pass
+
         clean_memory(device)
 
         # Materialize any small control buffers that remain on 'meta' (e.g., cache position,
