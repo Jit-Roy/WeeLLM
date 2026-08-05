@@ -296,6 +296,31 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
                 except Exception:
                     continue
 
+        # Diagnostic: report any remaining tensors that are still on the 'meta' device.
+        meta_items = []
+        for mod in model.modules():
+            for name, val in list(mod.__dict__.items()):
+                try:
+                    if isinstance(val, torch.Tensor):
+                        dev = getattr(val, 'device', None)
+                        if dev is not None and dev.type == 'meta':
+                            meta_items.append((mod.__class__.__name__, name, tuple(val.shape), str(val.dtype)))
+                except Exception:
+                    continue
+
+        for buf_name, buf in model.named_buffers():
+            try:
+                dev = getattr(buf, 'device', None)
+                if dev is not None and dev.type == 'meta':
+                    meta_items.append((model.__class__.__name__, f"buffer:{buf_name}", tuple(buf.shape), str(buf.dtype)))
+            except Exception:
+                continue
+
+        if meta_items:
+            print("[WeeLLM Debug] Remaining meta tensors after initialization:")
+            for mclass, aname, shape, dtype in meta_items:
+                print(f"  - {mclass}.{aname} shape={shape} dtype={dtype}")
+
         layer_count = len(model.model.language_model.layers)
         print(f"    -> {layer_count} Qwen layers will stream on-demand.")
         report_memory("After Qwen text encoder init")
