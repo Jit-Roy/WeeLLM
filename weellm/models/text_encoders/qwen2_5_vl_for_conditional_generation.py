@@ -169,10 +169,16 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             return_tensors="pt",
         ).to(self.device)
 
-        out = self.model(
+        # Use the inner language model directly for pure-text prompts.
+        # The top-level Qwen2.5-VL wrapper routes through multimodal masking logic,
+        # which can inherit meta-device state from the vision stack even when no
+        # image inputs are involved.
+        out = self.model.model.language_model(
             input_ids=tokens.input_ids,
             attention_mask=tokens.attention_mask,
             output_hidden_states=True,
+            use_cache=False,
+            return_dict=True,
         )
         hidden = out.hidden_states[-1]  # (B, seq, hidden)
 
@@ -320,6 +326,60 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             print("[WeeLLM Debug] Remaining meta tensors after initialization:")
             for mclass, aname, shape, dtype in meta_items:
                 print(f"  - {mclass}.{aname} shape={shape} dtype={dtype}")
+
+        # Deep-scan object attributes (best-effort) to find meta tensors inside helper objects
+        # such as Cache/past_key_values which are not nn.Modules and weren't covered above.
+        def _scan_and_materialize(root_obj, max_depth=3):
+            seen = set()
+            queue = [(root_obj, 0, None, None)]  # (obj, depth, parent_obj, attr_name_or_index)
+
+            while queue:
+                obj, depth, parent, name = queue.pop(0)
+                if id(obj) in seen or depth > max_depth:
+                    continue
+                seen.add(id(obj))
+
+                # Inspect tensors directly
+                if isinstance(obj, torch.Tensor):
+                    try:
+                        dev = getattr(obj, 'device', None)
+                        if dev is not None and dev.type == 'meta':
+                            # attempt to replace on parent
+                            if parent is not None and name is not None:
+                                try:
+                                    shape = tuple(obj.shape)
+                                    new_t = torch.zeros(shape, dtype=obj.dtype, device=device)
+                                    if isinstance(parent, dict):
+                                        parent[name] = new_t
+                                    elif isinstance(name, int) and isinstance(parent, (list, tuple)):
+                                        if isinstance(parent, list):
+                                            parent[name] = new_t
+                                    else:
+                                        setattr(parent, name, new_t)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    continue
+
+                # Iterate attributes for non-primitive objects
+                try:
+                    if isinstance(obj, dict):
+                        for k, v in list(obj.items()):
+                            queue.append((v, depth + 1, obj, k))
+                    elif isinstance(obj, (list, tuple, set)):
+                        for idx, v in enumerate(list(obj)):
+                            queue.append((v, depth + 1, obj, idx))
+                    else:
+                        for attr, val in list(getattr(obj, '__dict__', {}).items()):
+                            queue.append((val, depth + 1, obj, attr))
+                except Exception:
+                    continue
+
+        try:
+            _scan_and_materialize(model, max_depth=4)
+        except Exception:
+            pass
 
         layer_count = len(model.model.language_model.layers)
         print(f"    -> {layer_count} Qwen layers will stream on-demand.")
