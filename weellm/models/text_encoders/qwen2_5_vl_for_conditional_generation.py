@@ -254,6 +254,27 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         del resident_sd
         clean_memory(device)
 
+        # Materialize any small control buffers that remain on 'meta' (e.g., cache position,
+        # cumulative length) by creating a zero tensor with the same shape/dtype on the target device.
+        # This avoids downstream code trying to `.to(device=meta_device)` which fails.
+        for buf_name, buf in model.named_buffers():
+            if buf is None:
+                continue
+            dev = getattr(buf, 'device', None)
+            if dev is None or dev.type != 'meta':
+                continue
+            # create a device-backed tensor with the same shape/dtype
+            try:
+                shape = tuple(buf.shape)
+            except Exception:
+                continue
+            try:
+                new_buf = torch.zeros(shape, dtype=buf.dtype, device=device)
+                set_module_tensor_to_device(model, buf_name, device, value=new_buf)
+            except Exception:
+                # If we can't safely materialize, skip — the buffer may be large or complex.
+                pass
+
         layer_count = len(model.model.language_model.layers)
         print(f"    -> {layer_count} Qwen layers will stream on-demand.")
         report_memory("After Qwen text encoder init")
