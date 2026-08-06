@@ -41,12 +41,11 @@ def _get_layer_keys(seeker, prefix: str) -> List[str]:
 
 
 def _get_resident_keys(seeker) -> List[str]:
-    """Everything except the transformer layer blocks, visual encoder, and lm_head."""
+    """Everything except the transformer layer blocks and visual encoder."""
     return [
         k for k in seeker.weight_map.keys() 
         if not k.startswith("model.layers.") 
-        and not k.startswith("visual.") 
-        and not k.startswith("lm_head.")
+        and not k.startswith("visual.")
     ]
 
 
@@ -516,5 +515,6 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             max_length=max_length,
         )
         # Store resident key list so evict_resident() can free them after encoding.
+        # This now includes lm_head, which can otherwise remain on GPU due to weight tying.
         instance._resident_keys = resident_keys
         return instance
