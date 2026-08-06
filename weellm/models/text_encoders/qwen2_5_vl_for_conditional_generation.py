@@ -13,7 +13,6 @@ hidden_states[-1], masks to only actual tokens, and drops the template prefix.
 from __future__ import annotations
 
 import threading
-import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -35,44 +34,6 @@ PROMPT_TEMPLATE = (
 )
 # Tokens to drop from the front (the system/user template prefix before actual answer)
 PROMPT_TEMPLATE_DROP_IDX = 34
-
-
-def _tensor_debug(value, name: str) -> str:
-    if torch.is_tensor(value):
-        try:
-            shape = tuple(value.shape)
-        except Exception:
-            shape = "<?>"
-        return f"{name}: shape={shape} device={value.device} dtype={value.dtype}"
-    return f"{name}: type={type(value).__name__}"
-
-
-def _module_tensor_summary(module: nn.Module, prefix: str = ""):
-    try:
-        param_total = 0
-        meta_params = []
-        for name, param in module.named_parameters(recurse=True):
-            param_total += 1
-            dev = getattr(param, "device", None)
-            if dev is not None and dev.type == "meta":
-                meta_params.append(name)
-        buffer_total = 0
-        meta_buffers = []
-        for name, buf in module.named_buffers(recurse=True):
-            buffer_total += 1
-            dev = getattr(buf, "device", None)
-            if dev is not None and dev.type == "meta":
-                meta_buffers.append(name)
-        print(
-            f"[WeeLLM Qwen Debug] {prefix}params={param_total} meta_params={len(meta_params)} "
-            f"buffers={buffer_total} meta_buffers={len(meta_buffers)}"
-        )
-        if meta_params:
-            print(f"[WeeLLM Qwen Debug] {prefix}meta param samples: {meta_params[:12]}")
-        if meta_buffers:
-            print(f"[WeeLLM Qwen Debug] {prefix}meta buffer samples: {meta_buffers[:12]}")
-    except Exception as exc:
-        print(f"[WeeLLM Qwen Debug] {prefix}summary failed: {exc}")
 
 
 def _get_layer_keys(seeker, prefix: str) -> List[str]:
@@ -159,92 +120,15 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             layer.register_forward_pre_hook(self._pre_hook)
             layer.register_forward_hook(self._post_hook)
 
-        try:
-            language_model = self.model.model.language_model
-            original_language_forward = language_model.forward
-
-            def debug_language_forward(self_obj, *args, **kwargs):
-                print("[WeeLLM Qwen Debug] language_model.forward entered")
-                for key in (
-                    "input_ids",
-                    "attention_mask",
-                    "position_ids",
-                    "past_key_values",
-                    "inputs_embeds",
-                    "cache_position",
-                    "rope_deltas",
-                ):
-                    value = kwargs.get(key)
-                    if value is not None:
-                        print(f"[WeeLLM Qwen Debug] language_model.{_tensor_debug(value, key)}")
-                try:
-                    print(
-                        f"[WeeLLM Qwen Debug] language_model.embed_tokens.weight dtype={self_obj.embed_tokens.weight.dtype} "
-                        f"device={self_obj.embed_tokens.weight.device}"
-                    )
-                except Exception as exc:
-                    print(f"[WeeLLM Qwen Debug] language_model.embed_tokens inspect failed: {exc}")
-                return original_language_forward(*args, **kwargs)
-
-            language_model.forward = types.MethodType(debug_language_forward, language_model)
-        except Exception as exc:
-            print(f"[WeeLLM Qwen Debug] Unable to patch language_model.forward: {exc}")
-
-        try:
-            if hasattr(self.model, "lm_head") and isinstance(self.model.lm_head, nn.Module):
-                lm_head = self.model.lm_head
-                original_lm_forward = lm_head.forward
-
-                def debug_lm_forward(self_obj, input, *args, **kwargs):
-                    print("[WeeLLM Qwen Debug] lm_head.forward entered")
-                    print(f"[WeeLLM Qwen Debug] { _tensor_debug(input, 'lm_head.input') }")
-                    try:
-                        print(
-                            f"[WeeLLM Qwen Debug] lm_head.weight dtype={self_obj.weight.dtype} device={self_obj.weight.device} "
-                            f"shape={tuple(self_obj.weight.shape)}"
-                        )
-                    except Exception as exc:
-                        print(f"[WeeLLM Qwen Debug] lm_head inspect failed: {exc}")
-                    return original_lm_forward(input, *args, **kwargs)
-
-                lm_head.forward = types.MethodType(debug_lm_forward, lm_head)
-        except Exception as exc:
-            print(f"[WeeLLM Qwen Debug] Unable to patch lm_head.forward: {exc}")
-
     def _install_qwen_root_forward_patch(self):
+        """Patch the root forward to bypass the multimodal masking logic for pure-text prompts."""
         try:
             original_forward = self.model.forward
 
-            def debug_qwen_forward(self_obj, *args, **kwargs):
-                print("[WeeLLM Qwen Debug] Qwen2_5_VLForConditionalGeneration.forward called")
-                for key in (
-                    "input_ids",
-                    "attention_mask",
-                    "position_ids",
-                    "past_key_values",
-                    "inputs_embeds",
-                    "image_grid_thw",
-                    "video_grid_thw",
-                    "second_per_grid_ts",
-                    "rope_deltas",
-                    "cache_position",
-                ):
-                    value = kwargs.get(key)
-                    if torch.is_tensor(value):
-                        print(f"[WeeLLM Qwen Debug] kwargs[{key}] shape={tuple(value.shape)} device={value.device} dtype={value.dtype}")
-                    elif value is not None:
-                        print(f"[WeeLLM Qwen Debug] kwargs[{key}] type={type(value).__name__}")
-                try:
-                    rope_deltas = getattr(self_obj.model, "rope_deltas", None)
-                    if torch.is_tensor(rope_deltas):
-                        print(f"[WeeLLM Qwen Debug] self_obj.model.rope_deltas shape={tuple(rope_deltas.shape)} device={rope_deltas.device} dtype={rope_deltas.dtype}")
-                    else:
-                        print(f"[WeeLLM Qwen Debug] self_obj.model.rope_deltas={type(rope_deltas).__name__ if rope_deltas is not None else 'None'}")
-                except Exception as exc:
-                    print(f"[WeeLLM Qwen Debug] Unable to inspect rope_deltas: {exc}")
-
+            def patched_qwen_forward(self_obj, *args, **kwargs):
                 if kwargs.get("pixel_values") is None and kwargs.get("pixel_values_videos") is None:
-                    print("[WeeLLM Qwen Debug] Using pure-text bypass through inner language_model; lm_head is skipped.")
+                    # Pure-text bypass: route through inner language_model directly,
+                    # skipping the multimodal masking logic that may inherit meta-device state.
                     inner_kwargs = {
                         "input_ids": kwargs.get("input_ids"),
                         "attention_mask": kwargs.get("attention_mask"),
@@ -259,18 +143,8 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
                     }
                     inner_kwargs = {k: v for k, v in inner_kwargs.items() if v is not None}
                     inner_out = self_obj.model.language_model(**inner_kwargs)
-                    try:
-                        if hasattr(inner_out, "hidden_states") and inner_out.hidden_states is not None:
-                            print(f"[WeeLLM Qwen Debug] bypass hidden_states count={len(inner_out.hidden_states)}")
-                            final_hidden = inner_out.hidden_states[-1]
-                            print(
-                                f"[WeeLLM Qwen Debug] bypass final hidden shape={tuple(final_hidden.shape)} "
-                                f"device={final_hidden.device} dtype={final_hidden.dtype}"
-                            )
-                    except Exception as exc:
-                        print(f"[WeeLLM Qwen Debug] bypass output inspect failed: {exc}")
-
-                    return types.SimpleNamespace(
+                    import types as _types
+                    return _types.SimpleNamespace(
                         hidden_states=inner_out.hidden_states,
                         past_key_values=getattr(inner_out, "past_key_values", None),
                         attentions=getattr(inner_out, "attentions", None),
@@ -279,39 +153,15 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
 
                 return original_forward(*args, **kwargs)
 
-            self.model.forward = types.MethodType(debug_qwen_forward, self.model)
-        except Exception as exc:
-            print(f"[WeeLLM Qwen Debug] Unable to patch Qwen model forward: {exc}")
-
-        try:
-            from transformers import masking_utils
-
-            if not hasattr(masking_utils, "_weellm_original_create_causal_mask"):
-                masking_utils._weellm_original_create_causal_mask = masking_utils.create_causal_mask
-
-                def debug_create_causal_mask(*args, **kwargs):
-                    print("[WeeLLM Qwen Debug] create_causal_mask called")
-                    for key in ("input_embeds", "attention_mask", "cache_position", "past_key_values", "position_ids"):
-                        value = kwargs.get(key)
-                        if torch.is_tensor(value):
-                            print(f"[WeeLLM Qwen Debug] mask_kwargs[{key}] shape={tuple(value.shape)} device={value.device} dtype={value.dtype}")
-                        elif value is not None:
-                            print(f"[WeeLLM Qwen Debug] mask_kwargs[{key}] type={type(value).__name__}")
-                    return masking_utils._weellm_original_create_causal_mask(*args, **kwargs)
-
-                masking_utils.create_causal_mask = debug_create_causal_mask
-        except Exception as exc:
-            print(f"[WeeLLM Qwen Debug] Unable to patch create_causal_mask: {exc}")
+            import types
+            self.model.forward = types.MethodType(patched_qwen_forward, self.model)
+        except Exception:
+            pass
 
     def _pre_hook(self, module: nn.Module, args):
         shard_name: str = module._qwen_te_shard
         pos = self._shard_name_to_pos[shard_name]
         layer_keys = _get_layer_keys(self.seeker, shard_name)
-
-        print(
-            f"[WeeLLM Qwen Debug] layer pre-hook shard={shard_name} pos={pos} "
-            f"requesting={len(layer_keys)} tensors prefetch={'on' if self.prefetch else 'off'}"
-        )
 
         with self._lock:
             if self.prefetch and self._next_future_name == shard_name and self._next_future is not None:
@@ -324,16 +174,6 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         _apply_state_dict(self.model, sd, self.device, self.dtype)
         module._qwen_te_loaded = list(sd.keys())
 
-        loaded_shapes = []
-        for name in module._qwen_te_loaded[:8]:
-            try:
-                tensor = sd[name]
-                loaded_shapes.append(f"{name}:{tuple(tensor.shape)}:{tensor.dtype}")
-            except Exception:
-                continue
-        if loaded_shapes:
-            print(f"[WeeLLM Qwen Debug] layer {shard_name} loaded samples: {loaded_shapes}")
-
         next_pos = pos + 1
         if self.prefetch and self._executor is not None and next_pos < len(self._shard_order):
             next_name = self._shard_order[next_pos]
@@ -345,7 +185,6 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
                 self._next_future_name = next_name
 
     def _post_hook(self, module: nn.Module, args, output):
-        print(f"[WeeLLM Qwen Debug] layer post-hook shard={module._qwen_te_shard}")
         _evict_params(self.model, getattr(module, "_qwen_te_loaded", []))
         module._qwen_te_loaded = []
         return output
@@ -361,12 +200,6 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         drop_idx = PROMPT_TEMPLATE_DROP_IDX
         txt = [PROMPT_TEMPLATE.format(p) for p in prompt]
 
-        print(
-            f"[WeeLLM Qwen Debug] encode prompt_count={len(prompt)} drop_idx={drop_idx} "
-            f"max_length={self.max_length} device={self.device} dtype={self.dtype}"
-        )
-        print(f"[WeeLLM Qwen Debug] prompt preview={prompt[0][:160] if prompt else ''}")
-
         tokens = self.tokenizer(
             txt,
             max_length=self.max_length + drop_idx,
@@ -374,17 +207,6 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             truncation=True,
             return_tensors="pt",
         ).to(self.device)
-
-        print(f"[WeeLLM Qwen Debug] tokenizer.input_ids {_tensor_debug(tokens.input_ids, 'input_ids')}")
-        print(f"[WeeLLM Qwen Debug] tokenizer.attention_mask {_tensor_debug(tokens.attention_mask, 'attention_mask')}")
-
-        try:
-            print(
-                f"[WeeLLM Qwen Debug] root lm_head weight dtype={self.model.lm_head.weight.dtype} "
-                f"device={self.model.lm_head.weight.device}"
-            )
-        except Exception as exc:
-            print(f"[WeeLLM Qwen Debug] root lm_head inspect failed: {exc}")
 
         # Use the inner language model directly for pure-text prompts.
         # The top-level Qwen2.5-VL wrapper routes through multimodal masking logic,
@@ -397,19 +219,7 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             use_cache=False,
             return_dict=True,
         )
-        print(f"[WeeLLM Qwen Debug] language_model output type={type(out).__name__}")
-        try:
-            if hasattr(out, "hidden_states") and out.hidden_states is not None:
-                print(f"[WeeLLM Qwen Debug] hidden_states count={len(out.hidden_states)}")
-                for idx, hidden_tensor in enumerate(out.hidden_states[-3:]):
-                    print(f"[WeeLLM Qwen Debug] hidden_states[-{3 - idx}] {_tensor_debug(hidden_tensor, 'hidden')} ")
-            if hasattr(out, "logits") and out.logits is not None:
-                print(f"[WeeLLM Qwen Debug] logits {_tensor_debug(out.logits, 'logits')}")
-        except Exception as exc:
-            print(f"[WeeLLM Qwen Debug] output inspection failed: {exc}")
         hidden = out.hidden_states[-1]  # (B, seq, hidden)
-
-        print(f"[WeeLLM Qwen Debug] final hidden {_tensor_debug(hidden, 'hidden')}")
 
         # Extract non-padded tokens for each item then re-pad to same length
         split_hidden = []
@@ -417,8 +227,6 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         for b in range(hidden.shape[0]):
             mask_b = attn[b].bool()
             split_hidden.append(hidden[b][mask_b])
-
-        print(f"[WeeLLM Qwen Debug] per-sample token lengths={[item.size(0) for item in split_hidden]}")
 
         split_hidden = [e[drop_idx:] for e in split_hidden]
         attn_masks = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden]
@@ -437,9 +245,6 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         # Truncate to max_length
         prompt_embeds = prompt_embeds[:, :self.max_length]
         encoder_attention_mask = encoder_attention_mask[:, :self.max_length]
-
-        print(f"[WeeLLM Qwen Debug] prompt_embeds {_tensor_debug(prompt_embeds, 'prompt_embeds')}")
-        print(f"[WeeLLM Qwen Debug] encoder_attention_mask {_tensor_debug(encoder_attention_mask, 'encoder_attention_mask')}")
 
         return prompt_embeds, encoder_attention_mask
 
@@ -519,27 +324,10 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             except Exception:
                 pass
 
-        try:
-            lm_head = getattr(model, "lm_head", None)
-            if lm_head is not None and hasattr(lm_head, "weight"):
-                print(f"[WeeLLM Debug] lm_head dtype after normalization: {lm_head.weight.dtype}")
-        except Exception:
-            pass
-
         # Re-tie the head after loading, so the shared output projection follows
         # the already-loaded embed_tokens tensor instead of preserving its init dtype.
         try:
             model.tie_weights()
-        except Exception:
-            pass
-
-        try:
-            lm_head = getattr(model, "lm_head", None)
-            if lm_head is not None and hasattr(lm_head, "weight"):
-                print(
-                    f"[WeeLLM Debug] lm_head dtype after tie_weights: {lm_head.weight.dtype} "
-                    f"device={lm_head.weight.device}"
-                )
         except Exception:
             pass
 
@@ -562,9 +350,8 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
                         return getattr(self, "_weellm_forced_dtype", dtype)
                 model.model.language_model.__class__ = _WeeLLMQwenLanguageModelDType
                 model.model.language_model._weellm_forced_dtype = dtype
-            print(f"[WeeLLM Debug] Overrode model.dtype to {dtype}")
-        except Exception as exc:
-            print(f"[WeeLLM Debug] Failed to override model.dtype: {exc}")
+        except Exception:
+            pass
 
         clean_memory(device)
 
@@ -609,31 +396,6 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
                                 continue
                 except Exception:
                     continue
-
-        # Diagnostic: report any remaining tensors that are still on the 'meta' device.
-        meta_items = []
-        for mod in model.modules():
-            for name, val in list(mod.__dict__.items()):
-                try:
-                    if isinstance(val, torch.Tensor):
-                        dev = getattr(val, 'device', None)
-                        if dev is not None and dev.type == 'meta':
-                            meta_items.append((mod.__class__.__name__, name, tuple(val.shape), str(val.dtype)))
-                except Exception:
-                    continue
-
-        for buf_name, buf in model.named_buffers():
-            try:
-                dev = getattr(buf, 'device', None)
-                if dev is not None and dev.type == 'meta':
-                    meta_items.append((model.__class__.__name__, f"buffer:{buf_name}", tuple(buf.shape), str(buf.dtype)))
-            except Exception:
-                continue
-
-        if meta_items:
-            print("[WeeLLM Debug] Remaining meta tensors after initialization:")
-            for mclass, aname, shape, dtype in meta_items:
-                print(f"  - {mclass}.{aname} shape={shape} dtype={dtype}")
 
         # Deep-scan object attributes (best-effort) to find meta tensors inside helper objects
         # such as Cache/past_key_values which are not nn.Modules and weren't covered above.
