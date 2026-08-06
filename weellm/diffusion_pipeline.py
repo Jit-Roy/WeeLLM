@@ -264,19 +264,30 @@ class DiffusionPipeline:
             if module is None or not isinstance(module, torch.nn.Module):
                 return
             try:
-                from accelerate.utils.modeling import set_module_tensor_to_device
-
                 evicted = 0
-                for name, param in module.named_parameters(recurse=True):
+                # Evict parameters: replace .data with a meta-device tensor.
+                # We avoid set_module_tensor_to_device for params because newer
+                # PyTorch raises "invalid combination of arguments" when it tries
+                # to call Tensor.new(..., requires_grad=bool) on the meta device.
+                for name, param in list(module.named_parameters(recurse=True)):
                     dev = getattr(param, "device", None)
                     if dev is not None and dev.type != "meta":
-                        set_module_tensor_to_device(module, name, "meta")
+                        try:
+                            param.data = torch.empty(0, device="meta")
+                        except Exception:
+                            pass
                         evicted += 1
 
+                # Evict buffers: use set_module_tensor_to_device (buffers don't
+                # carry requires_grad so the API works fine here).
+                from accelerate.utils.modeling import set_module_tensor_to_device
                 for name, buf in module.named_buffers(recurse=True):
                     dev = getattr(buf, "device", None)
                     if dev is not None and dev.type != "meta":
-                        set_module_tensor_to_device(module, name, "meta")
+                        try:
+                            set_module_tensor_to_device(module, name, "meta")
+                        except Exception:
+                            pass
 
                 gc.collect()
                 if torch.cuda.is_available():
