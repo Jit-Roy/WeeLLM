@@ -25,6 +25,7 @@ class SafetensorsDiskSeeker:
         self.weight_map: Dict[str, str] = {}
         self._parsed_headers: Dict[str, dict] = {}
         self._data_bases: Dict[str, int] = {}
+        self._shared_buffer = bytearray()
         
         self._parse_index()
 
@@ -104,11 +105,17 @@ class SafetensorsDiskSeeker:
                     f.seek(data_base + start)
                     np_dtype = _DTYPE_MAP[dtype_str]
                     count = int(np.prod(shape)) if shape else 1
-                    arr = np.empty(count, dtype=np_dtype)
-                    bytes_read = f.readinto(arr.view(np.uint8))
-                    if bytes_read != arr.nbytes:
+                    nbytes = count * np.dtype(np_dtype).itemsize
+
+                    if len(self._shared_buffer) < nbytes:
+                        self._shared_buffer = bytearray(max(nbytes, len(self._shared_buffer) * 2))
+
+                    view = memoryview(self._shared_buffer)[:nbytes]
+                    bytes_read = f.readinto(view)
+                    if bytes_read != nbytes:
                         raise ValueError(f"Failed to read tensor {key} from {filepath}")
 
+                    arr = np.frombuffer(view, dtype=np_dtype)
                     if shape:
                         arr = arr.reshape(shape)
 
@@ -119,10 +126,16 @@ class SafetensorsDiskSeeker:
                         t = t.view(torch.float8_e4m3fn)
 
                     t = t.to(device=device)
+                    if t.device.type == "cpu":
+                        t = t.clone()
+
                     if dtype is not None and t.dtype != dtype:
                         if t.is_floating_point():
                             t = t.to(dtype=dtype)
 
                     result[key] = t
+        
+        if len(self._shared_buffer) > 128 * 1024 * 1024:
+            self._shared_buffer = bytearray()
 
         return result

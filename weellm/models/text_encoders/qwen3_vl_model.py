@@ -79,7 +79,7 @@ class Qwen3VLModelStreamer:
     def _load_resident_modules(self):
         resident_keys = _get_resident_keys(self._seeker)
         self._resident_keys = resident_keys
-        resident_sd = self._seeker.get_tensors(resident_keys, device="cpu", dtype=self.dtype)
+        resident_sd = self._seeker.get_tensors(resident_keys, device=self.device, dtype=self.dtype)
         self._place_tensors(resident_sd)
         del resident_sd
 

@@ -37,11 +37,13 @@ class Ideogram4Transformer2DModelStreamer:
         model_dir: Path | str,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
+        prefetch: bool = True,
         cache_to_ram: bool = False,
     ):
         self.model_dir = Path(model_dir)
         self.device = device
         self.dtype = dtype
+        self.prefetch = prefetch
         self.cache_to_ram = cache_to_ram
 
         self._seeker = None
@@ -65,9 +67,10 @@ class Ideogram4Transformer2DModelStreamer:
         self._load_resident_modules()
         self._install_hooks()
         
-        self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="ideo_gpu_load"
-        )
+        if self.prefetch:
+            self._executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="ideo_gpu_load"
+            )
         self._initialized = True
         print("Ideogram 4 transformer ready (streaming via Live Seek).")
 
@@ -97,7 +100,7 @@ class Ideogram4Transformer2DModelStreamer:
 
     def _load_resident_modules(self):
         resident_keys = _get_resident_keys(self._seeker)
-        resident_sd = self._seeker.get_tensors(resident_keys, device="cpu", dtype=self.dtype)
+        resident_sd = self._seeker.get_tensors(resident_keys, device=self.device, dtype=self.dtype)
         self._place_tensors(resident_sd)
         del resident_sd
         
@@ -186,7 +189,7 @@ class Ideogram4Transformer2DModelStreamer:
         module._ideo_loaded_sd = mapped_sd
 
         next_idx = idx + 1
-        if next_idx < self._num_layers and self._executor is not None:
+        if next_idx < self._num_layers and getattr(self, "_executor", None) is not None:
             next_layer_keys = _get_layer_keys(self._seeker, next_idx)
             with self._lock:
                 self._next_future = self._executor.submit(
@@ -207,12 +210,14 @@ class Ideogram4Transformer2DModelStreamer:
         model_dir: str | Path,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
+        prefetch: bool = True,
         cache_to_ram: bool = False,
         **kwargs,
     ) -> "Ideogram4Transformer2DModelStreamer":
         return cls(
             model_dir=model_dir,
             device=device,
+            prefetch=prefetch,
             cache_to_ram=cache_to_ram,
             dtype=dtype,
         )
