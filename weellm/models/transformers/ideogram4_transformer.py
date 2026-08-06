@@ -195,8 +195,10 @@ class Ideogram4Transformer2DModelStreamer:
                 self._next_future_idx = next_idx
 
     def _layer_post_hook(self, module: nn.Module, args, output):
-        self._evict_layer(getattr(module, "_ideo_loaded_sd", {}))
-        module._ideo_loaded_sd = {}
+        loaded_sd = getattr(module, "_ideo_loaded_sd", None)
+        if loaded_sd is not None:
+            self._evict_layer(loaded_sd)
+            module._ideo_loaded_sd = None
         return output
 
     @classmethod

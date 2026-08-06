@@ -102,24 +102,27 @@ class SafetensorsDiskSeeker:
                     start, end = meta["data_offsets"]
                     
                     f.seek(data_base + start)
-                    raw_bytes = f.read(end - start)
-                    
                     np_dtype = _DTYPE_MAP[dtype_str]
-                    arr = np.frombuffer(raw_bytes, dtype=np_dtype).copy()
+                    count = int(np.prod(shape)) if shape else 1
+                    arr = np.empty(count, dtype=np_dtype)
+                    bytes_read = f.readinto(arr.view(np.uint8))
+                    if bytes_read != arr.nbytes:
+                        raise ValueError(f"Failed to read tensor {key} from {filepath}")
+
                     if shape:
                         arr = arr.reshape(shape)
-                    
+
                     t = torch.from_numpy(arr)
                     if dtype_str == "BF16":
                         t = t.view(torch.bfloat16)
                     elif dtype_str == "F8_E4M3":
                         t = t.view(torch.float8_e4m3fn)
-                    
+
                     t = t.to(device=device)
                     if dtype is not None and t.dtype != dtype:
                         if t.is_floating_point():
                             t = t.to(dtype=dtype)
-                            
+
                     result[key] = t
 
         return result

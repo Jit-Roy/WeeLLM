@@ -49,6 +49,7 @@ class Qwen3VLModelStreamer:
         self._seeker: Optional[object] = None
         self._model: Optional[nn.Module] = None
         self._initialized = False
+        self._resident_keys: List[str] = []
         
         self._ensure_initialized()
 
@@ -77,6 +78,7 @@ class Qwen3VLModelStreamer:
 
     def _load_resident_modules(self):
         resident_keys = _get_resident_keys(self._seeker)
+        self._resident_keys = resident_keys
         resident_sd = self._seeker.get_tensors(resident_keys, device="cpu", dtype=self.dtype)
         self._place_tensors(resident_sd)
         del resident_sd
@@ -126,6 +128,15 @@ class Qwen3VLModelStreamer:
                 continue
             set_module_tensor_to_device(self._model, name, "meta")
 
+    def _evict_resident(self):
+        for name in self._resident_keys:
+            if name.endswith(".weight_scale"):
+                continue
+            set_module_tensor_to_device(self._model, name, "meta")
+
+    def evict_resident(self):
+        self._evict_resident()
+
     def _install_hooks(self):
         # Hook Language Layers
         if hasattr(self._model, "language_model") and hasattr(self._model.language_model, "layers"):
@@ -153,8 +164,10 @@ class Qwen3VLModelStreamer:
         module._te_loaded_sd = gpu_sd
 
     def _generic_post_hook(self, module: nn.Module, args, output):
-        self._evict_layer(getattr(module, "_te_loaded_sd", {}))
-        module._te_loaded_sd = {}
+        loaded_sd = getattr(module, "_te_loaded_sd", None)
+        if loaded_sd is not None:
+            self._evict_layer(loaded_sd)
+            module._te_loaded_sd = None
         return output
 
     @classmethod
