@@ -110,6 +110,9 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         self._next_future_name: Optional[str] = None
         self._lock = threading.Lock()
 
+        # Populated by from_pretrained so evict_resident() knows what to release.
+        self._resident_keys: List[str] = []
+
         self._install_hooks()
         self._install_qwen_root_forward_patch()
 
@@ -189,6 +192,48 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         module._qwen_te_loaded = []
         return output
 
+    def evict_resident(self):
+        """
+        Move all resident weights (embed_tokens, norm, etc.) back to meta device.
+        Call this after encode() to free the ~3 GB of permanently-loaded tensors
+        that are only needed during the forward pass.
+        They will be re-loaded automatically the next time encode() is called.
+        """
+        if self._resident_keys:
+            _evict_params(self.model, self._resident_keys)
+
+    def reload_resident(self):
+        """
+        Reload resident weights from disk back onto GPU.
+        Called automatically at the start of encode() if needed.
+        """
+        if not self._resident_keys or not self.seeker:
+            return
+        resident_sd = self.seeker.get_tensors(self._resident_keys, device=self.device, dtype=self.dtype)
+        _apply_state_dict(self.model, resident_sd, self.device, self.dtype)
+        del resident_sd
+
+    def _is_resident_loaded(self) -> bool:
+        """Check if embed_tokens is currently on GPU (proxy for resident state)."""
+        try:
+            # Check the first resident key as a proxy
+            if not self._resident_keys:
+                return True
+            # map_qwen_key the first resident key and check its device
+            first = map_qwen_key(self._resident_keys[0])
+            mod = self.model
+            for part in first.split("."):
+                mod = getattr(mod, part, None)
+                if mod is None:
+                    return True  # can't tell, assume loaded
+            if hasattr(mod, "device"):
+                return mod.device.type != "meta"
+            if hasattr(mod, "weight"):
+                return getattr(mod.weight, "device", None) is not None and mod.weight.device.type != "meta"
+            return True
+        except Exception:
+            return True
+
     @torch.no_grad()
     def encode(self, prompt: str) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -199,6 +244,10 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         prompt = [prompt] if isinstance(prompt, str) else prompt
         drop_idx = PROMPT_TEMPLATE_DROP_IDX
         txt = [PROMPT_TEMPLATE.format(p) for p in prompt]
+
+        # Re-load resident weights if they were evicted after a previous encode() call.
+        if not self._is_resident_loaded():
+            self.reload_resident()
 
         tokens = self.tokenizer(
             txt,
@@ -455,7 +504,7 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         print(f"    -> {layer_count} Qwen layers will stream on-demand.")
         report_memory("After Qwen text encoder init")
 
-        return cls(
+        instance = cls(
             model=model,
             seeker=seeker,
             layer_count=layer_count,
@@ -466,3 +515,6 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             prefetch=prefetch,
             max_length=max_length,
         )
+        # Store resident key list so evict_resident() can free them after encoding.
+        instance._resident_keys = resident_keys
+        return instance

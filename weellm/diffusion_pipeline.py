@@ -133,6 +133,7 @@ class DiffusionPipeline:
             "LlamaForCausalLM": "weellm.models.text_encoders.llama_for_causal_lm",
         }
         
+        te_streamers = {}  # streamer references keyed by TE name, for post-encode eviction
         for key in ["text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4"]:
             if key in index:
                 hf_cls_name = index[key][1]
@@ -165,6 +166,9 @@ class DiffusionPipeline:
                         if hasattr(streamer, "_ensure_initialized"):
                             streamer._ensure_initialized()
                         
+                    # Keep a reference to the streamer for post-encode eviction
+                    te_streamers[key] = streamer
+                    
                     # Inject the actual model module directly for the diffusers pipeline
                     te_model = getattr(streamer, "model", getattr(streamer, "_model", streamer))
                     
@@ -523,9 +527,22 @@ class DiffusionPipeline:
                 torch.cuda.empty_cache()
                 print_weellm_vram("After Text Encoder (After GC)")
 
-                # Prompt embeds are computed at this point; free resident text encoder
-                # tensors so denoising starts from a lower baseline.
-                _evict_module_to_meta(getattr(self_obj, "text_encoder", None), "text_encoder")
+                # Prompt embeds are computed; evict resident TE weights using the
+                # streamer's own evict_resident() which uses the proven _evict_params
+                # path (avoids the requires_grad issue that plagued the generic walker).
+                for te_key, streamer_obj in te_streamers.items():
+                    if hasattr(streamer_obj, "evict_resident"):
+                        try:
+                            streamer_obj.evict_resident()
+                            print(f"[WeeLLM Offload] Evicted {te_key} resident weights to meta.")
+                        except Exception as exc:
+                            print(f"[WeeLLM Offload] Failed to evict {te_key} resident: {exc}")
+                    else:
+                        # Fallback for streamers without evict_resident (e.g. CLIP)
+                        te_mod = getattr(self_obj, te_key, None)
+                        _evict_module_to_meta(te_mod, te_key)
+                gc.collect()
+                torch.cuda.empty_cache()
                 print_weellm_vram("After Text Encoder Offload")
                 return res
             pipeline.encode_prompt = types.MethodType(defrag_encode_prompt, pipeline)
