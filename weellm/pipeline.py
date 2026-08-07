@@ -444,16 +444,8 @@ class WeePipeline:
         print("\n[5/5] Applying Aggressive RAM Eviction...")
         
         # WeeLLM Auto-Optimization: Older GPUs (like Kaggle P100/T4) don't support Flash Attention 2,
-        # which causes Math attention to allocate huge 4GB+ tensors. This forces PyTorch to use Memory-Efficient attention.
+        # which causes Math attention to allocate huge 4GB+ tensors.
         if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 8:
-            try:
-                # Force disable PyTorch's fallback to unoptimized Math Attention
-                if hasattr(torch.backends.cuda, "enable_math_sdp"):
-                    torch.backends.cuda.enable_math_sdp(False)
-                    print("      -> [WeeLLM] Disabled PyTorch Math Attention fallback for older GPU. Forcing Memory-Efficient Attention.")
-            except Exception:
-                pass
-                
             try:
                 pipeline.enable_xformers_memory_efficient_attention()
                 print("      -> [WeeLLM] Enabled xFormers memory-efficient attention for older GPU (Compute < 8.0).")

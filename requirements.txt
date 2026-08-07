@@ -21,3 +21,4 @@ tqdm>=4.65.0
 
 # Memory reporting (optional but recommended)
 psutil>=5.9.0
+xformers
