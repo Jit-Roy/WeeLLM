@@ -148,6 +148,15 @@ class LazyVAEStreamer:
             cfg = vae_cls.load_config(str(config_path))
             model = vae_cls.from_config(cfg)
             
+        # Flux2 VAE uses a BN layer that is accessed by the pipeline BEFORE decode() is called.
+        # Eagerly load the bn layer buffers onto the CPU so they aren't meta tensors containing garbage data.
+        if hasattr(model, "bn"):
+            print("  Eagerly loading VAE BN layers to preserve contrast...")
+            bn_keys = [k for k in seeker.weight_map.keys() if "bn." in k]
+            bn_sd = seeker.get_tensors(bn_keys, device="cpu", dtype=torch.float32)
+            _apply_state_dict(model, bn_sd, device="cpu", dtype=torch.float32)
+            del bn_sd
+            
         model.eval()
         
         return cls(model, seeker, device, dtype)

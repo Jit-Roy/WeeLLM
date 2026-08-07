@@ -109,7 +109,7 @@ class Qwen3ForCausalLMStreamer:
 
         rotary = self._model.model.rotary_emb
         if hasattr(rotary, "compute_default_rope_parameters"):
-            inv_freq, _ = rotary.compute_default_rope_parameters(self._model.config, device=self.device)
+            inv_freq, _ = rotary.compute_default_rope_parameters(self._model.config, device="cpu")
             set_module_tensor_to_device(self._model, "model.rotary_emb.inv_freq", self.device, value=inv_freq)
             if hasattr(rotary, "original_inv_freq"):
                 set_module_tensor_to_device(self._model, "model.rotary_emb.original_inv_freq", self.device, value=inv_freq.clone())
@@ -149,7 +149,11 @@ class Qwen3ForCausalLMStreamer:
             h_post = layer.register_forward_hook(self._layer_post_hook)
             self._hook_handles.extend([h_pre, h_post])
 
-            if layer_idx in self.extract_layers:
+            # Fix: HuggingFace's `output_hidden_states` returns the embedding as index 0.
+            # So `hidden_states[N]` corresponds to `self.layers[N-1]`.
+            target_layers = [L - 1 for L in self.extract_layers]
+            
+            if layer_idx in target_layers:
                 h_cap = layer.register_forward_hook(self._capture_hook)
                 self._hook_handles.append(h_cap)
 
@@ -212,7 +216,7 @@ class Qwen3ForCausalLMStreamer:
             input_ids=input_ids, attention_mask=attention_mask, use_cache=False,
         )
 
-        stacked = torch.stack([self._captured[k] for k in self.extract_layers], dim=1)
+        stacked = torch.stack([self._captured[k - 1] for k in self.extract_layers], dim=1)
         B, num_captured, seq, hidden = stacked.shape
         prompt_embeds = stacked.permute(0, 2, 1, 3).reshape(B, seq, num_captured * hidden)
         prompt_embeds = prompt_embeds.to(dtype=self.dtype)
@@ -239,7 +243,8 @@ class Qwen3ForCausalLMStreamer:
             input_ids=input_ids, attention_mask=attention_mask, use_cache=False,
         )
 
-        stacked = torch.stack([self._captured[k] for k in self.extract_layers], dim=1)
+        target_layers = [L - 1 for L in self.extract_layers]
+        stacked = torch.stack([self._captured[k] for k in target_layers], dim=1)
         B, num_captured, seq, hidden = stacked.shape
         prompt_embeds = stacked.permute(0, 2, 1, 3).reshape(B, seq, num_captured * hidden)
         prompt_embeds = prompt_embeds.to(dtype=self.dtype)
