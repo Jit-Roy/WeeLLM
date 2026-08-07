@@ -60,7 +60,7 @@ examples:
         "--guidance_scale", type=float, default=1.0,
         help="Classifier-free guidance scale (default: 1.0, 1.0 = disabled)",
     )
-    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
+    parser.add_argument("--seed", type=int, default=-1, help="Random seed (default: -1 for random)")
 
     # Output
     parser.add_argument(
@@ -139,7 +139,9 @@ def main() -> int:
 
     # ── Generate ─────────────────────────────────────────────────────────────
     t_gen = time.time()
-    generator = torch.Generator(device=pipe.device).manual_seed(args.seed) if args.seed is not None else None
+    seed = args.seed if args.seed != -1 else int(torch.randint(0, 2**32 - 1, (1,)).item())
+    generator = torch.Generator(device=pipe.device).manual_seed(seed)
+    print(f"  Using seed: {seed}")
     out = pipe(
         prompt=args.prompt,
         height=args.height,
