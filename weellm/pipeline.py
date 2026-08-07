@@ -442,6 +442,19 @@ class WeePipeline:
         
         # 5. Apply the Aggressive RAM Eviction Optimization
         print("\n[5/5] Applying Aggressive RAM Eviction...")
+        
+        # WeeLLM Auto-Optimization: Older GPUs (like Kaggle P100/T4) don't support Flash Attention 2,
+        # which causes Math attention to allocate huge 4GB+ tensors. This slices it.
+        if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 8:
+            try:
+                pipeline.enable_xformers_memory_efficient_attention()
+                print("      -> [WeeLLM] Enabled xFormers memory-efficient attention for older GPU (Compute < 8.0).")
+            except Exception:
+                try:
+                    pipeline.enable_attention_slicing(1)
+                    print("      -> [WeeLLM] Enabled Attention Slicing for older GPU (Compute < 8.0) to save VRAM.")
+                except Exception:
+                    pass
         # pipeline.enable_model_cpu_offload(device=device) # Removed: this moves the VAE to CPU RAM, inflating RAM by 2GB!
         # Also enable VAE tiling to prevent massive decoding spikes
         try:
