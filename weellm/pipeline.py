@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Union
 import torch
 
-class DiffusionPipeline:
+class WeePipeline:
     """
-    Factory class that returns a native Hugging Face pipeline armed with WeeLLM streamers.
+    A unified entrypoint for creating native diffusers pipelines but with
+    WeeLLM's memory-efficient layer streamers injected.
     """
     @classmethod
     def from_pretrained(
@@ -474,21 +475,6 @@ class DiffusionPipeline:
             import types
             import gc
             
-            # Patch encode_prompt to destroy text encoders immediately after
-            if hasattr(pipeline, "encode_prompt"):
-                original_encode_prompt = pipeline.encode_prompt
-                
-                def aggressive_encode_prompt(self_obj, *args, **kwargs):
-                    res = original_encode_prompt(*args, **kwargs)
-                    print("\n[WeeLLM] One-Shot: Freeing Text Encoders from RAM...")
-                    for te_name in ["text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4", "tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4"]:
-                        if hasattr(self_obj, te_name):
-                            setattr(self_obj, te_name, None)
-                    gc.collect()
-                    return res
-                    
-                pipeline.encode_prompt = types.MethodType(aggressive_encode_prompt, pipeline)
-            
             # Patch VAE decode to destroy transformer immediately before decoding
             if hasattr(pipeline, "vae") and hasattr(pipeline.vae, "decode"):
                 original_vae_decode = pipeline.vae.decode
@@ -517,35 +503,39 @@ class DiffusionPipeline:
             except Exception:
                 pass
         
-        if hasattr(pipeline, "encode_prompt"):
-            original_encode_prompt_vram = pipeline.encode_prompt
-            def defrag_encode_prompt(self_obj, *args, **kwargs):
-                print_weellm_vram("Before Text Encoder")
-                res = original_encode_prompt_vram(*args, **kwargs)
-                print_weellm_vram("After Text Encoder (Before GC)")
-                gc.collect()
+        # Evict text encoders on the FIRST forward pass of the UNet/Transformer
+        def _evict_te_before_unet(module, args):
+            if getattr(module, "_weellm_te_evicted", False):
+                return
+            module._weellm_te_evicted = True
+            
+            print_weellm_vram("Before Text Encoder Offload")
+            for te_key, streamer_obj in te_streamers.items():
+                if hasattr(streamer_obj, "evict_resident"):
+                    try:
+                        streamer_obj.evict_resident()
+                        print(f"[WeeLLM Offload] Evicted {te_key} resident weights to meta.")
+                    except Exception as exc:
+                        print(f"[WeeLLM Offload] Failed to evict {te_key} resident: {exc}")
+                else:
+                    te_mod = getattr(pipeline, te_key, None)
+                    _evict_module_to_meta(te_mod, te_key)
+            
+            if cache_to_ram:
+                print("\n[WeeLLM] One-Shot: Freeing Text Encoders from RAM...")
+                for te_name in ["text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4", "tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4"]:
+                    if hasattr(pipeline, te_name):
+                        setattr(pipeline, te_name, None)
+                        
+            gc.collect()
+            if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                print_weellm_vram("After Text Encoder (After GC)")
+            print_weellm_vram("After Text Encoder Offload")
 
-                # Prompt embeds are computed; evict resident TE weights using the
-                # streamer's own evict_resident() which uses the proven _evict_params
-                # path (avoids the requires_grad issue that plagued the generic walker).
-                for te_key, streamer_obj in te_streamers.items():
-                    if hasattr(streamer_obj, "evict_resident"):
-                        try:
-                            streamer_obj.evict_resident()
-                            print(f"[WeeLLM Offload] Evicted {te_key} resident weights to meta.")
-                        except Exception as exc:
-                            print(f"[WeeLLM Offload] Failed to evict {te_key} resident: {exc}")
-                    else:
-                        # Fallback for streamers without evict_resident (e.g. CLIP)
-                        te_mod = getattr(self_obj, te_key, None)
-                        _evict_module_to_meta(te_mod, te_key)
-                gc.collect()
-                torch.cuda.empty_cache()
-                print_weellm_vram("After Text Encoder Offload")
-                return res
-            pipeline.encode_prompt = types.MethodType(defrag_encode_prompt, pipeline)
+        if hasattr(pipeline, "unet") and pipeline.unet is not None:
+            pipeline.unet.register_forward_pre_hook(_evict_te_before_unet)
+        elif hasattr(pipeline, "transformer") and pipeline.transformer is not None:
+            pipeline.transformer.register_forward_pre_hook(_evict_te_before_unet)
             
         if hasattr(pipeline, "vae") and hasattr(pipeline.vae, "decode"):
             original_vae_decode_vram = pipeline.vae.decode

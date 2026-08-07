@@ -127,7 +127,7 @@ def main() -> int:
         pipe = WeePipeline.from_pretrained(
             model_dir=args.model,
             device=device,
-            dtype=dtype,
+            torch_dtype=dtype,
             prefetch=not args.no_prefetch,
             cache_to_ram=args.cache_to_ram,
         )
@@ -139,14 +139,16 @@ def main() -> int:
 
     # ── Generate ─────────────────────────────────────────────────────────────
     t_gen = time.time()
-    image = pipe.generate(
+    generator = torch.Generator(device=pipe.device).manual_seed(args.seed) if args.seed is not None else None
+    out = pipe(
         prompt=args.prompt,
         height=args.height,
         width=args.width,
         num_inference_steps=args.steps,
         guidance_scale=args.guidance_scale,
-        seed=args.seed,
+        generator=generator,
     )
+    image = out.images[0] if hasattr(out, "images") else out[0][0]
     gen_time = time.time() - t_gen
     print(f"Generation took {gen_time:.1f}s")
 

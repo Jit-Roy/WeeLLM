@@ -108,12 +108,18 @@ class Qwen3ForCausalLMStreamer:
         del resident_sd
 
         rotary = self._model.model.rotary_emb
-        for buf_name, buf in list(rotary.named_buffers()):
-            if buf.device.type != self.device:
-                set_module_tensor_to_device(
-                    self._model, f"model.rotary_emb.{buf_name}",
-                    self.device, value=buf.float()
-                )
+        if hasattr(rotary, "compute_default_rope_parameters"):
+            inv_freq, _ = rotary.compute_default_rope_parameters(self._model.config, device=self.device)
+            set_module_tensor_to_device(self._model, "model.rotary_emb.inv_freq", self.device, value=inv_freq)
+            if hasattr(rotary, "original_inv_freq"):
+                set_module_tensor_to_device(self._model, "model.rotary_emb.original_inv_freq", self.device, value=inv_freq.clone())
+        else:
+            for buf_name, buf in list(rotary.named_buffers()):
+                if buf.device.type != self.device:
+                    set_module_tensor_to_device(
+                        self._model, f"model.rotary_emb.{buf_name}",
+                        self.device, value=buf.float()
+                    )
 
         clean_memory(self.device)
 
