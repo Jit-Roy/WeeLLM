@@ -456,10 +456,10 @@ class WeePipeline:
                     )
                 
                 # WeeLLM Aggressive Datatype: Disable float32 upcasting which doubles VRAM usage
-                if hasattr(pipeline.vae.config, "force_upcast") and pipeline.vae.config.force_upcast:
-                    pipeline.vae.config.force_upcast = False
-                    pipeline.vae.to(dtype=torch_dtype)
-                    print("      -> [WeeLLM] Disabled VAE float32 upcasting to save 50% memory.")
+                # if hasattr(pipeline.vae.config, "force_upcast") and pipeline.vae.config.force_upcast:
+                #     pipeline.vae.config.force_upcast = False
+                #     pipeline.vae.to(dtype=torch_dtype)
+                #     print("      -> [WeeLLM] Disabled VAE float32 upcasting to save 50% memory.")
                 
                 print("      -> [WeeLLM] Enabled Aggressive VAE Tiling (via VAE) to prevent decoding VRAM spikes.")
                 
