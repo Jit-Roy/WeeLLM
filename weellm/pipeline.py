@@ -138,7 +138,11 @@ class WeePipeline:
 
         # ── Step 2: VAE ─────────────────────────────────────────────────
         logger.info("\n[2/4] Initializing VAE (Lazy loading on meta device) ...")
-        lazy_vae = cls._load_vae(model_dir_path, device, effective_dtype, cache_to_ram)
+        
+        # VAEs often produce NaNs in float16 due to intermediate activation overflow.
+        # If we are running in float16, upcast the VAE to float32.
+        vae_dtype = torch.float32 if effective_dtype == torch.float16 else effective_dtype
+        lazy_vae = cls._load_vae(model_dir_path, device, vae_dtype, cache_to_ram)
         diffusers_kwargs["vae"] = lazy_vae.model
 
         # ── Step 3: Text Encoders ────────────────────────────────────────
