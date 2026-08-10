@@ -4,7 +4,6 @@
 
 WeeLLM streams one transformer layer at a time from disk to GPU for large models. The full model weights never reside in VRAM simultaneously — only the currently-executing layer is loaded.
 
-WeeLLM uses a **Live Seek Architecture**: it reads weights directly out of Hugging Face safetensors files on the fly. This means **zero bytes of duplicated files** on your hard drive, and zero startup delay.
 
 ---
 
@@ -64,11 +63,7 @@ python main.py --model ./my-local-flux-model --prompt "A cyberpunk city at night
 ## ⚠️ Cloud vs. Local Execution Warning
 
 > [!WARNING]
-> **Do NOT try to run this natively on standard Kaggle or Google Colab environments in Disk Mode!**
-
-This streaming architecture is specifically optimized for local execution on modern PCs equipped with NVMe SSDs and modern GPUs. You will experience massive slowdowns on standard cloud instances due to restricted disk I/O speeds.
-
-**💡 Cloud Workaround:** If you are running on Kaggle or Colab, you can pass `cache_to_ram=True` to the pipeline. This trades CPU RAM (which cloud instances usually have plenty of, e.g., 30GB+) for disk speed by caching the raw bytes into RAM before streaming them to the GPU.
+> **This streaming architecture is specifically optimized for local execution on modern PCs equipped with NVMe SSDs and modern GPUs. You will experience slowdowns on standard cloud instances due to restricted disk I/O speeds.**
 
 ---
 
@@ -90,43 +85,19 @@ WeeLLM/
 └── weellm/
     ├── __init__.py                  # Public API
     ├── pipeline.py                  # Universal WeePipeline (loads any model via model_index.json)
-    ├── universal_pipeline.py        # Base implementation of the universal pipeline
-    ├── live_seek.py                 # SafetensorsLiveSeeker (zero-duplication disk reader)
-    ├── base_pipeline.py             # Abstract BasePipeline
-    ├── base_streamer.py             # Abstract BaseStreamer
+    ├── seeker.py                    # Base Safetensors LiveSeeker
+    ├── disk_seek.py                 # Disk-based Safetensors stream reader
+    ├── ram_seek.py                  # RAM-cached Safetensors stream reader
     ├── utils.py                     # Memory & HF utilities
     │
-    ├── models/                      # Modular hook-based streamers
-    │   ├── text_encoders/           # e.g., clip_text_model.py, t5_encoder_model.py, qwen3_streamer.py
-    │   ├── transformers/            # e.g., flux_transformer_2d_model.py, sd3_transformer_2d_model.py
-    │   └── unets/                   # e.g., unet_2d_condition_model.py
-    │
-    └── generate/                    # Separated denoising loop logic per architecture
-        ├── generate_FluxTransformer2DModel.py
-        ├── generate_SD3Transformer2DModel.py
-        ├── generate_QwenImageTransformer2DModel.py
-        ├── generate_ZImageTransformer2DModel.py
-        └── generate_UNet2DConditionModel.py
+    └── models/                      # Modular hook-based streamers
+        ├── text_encoders/           # e.g., qwen3_for_causal_lm.py
+        ├── transformers/            # e.g., flux_transformer_2d_model.py
+        ├── unets/                   # Legacy models
+        └── vaes/                    # e.g., lazy_vae.py
 ```
 
 ---
-
-## Memory Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  GPU VRAM (4 GB budget)                                 │
-│  ┌──────────────┐ ┌──────────────┐                      │
-│  │  VAE ~160MB  │ │ Resident     │  ← always loaded     │
-│  │  (resident)  │ │ modules ~50MB│                      │
-│  └──────────────┘ └──────────────┘                      │
-│  ┌──────────────────────────────┐                       │
-│  │  Current layer  ~800MB       │  ← streamed in/out    │
-│  │  (read direct from HF file)  │                       │
-│  └──────────────────────────────┘                       │
-│  Peak: ~1.6 GB  ✓  (60% headroom)                       │
-└─────────────────────────────────────────────────────────┘
-```
 
 **Background pipeline:** while layer N runs on GPU, layer N+1 is already being loaded from disk directly to GPU via a background thread — eliminating I/O wait time.
 
