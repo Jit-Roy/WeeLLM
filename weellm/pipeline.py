@@ -258,19 +258,38 @@ class WeePipeline:
 
     @staticmethod
     def _resolve_dtype(torch_dtype: torch.dtype) -> torch.dtype:
-        """Auto-downcast bfloat16 → float16 on pre-Ampere GPUs."""
-        if torch_dtype == torch.bfloat16 and torch.cuda.is_available():
-            sm_major = torch.cuda.get_device_capability()[0]
-            if sm_major < 8:
-                logger.info(
-                    "  [WeeLLM] NOTE: bf16 is not natively supported on this GPU (SM %d.x < 8.0).",
-                    sm_major,
-                )
-                logger.info(
-                    "  [WeeLLM] Auto-casting to float16 to prevent VRAM spikes "
-                    "and ensure hardware-accelerated attention.\n"
-                )
-                return torch.float16
+        """Smart dtype resolution based on GPU capability.
+        
+        - bfloat16 on SM < 8 (e.g. Kaggle T4)  → float16  (no native bf16 support)
+        - float32   on SM >= 8 (e.g. RTX 30xx+) → bfloat16 (same range, 2x faster)
+        """
+        if not torch.cuda.is_available():
+            return torch_dtype
+
+        sm_major = torch.cuda.get_device_capability()[0]
+
+        if torch_dtype == torch.bfloat16 and sm_major < 8:
+            logger.info(
+                "  [WeeLLM] NOTE: bf16 is not natively supported on this GPU (SM %d.x < 8.0).",
+                sm_major,
+            )
+            logger.info(
+                "  [WeeLLM] Auto-casting to float16 to prevent VRAM spikes "
+                "and ensure hardware-accelerated attention.\n"
+            )
+            return torch.float16
+
+        if torch_dtype == torch.float32 and sm_major >= 8:
+            logger.info(
+                "  [WeeLLM] NOTE: float32 requested but this GPU (SM %d.x >= 8.0) natively "
+                "supports bfloat16 which has the same numerical range.",
+                sm_major,
+            )
+            logger.info(
+                "  [WeeLLM] Auto-casting to bfloat16 for ~2x speedup with no quality loss.\n"
+            )
+            return torch.bfloat16
+
         return torch_dtype
 
     @staticmethod

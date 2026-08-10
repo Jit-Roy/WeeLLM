@@ -166,6 +166,16 @@ class BaseTransformerStreamer(ABC):
         self.apply_state_dict(sd)
         setattr(module, _LOADED_PARAMS_ATTR, list(sd.keys()))
 
+        # Clamp block INPUTS to prevent float16 overflow inside attention softmax.
+        if self.dtype == torch.float16:
+            clamped_args = []
+            for arg in args:
+                if isinstance(arg, torch.Tensor) and arg.is_floating_point():
+                    clamped_args.append(torch.clamp(arg, min=-60000.0, max=60000.0))
+                else:
+                    clamped_args.append(arg)
+            args = tuple(clamped_args)
+
         # Launch background prefetch for the next block.
         next_pos = pos + 1
         if self.prefetch and self._executor is not None and next_pos < len(self._shard_order):
