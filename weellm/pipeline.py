@@ -60,7 +60,20 @@ class WeePipeline:
         print("============================================================\n")
         
         diffusers_kwargs = kwargs.copy()
-        diffusers_kwargs["torch_dtype"] = torch_dtype
+        
+        # WeeLLM Auto-Dtype: bf16 is only hardware-accelerated on Ampere (SM >= 8.0) and above.
+        # On older GPUs like Kaggle T4 (SM 7.5), bf16 runs in software, causing PyTorch to fall back 
+        # to Math Attention which allocates a massive 4.5GB+ attention matrix.
+        # Solution: silently downcast to float16 which older GPUs fully support in hardware.
+        effective_dtype = torch_dtype
+        if torch_dtype == torch.bfloat16 and torch.cuda.is_available():
+            sm_major = torch.cuda.get_device_capability()[0]
+            if sm_major < 8:
+                effective_dtype = torch.float16
+                print(f"  [WeeLLM] NOTE: bf16 is not natively supported on this GPU (SM {sm_major}.x < 8.0).")
+                print(f"  [WeeLLM] Auto-casting to float16 to prevent VRAM spikes and ensure hardware-accelerated attention.\n")
+        
+        diffusers_kwargs["torch_dtype"] = effective_dtype
 
         # 1. Tokenizers & Scheduler
         print("[1/4] Loading Tokenizers and Scheduler ...")
