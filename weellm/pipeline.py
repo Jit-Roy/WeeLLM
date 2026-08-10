@@ -138,19 +138,19 @@ class WeePipeline:
 
         # ── Step 2: VAE ─────────────────────────────────────────────────
         logger.info("\n[2/4] Initializing VAE (Lazy loading on meta device) ...")
-        lazy_vae = cls._load_vae(model_dir_path, device, torch_dtype, cache_to_ram)
+        lazy_vae = cls._load_vae(model_dir_path, device, effective_dtype, cache_to_ram)
         diffusers_kwargs["vae"] = lazy_vae.model
 
         # ── Step 3: Text Encoders ────────────────────────────────────────
         logger.info("\n[3/4] Preparing Text Encoders ...")
         te_streamers = cls._load_text_encoders(
-            model_dir_path, index, device, torch_dtype, effective_dtype, cache_to_ram, diffusers_kwargs
+            model_dir_path, index, device, effective_dtype, effective_dtype, cache_to_ram, diffusers_kwargs
         )
 
         # ── Step 4: Transformer / UNet ──────────────────────────────────
         logger.info("\n[4/4] Preparing Transformer / UNet ...")
         transformer_key, transformer_streamer = cls._load_transformer(
-            model_dir_path, index, device, torch_dtype, prefetch, cache_to_ram
+            model_dir_path, index, device, effective_dtype, prefetch, cache_to_ram
         )
         tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
         tr_model = cls._patch_to(tr_model)
