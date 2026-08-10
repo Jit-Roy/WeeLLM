@@ -1,95 +1,72 @@
-import json
-import struct
+"""
+disk_seek.py -- Disk-based safetensors tensor streamer.
+
+Reads specific tensors directly from disk using file seeks, completely
+avoiding memory-mapping and duplicate shard copies. Optimal for NVMe SSDs
+and local hardware.
+"""
+
+import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
 
-_DTYPE_MAP = {
-    "F64": np.float64, "F32": np.float32, "F16": np.float16,
-    "BF16": np.uint16,
-    "I64": np.int64, "I32": np.int32, "I16": np.int16,
-    "I8": np.int8, "U8": np.uint8, "BOOL": np.bool_,
-    "F8_E4M3": np.uint8,
-}
+from weellm.safetensors_base import DTYPE_MAP, SafetensorsBase
 
-class SafetensorsDiskSeeker:
+logger = logging.getLogger("weellm")
+
+
+class SafetensorsDiskSeeker(SafetensorsBase):
     """
-    Reads specific tensors from Hugging Face safetensors files directly from disk 
-    using file seeks, completely avoiding memory-mapping and duplicate shards.
+    Reads specific tensors from Hugging Face safetensors files directly from
+    disk using file seeks.
+
+    Completely avoids memory-mapping and loading duplicate shards. Uses a
+    single shared byte buffer that grows on demand and is periodically
+    released to avoid holding large amounts of RAM indefinitely.
+
+    Best for: local machines with NVMe SSDs.
     """
 
     def __init__(self, model_dir: Union[str, Path]):
-        self.model_dir = Path(model_dir)
-        self.weight_map: Dict[str, str] = {}
-        self._parsed_headers: Dict[str, dict] = {}
-        self._data_bases: Dict[str, int] = {}
+        super().__init__(model_dir)
+        # Per-instance buffer to avoid global state; not shared across threads.
         self._shared_buffer = bytearray()
-        
         self._parse_index()
 
-    def _parse_index(self):
-        index_path = self.model_dir / "model.safetensors.index.json"
-        alt_index_path = self.model_dir / "diffusion_pytorch_model.safetensors.index.json"
-        
-        if index_path.exists():
-            with open(index_path, "r", encoding="utf-8") as f:
-                self.weight_map = json.load(f)["weight_map"]
-        elif alt_index_path.exists():
-            with open(alt_index_path, "r", encoding="utf-8") as f:
-                self.weight_map = json.load(f)["weight_map"]
-        else:
-            single_st = self.model_dir / "model.safetensors"
-            single_fp16 = self.model_dir / "model.fp16.safetensors"
-            alt_single_st = self.model_dir / "diffusion_pytorch_model.safetensors"
-            alt_fp16 = self.model_dir / "diffusion_pytorch_model.fp16.safetensors"
-            
-            if single_st.exists():
-                src_file = single_st.name
-            elif single_fp16.exists():
-                src_file = single_fp16.name
-            elif alt_single_st.exists():
-                src_file = alt_single_st.name
-            elif alt_fp16.exists():
-                src_file = alt_fp16.name
-            else:
-                raise FileNotFoundError(f"Could not find safetensors index or single file in {self.model_dir}")
-            
-            header, _ = self._read_header(self.model_dir / src_file)
-            for k in header.keys():
-                if k != "__metadata__":
-                    self.weight_map[k] = src_file
+    def get_tensors(
+        self,
+        keys: List[str],
+        device: str = "cpu",
+        dtype: Optional[torch.dtype] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Load the tensors named by *keys* from disk and return them as a dict.
 
-    def _read_header(self, filepath: Path) -> Tuple[dict, int]:
-        filename = filepath.name
-        if filename in self._parsed_headers:
-            return self._parsed_headers[filename], self._data_bases[filename]
+        Parameters
+        ----------
+        keys:
+            Tensor names to load (must be present in ``self.weight_map``).
+        device:
+            PyTorch device string (e.g. ``"cuda"``, ``"cpu"``).
+        dtype:
+            If given, floating-point tensors are cast to this dtype after load.
 
-        with open(filepath, "rb") as f:
-            header_size_bytes = f.read(8)
-            if len(header_size_bytes) < 8:
-                raise ValueError(f"File {filepath} is too small to be a safetensors file.")
-            header_size = struct.unpack("<Q", header_size_bytes)[0]
-            header_bytes = f.read(header_size)
-            header = json.loads(header_bytes.decode("utf-8"))
-            data_base = 8 + header_size
-
-        self._parsed_headers[filename] = header
-        self._data_bases[filename] = data_base
-        return header, data_base
-
-    def get_tensors(self, keys: List[str], device: str = "cpu", dtype: Optional[torch.dtype] = None) -> Dict[str, torch.Tensor]:
+        Returns
+        -------
+        Dict mapping tensor name → ``torch.Tensor``.
+        """
+        # Group keys by source shard file to minimise file-open overhead.
         by_src: Dict[str, List[str]] = {}
         for key in keys:
             if key not in self.weight_map:
                 raise KeyError(f"Tensor '{key}' not found in model index.")
             src = self.weight_map[key]
-            if src not in by_src:
-                by_src[src] = []
-            by_src[src].append(key)
+            by_src.setdefault(src, []).append(key)
 
-        result = {}
+        result: Dict[str, torch.Tensor] = {}
 
         for src_file, src_keys in by_src.items():
             filepath = self.model_dir / src_file
@@ -97,23 +74,29 @@ class SafetensorsDiskSeeker:
 
             with open(filepath, "rb") as f:
                 for key in src_keys:
-                    meta = header[key]
+                    meta      = header[key]
                     dtype_str = meta["dtype"]
-                    shape = meta["shape"]
+                    shape     = meta["shape"]
                     start, end = meta["data_offsets"]
-                    
-                    f.seek(data_base + start)
-                    np_dtype = _DTYPE_MAP[dtype_str]
-                    count = int(np.prod(shape)) if shape else 1
-                    nbytes = count * np.dtype(np_dtype).itemsize
 
+                    np_dtype = DTYPE_MAP[dtype_str]
+                    count    = int(np.prod(shape)) if shape else 1
+                    nbytes   = count * np.dtype(np_dtype).itemsize
+
+                    # Grow the shared buffer on demand.
                     if len(self._shared_buffer) < nbytes:
-                        self._shared_buffer = bytearray(max(nbytes, len(self._shared_buffer) * 2))
+                        self._shared_buffer = bytearray(
+                            max(nbytes, len(self._shared_buffer) * 2)
+                        )
 
-                    view = memoryview(self._shared_buffer)[:nbytes]
+                    view       = memoryview(self._shared_buffer)[:nbytes]
+                    f.seek(data_base + start)
                     bytes_read = f.readinto(view)
                     if bytes_read != nbytes:
-                        raise ValueError(f"Failed to read tensor {key} from {filepath}")
+                        raise ValueError(
+                            f"Short read for tensor '{key}' in {filepath}: "
+                            f"expected {nbytes} bytes, got {bytes_read}"
+                        )
 
                     arr = np.frombuffer(view, dtype=np_dtype)
                     if shape:
@@ -126,15 +109,18 @@ class SafetensorsDiskSeeker:
                         t = t.view(torch.float8_e4m3fn)
 
                     t = t.to(device=device)
+                    # Cloning ensures the tensor owns its memory after the
+                    # shared buffer is potentially reused on the next call.
                     if t.device.type == "cpu":
                         t = t.clone()
 
-                    if dtype is not None and t.dtype != dtype:
-                        if t.is_floating_point():
-                            t = t.to(dtype=dtype)
+                    if dtype is not None and t.dtype != dtype and t.is_floating_point():
+                        t = t.to(dtype=dtype)
 
                     result[key] = t
-        
+
+        # Release the shared buffer when it grows excessively large to avoid
+        # holding hundreds of MB of RAM between small loads.
         if len(self._shared_buffer) > 128 * 1024 * 1024:
             self._shared_buffer = bytearray()
 

@@ -12,11 +12,26 @@ Usage
 """
 
 import argparse
+import logging
 import sys
 import time
 from pathlib import Path
 
 import torch
+
+
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+
+def _configure_logging(verbose: bool) -> None:
+    """Configure the weellm logger based on verbosity flag."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        format="%(message)s",
+        level=level,
+    )
+    logging.getLogger("weellm").setLevel(level)
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +52,8 @@ examples:
   python main.py --model black-forest-labs/FLUX.1-dev --prompt "A majestic lion at golden hour"
   python main.py --model Tongyi-MAI/Z-Image-Turbo --height 768 --width 768 --steps 4
   python main.py --model ./my-local-flux-model --no_prefetch          # lower RAM usage
+  python main.py --model runwayml/stable-diffusion-v1-5 --prompt "..." --negative_prompt "blurry"
+  python main.py --model black-forest-labs/FLUX.1-schnell --dry_run   # load only, no generation
         """,
     )
 
@@ -52,6 +69,10 @@ examples:
         "--prompt", type=str,
         default="A majestic lion in the savanna at golden hour",
         help="Text prompt for image generation",
+    )
+    parser.add_argument(
+        "--negative_prompt", type=str, default="",
+        help="Negative prompt to guide generation away from unwanted content (default: empty)",
     )
     parser.add_argument("--height", type=int, default=512, help="Output height in pixels (default: 512)")
     parser.add_argument("--width",  type=int, default=512, help="Output width in pixels  (default: 512)")
@@ -85,8 +106,21 @@ examples:
         help="Load safetensors into CPU RAM instead of streaming from disk (faster on Kaggle/Colab)",
     )
     parser.add_argument(
+        "--vae_tile_size", type=int, default=256,
+        help="VAE tiling minimum tile size in pixels (default: 256). Smaller = less VRAM spike, "
+             "but possible tiling artifacts at boundaries.",
+    )
+    parser.add_argument(
         "--vram_budget", type=float, default=4.0,
         help="VRAM budget in GB for the pass/fail report (default: 4.0)",
+    )
+    parser.add_argument(
+        "--dry_run", action="store_true",
+        help="Load the pipeline and verify setup without running inference. Useful for CI/testing.",
+    )
+    parser.add_argument(
+        "--verbose", action="store_true",
+        help="Enable verbose debug logging (including per-layer VRAM tracking).",
     )
 
     return parser
@@ -100,24 +134,34 @@ def main() -> int:
     parser = _build_parser()
     args   = parser.parse_args()
 
+    _configure_logging(args.verbose)
+    logger = logging.getLogger("weellm")
+
     # ── Device & dtype ───────────────────────────────────────────────────────
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype  = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
 
     # ── Header ──────────────────────────────────────────────────────────────
     sep = "=" * 60
-    print(f"\n{sep}")
-    print("  WeeLLM — Layer-Streaming Diffusion Inference")
-    print(sep)
-    print(f"  Model:    {args.model}")
-    print(f"  Prompt:   {args.prompt}")
-    print(f"  Size:     {args.width} x {args.height} px")
-    print(f"  Steps:    {args.steps}  |  Guidance: {args.guidance_scale}  |  Seed: {args.seed}")
-    print(f"  Dtype:    {args.dtype}  |  Device: {device}")
+    logger.info(f"\n{sep}")
+    logger.info("  WeeLLM — Layer-Streaming Diffusion Inference")
+    logger.info(sep)
+    logger.info("  Model:    %s", args.model)
+    logger.info("  Prompt:   %s", args.prompt)
+    if args.negative_prompt:
+        logger.info("  Neg:      %s", args.negative_prompt)
+    logger.info("  Size:     %d x %d px", args.width, args.height)
+    logger.info(
+        "  Steps:    %d  |  Guidance: %s  |  Seed: %s",
+        args.steps, args.guidance_scale, args.seed,
+    )
+    logger.info("  Dtype:    %s  |  Device: %s", args.dtype, device)
     if torch.cuda.is_available():
         props = torch.cuda.get_device_properties(0)
-        print(f"  GPU:      {props.name} ({props.total_memory / 1e9:.1f} GB VRAM)")
-    print()
+        logger.info("  GPU:      %s (%.1f GB VRAM)", props.name, props.total_memory / 1e9)
+    if args.dry_run:
+        logger.info("  Mode:     DRY RUN (no inference)")
+    logger.info("")
 
     # ── Load pipeline ────────────────────────────────────────────────────────
     from weellm import WeePipeline
@@ -130,19 +174,26 @@ def main() -> int:
             torch_dtype=dtype,
             prefetch=not args.no_prefetch,
             cache_to_ram=args.cache_to_ram,
+            vae_tile_size=args.vae_tile_size,
         )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-        
-    print(f"Pipeline loaded in {time.time() - t_load:.1f}s\n")
+
+    logger.info("Pipeline loaded in %.1fs\n", time.time() - t_load)
+
+    if args.dry_run:
+        logger.info("Dry run complete. Pipeline loaded successfully. Skipping inference.")
+        return 0
 
     # ── Generate ─────────────────────────────────────────────────────────────
     t_gen = time.time()
-    seed = args.seed if args.seed != -1 else int(torch.randint(0, 2**32 - 1, (1,)).item())
+    seed  = args.seed if args.seed != -1 else int(torch.randint(0, 2**32 - 1, (1,)).item())
     generator = torch.Generator(device=pipe.device).manual_seed(seed)
-    print(f"  Using seed: {seed}")
-    out = pipe(
+    logger.info("  Using seed: %d", seed)
+
+    # Build call kwargs — only pass negative_prompt if the pipeline supports it
+    call_kwargs: dict = dict(
         prompt=args.prompt,
         height=args.height,
         width=args.width,
@@ -150,21 +201,25 @@ def main() -> int:
         guidance_scale=args.guidance_scale,
         generator=generator,
     )
+    if args.negative_prompt:
+        call_kwargs["negative_prompt"] = args.negative_prompt
+
+    out   = pipe(**call_kwargs)
     image = out.images[0] if hasattr(out, "images") else out[0][0]
     gen_time = time.time() - t_gen
-    print(f"Generation took {gen_time:.1f}s")
+    logger.info("Generation took %.1fs", gen_time)
 
     # ── Save ─────────────────────────────────────────────────────────────────
     output_path = Path(args.output)
     image.save(str(output_path))
-    print(f"Saved to: {output_path.resolve()}")
+    logger.info("Saved to: %s", output_path.resolve())
 
     # ── Budget report ─────────────────────────────────────────────────────────
     if torch.cuda.is_available():
         peak  = torch.cuda.max_memory_allocated() / 1e9
         limit = args.vram_budget
         ok    = peak <= limit
-        print(f"\nPeak VRAM: {peak:.3f} GB / {limit:.1f} GB  [{'OK' if ok else 'EXCEEDED'}]")
+        logger.info("\nPeak VRAM: %.3f GB / %.1f GB  [%s]", peak, limit, "OK" if ok else "EXCEEDED")
         if not ok:
             print(f"WARNING: VRAM exceeded the {limit:.1f} GB budget!", file=sys.stderr)
             return 2

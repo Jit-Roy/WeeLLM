@@ -5,6 +5,10 @@ Streams `double_stream_blocks` and `single_stream_blocks`.
 Keeps embeddings and final layers resident on GPU.
 """
 
+import logging
+
+logger = logging.getLogger("weellm")
+
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -229,6 +233,13 @@ class HiDreamImageTransformer2DModelStreamer:
     def __call__(self, *args, **kwargs):
         return self.model(*args, **kwargs)
 
+    def __del__(self) -> None:
+        if self._executor is not None:
+            try:
+                self._executor.shutdown(wait=False)
+            except Exception:
+                pass
+
     @classmethod
     def from_pretrained(
         cls,
@@ -240,10 +251,10 @@ class HiDreamImageTransformer2DModelStreamer:
     ) -> "HiDreamImageTransformer2DModelStreamer":
         from diffusers import HiDreamImageTransformer2DModel
 
-        print("Initializing SafetensorsLiveSeeker on HiDream Transformer weights ...")
+        logger.info("Initializing SafetensorsLiveSeeker on HiDream Transformer weights ...")
         seeker = get_seeker(model_dir, cache_to_ram=cache_to_ram)
-        
-        print("Instantiating HiDreamImageTransformer2DModel on meta device ...")
+
+        logger.info("Instantiating HiDreamImageTransformer2DModel on meta device ...")
         config = HiDreamImageTransformer2DModel.load_config(model_dir)
         with init_empty_weights():
             model = HiDreamImageTransformer2DModel.from_config(config)
@@ -254,16 +265,19 @@ class HiDreamImageTransformer2DModelStreamer:
                 set_module_tensor_to_device(model, buf_name, device, value=buf)
 
         resident_keys = _get_resident_keys(seeker)
-        print(f"Holding resident tensors in CPU RAM ({len(resident_keys)} tensors) ...")
-        
-        # Load resident tensors in chunks if large, but HiDream embeddings are relatively small.
+        logger.info("Holding resident tensors in CPU RAM (%d tensors) ...", len(resident_keys))
+
         resident_sd = seeker.get_tensors(resident_keys, device="cpu", dtype=dtype)
-        
+
         # Do NOT apply them to the model here. Keep them on CPU and load during __call__
-                
+
         clean_memory(device)
 
-        print(f"  -> {len(model.double_stream_blocks)} double stream and {len(model.single_stream_blocks)} single stream blocks will stream on-demand.")
+        logger.info(
+            "  -> %d double stream and %d single stream blocks will stream on-demand.",
+            len(model.double_stream_blocks),
+            len(model.single_stream_blocks),
+        )
         report_memory("After HiDream transformer init")
 
         streamer = cls(model, seeker, device, dtype)

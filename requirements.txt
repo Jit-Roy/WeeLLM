@@ -1,5 +1,6 @@
-# LightLLM dependencies
+# WeeLLM dependencies
 # Install with: pip install -r requirements.txt
+# Or install directly: pip install git+https://github.com/Jit-Roy/weellm
 
 # Core deep learning
 torch>=2.1.0
@@ -13,12 +14,17 @@ accelerate>=0.30.0
 # Safetensors (fast, memory-mapped model loading)
 safetensors>=0.4.0
 
+# Numerical computing (used by disk/ram seekers)
+numpy>=1.24.0
+
+# Hugging Face model download
+huggingface_hub>=0.20.0
+
 # Image handling
 Pillow>=10.0.0
 
 # Progress bars
 tqdm>=4.65.0
 
-# Memory reporting (optional but recommended)
+# Memory reporting
 psutil>=5.9.0
-xformers
