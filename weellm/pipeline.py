@@ -258,32 +258,30 @@ class WeePipeline:
 
     @staticmethod
     def _resolve_dtype(torch_dtype: torch.dtype) -> torch.dtype:
-        """Smart dtype resolution based on GPU capability.
+        """Smart dtype resolution based on GPU bfloat16 support.
         
-        - bfloat16 on SM < 8 (e.g. Kaggle T4)  → float32 (safe fallback since float16 overflows on some models)
-        - float32   on SM >= 8 (e.g. RTX 30xx+) → bfloat16 (same range, 2x faster)
+        - bfloat16 on a GPU that doesn't support it → float32 (safe fallback)
+        - float32   on a GPU that supports bfloat16  → bfloat16 (same range, 2x faster)
         """
         if not torch.cuda.is_available():
             return torch_dtype
 
-        sm_major = torch.cuda.get_device_capability()[0]
+        bf16_supported = torch.cuda.is_bf16_supported()
 
-        if torch_dtype == torch.bfloat16 and sm_major < 8:
+        if torch_dtype == torch.bfloat16 and not bf16_supported:
             logger.info(
-                "  [WeeLLM] NOTE: bf16 is not natively supported on this GPU (SM %d.x < 8.0).",
-                sm_major,
+                "  [WeeLLM] NOTE: bfloat16 is not supported on this GPU."
             )
             logger.info(
-                "  [WeeLLM] Auto-casting to float32 (safe fallback) to prevent NaNs/Black images "
-                "that can occur in float16 on massive models.\n"
+                "  [WeeLLM] Auto-casting to float32 (safe fallback) to prevent NaNs/black images "
+                "that can occur with float16 on large models.\n"
             )
             return torch.float32
 
-        if torch_dtype == torch.float32 and sm_major >= 8:
+        if torch_dtype == torch.float32 and bf16_supported:
             logger.info(
-                "  [WeeLLM] NOTE: float32 requested but this GPU (SM %d.x >= 8.0) natively "
-                "supports bfloat16 which has the same numerical range.",
-                sm_major,
+                "  [WeeLLM] NOTE: float32 requested but this GPU natively supports bfloat16, "
+                "which has the same numerical range."
             )
             logger.info(
                 "  [WeeLLM] Auto-casting to bfloat16 for ~2x speedup with no quality loss.\n"
