@@ -260,7 +260,7 @@ class WeePipeline:
     def _resolve_dtype(torch_dtype: torch.dtype) -> torch.dtype:
         """Smart dtype resolution based on GPU capability.
         
-        - bfloat16 on SM < 8 (e.g. Kaggle T4)  → float16  (no native bf16 support)
+        - bfloat16 on SM < 8 (e.g. Kaggle T4)  → float32 (safe fallback since float16 overflows on some models)
         - float32   on SM >= 8 (e.g. RTX 30xx+) → bfloat16 (same range, 2x faster)
         """
         if not torch.cuda.is_available():
@@ -274,10 +274,10 @@ class WeePipeline:
                 sm_major,
             )
             logger.info(
-                "  [WeeLLM] Auto-casting to float16 to prevent VRAM spikes "
-                "and ensure hardware-accelerated attention.\n"
+                "  [WeeLLM] Auto-casting to float32 (safe fallback) to prevent NaNs/Black images "
+                "that can occur in float16 on massive models.\n"
             )
-            return torch.float16
+            return torch.float32
 
         if torch_dtype == torch.float32 and sm_major >= 8:
             logger.info(
