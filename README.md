@@ -9,21 +9,21 @@ WeeLLM streams one transformer layer at a time from disk to GPU for large models
 
 ## Supported Models
 
-| Model | Size | Peak VRAM | Peak RAM | Time (512×512, steps) |
-|---|---|---|---|---|
-| `FLUX.2-klein-4B` | 4B params | **2.0 GB** | **2.3 GB** | ~61s · 4 steps · RTX 3050 |
-| `Lumina-Image-2.0` | ~2B params | **1.38 GB** | - | - |
-| `FLUX.1-dev` | ~12B params | **1.51 GB** | **~2.0 GB** | - |
-| `FLUX.1-Kontext-dev` | ~12B params | **1.51 GB** | **~2.0 GB** | - |
-| `FLUX.1-schnell` | ~12B params | **1.64 GB** | **1.68 GB** | ~159s · 4 steps · RTX 3050 |
-| `CogView4-6B` | ~15B params | **2.12 GB** | **~2.0 GB** | - |
-| `sd3.5-medium` | ~8B params | **3.48 GB** | **3.96 GB** | ~219s · 20 steps · RTX 3050 |
-| `z-image-turbo` | ~10B params | **1.6 GB** | **1.7 GB** | ~167s · 4 steps · RTX 3050 |
-| `HiDream-I1-Full` | ~15B params | **3.68 GB** | **2.02 GB** | ~797s · 10 steps · RTX 3050 |
-| `sdxl` (Juggernaut XL v9) | ~6.6B params | **2.98 GB** | **1.5 GB** | ~120s · 20 steps · RTX 3050 |
-| `sd15` (SD v1.5) | ~1.7B params | **0.90 GB** | **1.4 GB** | ~68s · 20 steps · RTX 3050 |
-| `qwen-image` (Qwen/Qwen-Image) | ~20B params | **2.47 GB** | **1.60 GB** | ~795s  · 10 steps · RTX 3050 |
-| `AuraFlow` (fal/AuraFlow) | ~4B params | **1.34 GB** | **1.61 GB** | ~405s · 10 steps · RTX 3050 |
+| Model                            | Parameters |   Peak VRAM |    Peak RAM |   Time (512×512) |
+| -------------------------------- | ---------: | ----------: | ----------: | ---------------: |
+| `FLUX.2-klein-4B`                |         4B |  **2.0 GB** |  **2.3 GB** |   ~61s · 4 steps |
+| `Lumina-Image-2.0`               |        ~2B | **1.38 GB** |           — |                — |
+| `FLUX.1-dev`                     |       ~12B | **1.51 GB** | **~2.0 GB** |                — |
+| `FLUX.1-Kontext-dev`             |       ~12B | **1.51 GB** | **~2.0 GB** |                — |
+| `FLUX.1-schnell`                 |       ~12B | **1.64 GB** | **1.68 GB** |  ~159s · 4 steps |
+| `CogView4-6B` (bfloat16)         |       ~15B | **2.44 GB** | **1.92 GB** | ~411s · 10 steps |
+| `SD 3.5 Medium`                  |        ~8B | **3.48 GB** | **3.96 GB** | ~219s · 20 steps |
+| `Z-Image-Turbo`                  |       ~10B | **1.60 GB** | **1.70 GB** |  ~167s · 4 steps |
+| `HiDream-I1-Full`                |       ~15B | **3.68 GB** | **2.02 GB** | ~797s · 10 steps |
+| `SDXL` (Juggernaut XL v9)        |      ~6.6B | **2.98 GB** | **1.50 GB** | ~120s · 20 steps |
+| `SD 1.5`                         |      ~1.7B | **0.90 GB** | **1.40 GB** |  ~68s · 20 steps |
+| `Qwen-Image` (`Qwen/Qwen-Image`) |       ~20B | **2.47 GB** | **1.60 GB** | ~795s · 10 steps |
+| `AuraFlow` (`fal/AuraFlow`)      |        ~4B | **1.34 GB** | **1.61 GB** | ~405s · 10 steps |
 
 > The models run with **no quantization** — full bfloat16 weights streamed layer-by-layer from disk.
 
