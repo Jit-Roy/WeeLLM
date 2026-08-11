@@ -86,7 +86,7 @@ class Gemma2ModelStreamer(BaseLazyDecoderStreamer):
                 )
                 
         # Embeddings are on CPU, run them on CPU!
-        pin_module_to_cpu(self._model, "model.embed_tokens")
+        pin_module_to_cpu(self._model, "embed_tokens")
 
     def _capture_layer_indices(self) -> set:
         return set(self._extract_layers)
