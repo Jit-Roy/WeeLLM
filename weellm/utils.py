@@ -24,11 +24,21 @@ def default_dtype(dtype: torch.dtype):
 
 
 def clean_memory(device: str = "cuda") -> None:
-    """Free CPU and GPU memory aggressively."""
+    """Free CPU and GPU memory aggressively.
+
+    Uses a double-GC pattern:
+    1. First gc.collect() drops Python references so tensors become candidates
+       for CUDA freeing.
+    2. cuda.empty_cache() + synchronize() returns those pages to the CUDA
+       memory pool and flushes pending ops.
+    3. Second gc.collect() picks up any __del__ finalizers triggered by CUDA
+       cleanup itself (e.g. caching allocator callbacks).
+    """
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
+    gc.collect()
 
 
 def report_memory(tag: str = "") -> None:

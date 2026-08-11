@@ -151,6 +151,7 @@ class BaseTransformerStreamer(ABC):
                 sd = self.seeker.get_tensors(layer_keys, device=self.device, dtype=self.dtype)
 
         self.apply_state_dict(sd)
+        del sd  # release CPU/GPU tensors immediately — the model now owns them
 
         # Clamp block INPUTS to prevent float16 overflow inside attention softmax.
         # IMPORTANT: pre_hook must *return* a tuple for PyTorch to replace the inputs;

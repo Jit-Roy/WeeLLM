@@ -119,8 +119,7 @@ class SafetensorsDiskSeeker(SafetensorsBase):
 
                     result[key] = t
 
-        # Release the shared buffer when it grows excessively large to avoid
-        # holding hundreds of MB of RAM between small loads.
+        # Release the shared buffer when it grows large to avoid holding onto it.
         if len(self._shared_buffer) > 128 * 1024 * 1024:
             self._shared_buffer = bytearray()
 

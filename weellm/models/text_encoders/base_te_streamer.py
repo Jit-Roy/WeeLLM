@@ -149,7 +149,7 @@ class BaseLazyDecoderStreamer(ABC):
 
     def _load_resident_modules(self) -> None:
         resident_keys = [k for k in self._seeker.weight_map if self._resident_key_filter(k)]
-        resident_sd   = self._seeker.get_tensors(resident_keys, device="cpu", dtype=self.dtype)
+        resident_sd   = self._seeker.get_tensors(resident_keys, device=self.device, dtype=self.dtype)
         self._place_tensors(resident_sd)
         del resident_sd
         self._load_resident_extra()
@@ -196,6 +196,7 @@ class BaseLazyDecoderStreamer(ABC):
                 gpu_sd = self._seeker.get_tensors(layer_keys, device=self.device, dtype=self.dtype)
 
         self._place_tensors(gpu_sd)
+        del gpu_sd  # release tensors immediately — the model now owns them
 
         next_idx = idx + 1
         if next_idx < self._num_layers and self._executor is not None:
