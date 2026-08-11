@@ -49,6 +49,18 @@ _TE_MAP = {
 }
 
 # ---------------------------------------------------------------------------
+# External repo fallback map
+#
+# Some pipelines reference a text encoder by class name in model_index.json
+# but do NOT ship the weights inside the repo (e.g. HiDream references
+# LlamaForCausalLM but the weights live in meta-llama/Meta-Llama-3.1-8B-Instruct).
+# When the local subfolder is missing we fall back to downloading from here.
+# ---------------------------------------------------------------------------
+_TE_EXTERNAL_REPO = {
+    "LlamaForCausalLM": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+}
+
+# ---------------------------------------------------------------------------
 # Transformer class → module path mapping
 # ---------------------------------------------------------------------------
 _TR_MAP = {
@@ -409,7 +421,35 @@ class WeePipeline:
             module    = importlib.import_module(module_path)
             te_cls    = getattr(module, streamer_cls_name)
             tok_key   = key.replace("text_encoder", "tokenizer")
-            te_path   = str(model_dir / key)
+            local_te_path = model_dir / key
+
+            # If the subfolder doesn't exist locally, check the external-repo
+            # fallback map.  Some pipelines (e.g. HiDream) reference a model
+            # that lives in a separate Hub repo rather than shipping it.
+            if not local_te_path.exists() and hf_cls_name in _TE_EXTERNAL_REPO:
+                external_repo = _TE_EXTERNAL_REPO[hf_cls_name]
+                logger.info(
+                    "  [WeeLLM] '%s' subfolder not found locally — downloading from "
+                    "external repo '%s' ...",
+                    key, external_repo,
+                )
+                from huggingface_hub import snapshot_download
+                downloaded = snapshot_download(
+                    repo_id=external_repo,
+                    allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.json"],
+                )
+                te_path = downloaded
+                # Also update tokenizer_4 path to the same downloaded repo
+                # (HiDream's tokenizer_4 is also from Llama)
+                if tok_key not in out or out.get(tok_key) is None:
+                    try:
+                        from transformers import AutoTokenizer
+                        out[tok_key] = AutoTokenizer.from_pretrained(downloaded)
+                        logger.info("  [WeeLLM] Loaded %s from '%s'.", tok_key, external_repo)
+                    except Exception as e:
+                        logger.warning("  [WeeLLM] Could not load %s from '%s': %s", tok_key, external_repo, e)
+            else:
+                te_path = str(local_te_path)
 
             if "Qwen" in hf_cls_name or "Mistral" in hf_cls_name or "Llama" in hf_cls_name:
                 if hasattr(te_cls, "from_pretrained"):
