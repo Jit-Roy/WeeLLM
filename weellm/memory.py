@@ -11,6 +11,10 @@ exactly two functions defined here:
         Move every parameter and buffer inside a module back to the meta device,
         freeing VRAM immediately.
 
+    pin_module_to_cpu(model, attr_path)
+        Monkey-patch an embedding module so its forward pass executes on the CPU,
+        saving massive VRAM for text encoder embeddings.
+
 No other code should import ``set_module_tensor_to_device`` directly.
 """
 
@@ -96,3 +100,44 @@ def evict_module(module: nn.Module) -> int:
                 pass
 
     return evicted
+
+
+def pin_module_to_cpu(model: nn.Module, attr_path: str) -> None:
+    """
+    Monkey-patch an embedding module so its forward pass executes on CPU.
+    
+    This is used to route massive text encoder embeddings (e.g., 2.5GB for GLM)
+    through system RAM without moving them to VRAM.
+    
+    Parameters
+    ----------
+    model:
+        The root nn.Module.
+    attr_path:
+        The dot-separated path to the sub-module (e.g., ``"model.embed_tokens"``).
+    """
+    import logging
+    logger = logging.getLogger("weellm")
+    
+    mod = model
+    for attr in attr_path.split("."):
+        if not hasattr(mod, attr):
+            logger.warning("Could not find %s in %s for CPU pinning.", attr, attr_path)
+            return
+        mod = getattr(mod, attr)
+        
+    original_forward = mod.forward
+    
+    def cpu_forward(input_ids, *args, **kwargs):
+        input_device = input_ids.device
+        if input_device.type != "cpu":
+            input_ids = input_ids.cpu()
+        
+        out = original_forward(input_ids, *args, **kwargs)
+        
+        if input_device.type != "cpu":
+            out = out.to(input_device)
+        return out
+        
+    mod.forward = cpu_forward
+    logger.debug("Pinned %s to run on CPU.", attr_path)

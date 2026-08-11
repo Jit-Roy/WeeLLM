@@ -121,17 +121,28 @@ class UMT5EncoderModelStreamer:
             return any(k.startswith(p) or k == p for p in resident_prefixes)
 
         resident_keys = [k for k in seeker.weight_map if is_resident(k)]
-        print(f"Loading resident T5 tensors to GPU ({len(resident_keys)} tensors) ...")
-        resident_sd = seeker.get_tensors(resident_keys, device=device,
-            dtype=dtype)
-        place_tensors(model, resident_sd, device, dtype)
+        print(f"Loading resident UMT5 tensors ({len(resident_keys)} tensors) ...")
+        resident_sd = seeker.get_tensors(resident_keys, device="cpu", dtype=dtype)
+        
+        cpu_sd = {k: v for k, v in resident_sd.items() if k.startswith("shared.")}
+        gpu_sd = {k: v for k, v in resident_sd.items() if k not in cpu_sd}
+        
+        if cpu_sd:
+            place_tensors(model, cpu_sd, "cpu", dtype)
+            from weellm.memory import pin_module_to_cpu
+            pin_module_to_cpu(model, "shared")
+            if hasattr(model.encoder, "embed_tokens"):
+                pin_module_to_cpu(model, "encoder.embed_tokens")
+                
+        if gpu_sd:
+            place_tensors(model, gpu_sd, device, dtype)
         
         # UMT5 ties encoder.embed_tokens.weight to shared.weight, but loading via accelerate 
         # breaks the pointer when weights are on meta device. Manually tie them back.
         if hasattr(model.encoder, "embed_tokens") and hasattr(model, "shared"):
             model.encoder.embed_tokens.weight = model.shared.weight
             
-        del resident_sd
+        del resident_sd, cpu_sd, gpu_sd
         clean_memory(device)
 
         num_blocks = len(model.encoder.block)

@@ -68,6 +68,10 @@ class BaseLazyDecoderStreamer(ABC):
     def _resident_key_filter(self, key: str) -> bool:
         """Return True if *key* should stay resident (always loaded) on the GPU."""
 
+    def _cpu_resident_key_filter(self, key: str) -> bool:
+        """Return True if *key* should stay resident on the CPU instead of GPU. Default: False."""
+        return False
+
     @abstractmethod
     def _get_model_layers(self) -> nn.ModuleList:
         """Return the nn.ModuleList of transformer layers from ``self._model``."""
@@ -148,10 +152,19 @@ class BaseLazyDecoderStreamer(ABC):
             )
 
     def _load_resident_modules(self) -> None:
-        resident_keys = [k for k in self._seeker.weight_map if self._resident_key_filter(k)]
-        resident_sd   = self._seeker.get_tensors(resident_keys, device=self.device, dtype=self.dtype)
-        self._place_tensors(resident_sd)
-        del resident_sd
+        gpu_keys = [k for k in self._seeker.weight_map if self._resident_key_filter(k)]
+        cpu_keys = [k for k in self._seeker.weight_map if self._cpu_resident_key_filter(k)]
+        
+        if cpu_keys:
+            cpu_sd = self._seeker.get_tensors(cpu_keys, device="cpu", dtype=self.dtype)
+            place_tensors(self._model, cpu_sd, "cpu", self.dtype)
+            del cpu_sd
+
+        if gpu_keys:
+            gpu_sd = self._seeker.get_tensors(gpu_keys, device=self.device, dtype=self.dtype)
+            self._place_tensors(gpu_sd)
+            del gpu_sd
+            
         self._load_resident_extra()
         clean_memory(self.device)
 

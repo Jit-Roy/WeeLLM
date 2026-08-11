@@ -283,11 +283,23 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
                 else:
                     set_module_tensor_to_device(model, buf_name, device, value=buf)
 
-        print("  [TE 3/3] Loading resident Qwen text encoder tensors to GPU ...")
+        print("  [TE 3/3] Loading resident Qwen text encoder tensors ...")
         resident_keys = _get_resident_keys(seeker)
-        resident_sd = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
-        _apply_state_dict(model, resident_sd, device, dtype)
-        del resident_sd
+        resident_sd = seeker.get_tensors(resident_keys, device="cpu", dtype=dtype)
+        
+        mapped_sd = {map_qwen_key(k): v for k, v in resident_sd.items()}
+        cpu_sd = {k: v for k, v in mapped_sd.items() if "embed_tokens" in k}
+        gpu_sd = {k: v for k, v in mapped_sd.items() if k not in cpu_sd}
+        
+        if cpu_sd:
+            place_tensors(model, cpu_sd, "cpu", dtype)
+            from weellm.memory import pin_module_to_cpu
+            pin_module_to_cpu(model, "model.language_model.embed_tokens")
+            
+        if gpu_sd:
+            place_tensors(model, gpu_sd, device, dtype)
+            
+        del resident_sd, mapped_sd, cpu_sd, gpu_sd
 
         # Some Qwen components (most notably lm_head) can remain on the target
         # device but keep their original float32 dtype after loading. Normalize

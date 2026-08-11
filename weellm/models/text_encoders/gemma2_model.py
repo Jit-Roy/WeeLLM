@@ -19,7 +19,7 @@ from accelerate import init_empty_weights
 from transformers import AutoConfig, AutoModel
 
 from weellm.utils import default_dtype
-from weellm.memory import place_tensors
+from weellm.memory import place_tensors, pin_module_to_cpu
 from weellm.models.text_encoders.base_te_streamer import BaseLazyDecoderStreamer
 
 
@@ -49,7 +49,10 @@ class Gemma2ModelStreamer(BaseLazyDecoderStreamer):
         return f"layers.{idx}."
 
     def _resident_key_filter(self, key: str) -> bool:
-        return key.startswith("embed_tokens.") or key.startswith("norm.")
+        return key.startswith("model.norm.")
+
+    def _cpu_resident_key_filter(self, key: str) -> bool:
+        return key.startswith("model.embed_tokens.")
 
     def _get_model_layers(self) -> nn.ModuleList:
         return self._model.layers
@@ -81,6 +84,9 @@ class Gemma2ModelStreamer(BaseLazyDecoderStreamer):
                     self._model, {buf_name: buf.to(self.dtype) if buf.is_floating_point() else buf},
                     self.device, self.dtype,
                 )
+                
+        # Embeddings are on CPU, run them on CPU!
+        pin_module_to_cpu(self._model, "model.embed_tokens")
 
     def _capture_layer_indices(self) -> set:
         return set(self._extract_layers)

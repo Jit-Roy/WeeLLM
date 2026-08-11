@@ -19,7 +19,7 @@ from accelerate import init_empty_weights
 from transformers import AutoConfig, AutoModelForCausalLM
 
 from weellm.utils import default_dtype, clean_memory
-from weellm.memory import place_tensors
+from weellm.memory import place_tensors, pin_module_to_cpu
 from weellm.models.text_encoders.base_te_streamer import BaseLazyDecoderStreamer
 
 
@@ -39,7 +39,10 @@ class LlamaForCausalLMStreamer(BaseLazyDecoderStreamer):
         return f"model.layers.{idx}."
 
     def _resident_key_filter(self, key: str) -> bool:
-        return key.startswith("model.embed_tokens.") or key.startswith("model.norm.")
+        return key.startswith("model.norm.")
+
+    def _cpu_resident_key_filter(self, key: str) -> bool:
+        return key.startswith("model.embed_tokens.")
 
     def _get_model_layers(self) -> nn.ModuleList:
         return self._model.model.layers
@@ -52,11 +55,14 @@ class LlamaForCausalLMStreamer(BaseLazyDecoderStreamer):
         self._model.eval()
 
     def _load_resident_extra(self) -> None:
-        """Move rotary_emb buffers to GPU as float32."""
+        """Move rotary_emb buffers to GPU."""
         rotary = self._model.model.rotary_emb
         for buf_name, buf in list(rotary.named_buffers()):
             if buf.device.type != self.device:
                 place_tensors(self._model, {f"model.rotary_emb.{buf_name}": buf.float()}, self.device, torch.float32)
+
+        # Embeddings are on CPU, run them on CPU!
+        pin_module_to_cpu(self._model, "model.embed_tokens")
 
     def _capture_layer_indices(self) -> set:
         # HiDream needs every layer

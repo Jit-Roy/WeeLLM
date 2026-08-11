@@ -78,9 +78,23 @@ class Qwen3VLModelStreamer:
 
     def _load_resident_modules(self):
         resident_keys = _get_resident_keys(self._seeker)
-        resident_sd = self._seeker.get_tensors(resident_keys, device=self.device, dtype=self.dtype)
-        self._place_tensors(resident_sd)
-        del resident_sd
+        resident_sd = self._seeker.get_tensors(resident_keys, device="cpu", dtype=self.dtype)
+        
+        cpu_sd = {k: v for k, v in resident_sd.items() if "embed_tokens" in k}
+        gpu_sd = {k: v for k, v in resident_sd.items() if k not in cpu_sd}
+        
+        if cpu_sd:
+            self._place_tensors(cpu_sd, device="cpu")
+            from weellm.memory import pin_module_to_cpu
+            if hasattr(self._model, "language_model") and hasattr(self._model.language_model, "embed_tokens"):
+                pin_module_to_cpu(self._model, "language_model.embed_tokens")
+            elif hasattr(self._model, "embed_tokens"):
+                pin_module_to_cpu(self._model, "embed_tokens")
+                
+        if gpu_sd:
+            self._place_tensors(gpu_sd, device=self.device)
+            
+        del resident_sd, cpu_sd, gpu_sd
 
         # Handle rotary embeddings if present
         if hasattr(self._model, "language_model") and hasattr(self._model.language_model, "rotary_emb"):
@@ -94,7 +108,8 @@ class Qwen3VLModelStreamer:
 
         clean_memory(self.device)
 
-    def _place_tensors(self, state_dict: Dict[str, torch.Tensor]):
+    def _place_tensors(self, state_dict: Dict[str, torch.Tensor], device: Optional[str] = None):
+        device = device or self.device
         processed_sd = {}
         for name, tensor in state_dict.items():
             if name.endswith(".weight_scale"):
@@ -116,10 +131,10 @@ class Qwen3VLModelStreamer:
         for name, tensor in processed_sd.items():
             if tensor.is_floating_point():
                 set_module_tensor_to_device(
-                    self._model, name, self.device, value=tensor, dtype=self.dtype
+                    self._model, name, device, value=tensor, dtype=self.dtype
                 )
             else:
-                set_module_tensor_to_device(self._model, name, self.device, value=tensor)
+                set_module_tensor_to_device(self._model, name, device, value=tensor)
 
     def _evict_layer(self, state_dict: Dict[str, torch.Tensor]):
         for name in state_dict.keys():

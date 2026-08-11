@@ -185,8 +185,7 @@ class CLIPTextModelStreamer:
         # Load resident weights (everything except the streaming layers)
         # ------------------------------------------------------------------
         resident_keys = [k for k in seeker.weight_map if not k.startswith(seeker_streaming_prefix)]
-        resident_sd_raw = seeker.get_tensors(resident_keys, device=device,
-            dtype=dtype)
+        resident_sd_raw = seeker.get_tensors(resident_keys, device="cpu", dtype=dtype)
 
         # Translate file keys -> model keys for resident tensors
         key_strip = seeker_layer_prefix[: len(seeker_layer_prefix) - len(model_layer_prefix)]
@@ -198,8 +197,21 @@ class CLIPTextModelStreamer:
         else:
             resident_sd = resident_sd_raw
 
-        place_tensors(model, resident_sd, device, dtype)
-        del resident_sd_raw, resident_sd
+        cpu_sd = {k: v for k, v in resident_sd.items() if "token_embedding" in k}
+        gpu_sd = {k: v for k, v in resident_sd.items() if k not in cpu_sd}
+
+        if cpu_sd:
+            place_tensors(model, cpu_sd, "cpu", dtype)
+            from weellm.memory import pin_module_to_cpu
+            if model_has_text_model:
+                pin_module_to_cpu(model, "text_model.embeddings.token_embedding")
+            else:
+                pin_module_to_cpu(model, "embeddings.token_embedding")
+
+        if gpu_sd:
+            place_tensors(model, gpu_sd, device, dtype)
+            
+        del resident_sd_raw, resident_sd, cpu_sd, gpu_sd
         clean_memory(device)
 
         _patch_forward_input_device(model)
