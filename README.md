@@ -16,7 +16,7 @@ WeeLLM streams one transformer layer at a time from disk to GPU for large models
 | `FLUX.1-dev`                     |       ~12B | **1.51 GB** | **~2.0 GB** |                — |
 | `FLUX.1-Kontext-dev`             |       ~12B | **1.51 GB** | **~2.0 GB** |                — |
 | `FLUX.1-schnell`                 |       ~12B | **1.64 GB** | **1.68 GB** |  ~159s · 4 steps |
-| `CogView4-6B` (bfloat16)         |       ~15B | **2.44 GB** | **1.92 GB** | ~411s · 10 steps |
+| `CogView4-6B`                    |       ~15B | **2.44 GB** | **1.92 GB** | ~411s · 10 steps |
 | `SD 3.5 Medium`                  |        ~8B | **3.48 GB** | **3.96 GB** | ~219s · 20 steps |
 | `Z-Image-Turbo`                  |       ~10B | **1.60 GB** | **1.70 GB** |  ~167s · 4 steps |
 | `HiDream-I1-Full`                |       ~15B | **3.68 GB** | **2.02 GB** | ~797s · 10 steps |
@@ -25,7 +25,7 @@ WeeLLM streams one transformer layer at a time from disk to GPU for large models
 | `Qwen-Image` (`Qwen/Qwen-Image`) |       ~20B | **2.47 GB** | **1.60 GB** | ~795s · 10 steps |
 | `AuraFlow` (`fal/AuraFlow`)      |        ~4B | **1.34 GB** | **1.61 GB** | ~405s · 10 steps |
 
-> The models run with **no quantization** — full bfloat16 weights streamed layer-by-layer from disk.
+> The models run with **no quantization** on RTX-3050 — full bfloat16 weights streamed layer-by-layer from disk.
 
 ---
 
@@ -110,10 +110,6 @@ WeeLLM/
 
 ---
 
-**Background pipeline:** while layer N runs on GPU, layer N+1 is already being loaded from disk directly to GPU via a background thread — eliminating I/O wait time.
-
----
-
 ## Python API
 
 ```python
@@ -165,28 +161,4 @@ image = pipe.generate(
     seed=42,
 )
 image.save("qwen_output.png")
-```
-
----
-
-## CLI Reference
-
-```
-usage: weellm [-h] --model ID_OR_PATH [--prompt TEXT]
-                [--height H] [--width W] [--steps N] [--guidance_scale F]
-                [--seed N] [--output PATH] [--dtype {bfloat16,float16,float32}]
-                [--no_prefetch] [--vram_budget F]
-
-options:
-  --model ID_OR_PATH    Hugging Face repo ID or path to local model directory
-  --prompt TEXT         Image generation prompt
-  --height H            Output height in pixels (default: 512)
-  --width W             Output width in pixels  (default: 512)
-  --steps N             Denoising steps (default: 4)
-  --guidance_scale F    CFG scale (default: 0.0 for z-image-turbo)
-  --seed N              Random seed (default: 42)
-  --output PATH         Output file (default: output.png)
-  --dtype DTYPE         Compute dtype: bfloat16 | float16 | float32
-  --no_prefetch         Disable background prefetching (saves ~400MB RAM)
-  --vram_budget F       VRAM limit for budget report (default: 4.0)
 ```
