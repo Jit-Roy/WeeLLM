@@ -11,6 +11,11 @@ Usage
     python main.py --help
 """
 
+import os
+
+# Fix OpenMP duplicate lib error on some platforms (e.g. Windows/Conda)
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 import argparse
 import logging
 import sys

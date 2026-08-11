@@ -1,5 +1,6 @@
 # WeeLLM dependencies
 # Install with: pip install -r requirements.txt
+# Or install:  pip install -e .
 # Or install directly: pip install git+https://github.com/Jit-Roy/weellm
 
 # Core deep learning
