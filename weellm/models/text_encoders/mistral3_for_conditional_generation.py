@@ -1,190 +1,77 @@
 """
-text_encoder_streamer.py -- Hook-based layer-streaming for the Mistral3 text encoder.
+mistral3_for_conditional_generation.py -- Streaming for Mistral3 (Ideogram4 text encoder).
 
-Uses the Live Seek Architecture to load weights directly from Hugging Face shards
-without creating any duplicated files on disk.
+Uses BaseLazyDecoderStreamer. Architecture-specific details:
+  - Layer prefix: ``model.layers.{i}.``
+  - Resident: ``model.embed_tokens.*``, ``model.norm.*``
+  - Captures: configurable multi-layer (default: layers 14, 21, 35)
+  - Special: rotary_emb buffers loaded as float32
 """
 
 from __future__ import annotations
 
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 from accelerate import init_empty_weights
-from accelerate.utils.modeling import set_module_tensor_to_device
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM
 
-from weellm.utils import clean_memory
-from weellm.seeker import get_seeker
-
-
-def _get_layer_keys(seeker, layer_idx: int) -> List[str]:
-    prefix = f"model.layers.{layer_idx}."
-    return [k for k in seeker.weight_map.keys() if k.startswith(prefix)]
-
-def _get_resident_keys(seeker) -> List[str]:
-    return [k for k in seeker.weight_map.keys() if k.startswith("model.embed_tokens.") or k.startswith("model.norm.")]
+from weellm.utils import default_dtype, clean_memory
+from weellm.memory import place_tensors
+from weellm.models.text_encoders.base_te_streamer import BaseLazyDecoderStreamer
 
 
-class Mistral3ForConditionalGenerationStreamer:
-    """
-    Hook-based streaming text encoder (Mistral3).
-    Extracts output from target decoder layers (e.g., layers 14, 21, 35) directly
-    via forward hooks.
-    """
+class Mistral3ForConditionalGenerationStreamer(BaseLazyDecoderStreamer):
+    """Streaming text encoder for Mistral3 (Ideogram4)."""
 
     def __init__(
         self,
-        text_encoder_dir: Path | str,
-        tokenizer_dir: Path | str,
+        text_encoder_dir,
+        tokenizer_dir,
         extract_layers: Tuple[int, ...] = (14, 21, 35),
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         cache_to_ram: bool = False,
         max_length: int = 512,
     ):
-        self.text_encoder_dir = Path(text_encoder_dir)
-        self.tokenizer_dir = Path(tokenizer_dir)
-        self.extract_layers = extract_layers
-        self.device = device
-        self.dtype = dtype
-        self.cache_to_ram = cache_to_ram
-        self.max_length = max_length
+        super().__init__(text_encoder_dir, tokenizer_dir, device, dtype, cache_to_ram, max_length)
+        self._extract_layers = extract_layers
 
-        self._seeker: Optional[object] = None
-        self._model: Optional[nn.Module] = None
-        self._tokenizer = None
-        self._num_layers: int = 0
-        self._initialized = False
+    # -- Abstract implementations --
 
-        self._captured: Dict[int, torch.Tensor] = {}
-        self._hook_handles = []
+    @property
+    def _model_name(self) -> str:
+        return "Mistral3"
 
-        self._executor: Optional[ThreadPoolExecutor] = None
-        self._next_future = None
-        self._next_future_idx: Optional[int] = None
-        self._lock = threading.Lock()
+    def _layer_prefix(self, idx: int) -> str:
+        return f"model.layers.{idx}."
 
-    # ------------------------------------------------------------------
-    # Initialisation
-    # ------------------------------------------------------------------
+    def _resident_key_filter(self, key: str) -> bool:
+        return key.startswith("model.embed_tokens.") or key.startswith("model.norm.")
 
-    def _ensure_initialized(self):
-        if self._initialized:
-            return
-        print("Initialising streaming Mistral3 text encoder ...")
-        self._seeker = get_seeker(self.text_encoder_dir, cache_to_ram=self.cache_to_ram)
-        self._load_model_skeleton()
-        self._load_tokenizer()
-        self._load_resident_modules()
-        self._install_hooks()
-        
-        self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="te_gpu_load"
-        )
-        self._initialized = True
-        print("Text encoder ready (streaming via Live Seek).")
+    def _get_model_layers(self) -> nn.ModuleList:
+        return self._model.model.layers
 
-    def _load_model_skeleton(self):
+    def _load_model_skeleton(self) -> None:
         config = AutoConfig.from_pretrained(str(self.text_encoder_dir), trust_remote_code=True)
         self._num_layers = config.num_hidden_layers
-        with init_empty_weights():
+        with default_dtype(self.dtype), init_empty_weights():
             self._model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
         self._model.eval()
 
-    def _load_tokenizer(self):
-        self._tokenizer = AutoTokenizer.from_pretrained(
-            str(self.tokenizer_dir), trust_remote_code=True
-        )
-
-    def _load_resident_modules(self):
-        resident_keys = _get_resident_keys(self._seeker)
-        resident_sd = self._seeker.get_tensors(resident_keys, device="cpu", dtype=self.dtype)
-        self._place_tensors(resident_sd)
-        del resident_sd
-
+    def _load_resident_extra(self) -> None:
+        """Move rotary_emb buffers to GPU as float32."""
         rotary = self._model.model.rotary_emb
         for buf_name, buf in list(rotary.named_buffers()):
             if buf.device.type != self.device:
-                set_module_tensor_to_device(
-                    self._model, f"model.rotary_emb.{buf_name}",
-                    self.device, value=buf.float()
-                )
+                place_tensors(self._model, {f"model.rotary_emb.{buf_name}": buf.float()}, self.device, torch.float32)
 
-        clean_memory(self.device)
+    def _capture_layer_indices(self) -> set:
+        return set(self._extract_layers)
 
-    def _place_tensors(self, state_dict: Dict[str, torch.Tensor]):
-        for name, tensor in state_dict.items():
-            if tensor.is_floating_point():
-                set_module_tensor_to_device(
-                    self._model, name, self.device, value=tensor, dtype=self.dtype
-                )
-            else:
-                set_module_tensor_to_device(self._model, name, self.device, value=tensor)
-
-    def _evict_layer(self, state_dict: Dict[str, torch.Tensor]):
-        for name in state_dict.keys():
-            set_module_tensor_to_device(self._model, name, "meta")
-
-    # ------------------------------------------------------------------
-    # Hook installation
-    # ------------------------------------------------------------------
-
-    def _install_hooks(self):
-        for layer_idx in range(self._num_layers):
-            layer = self._model.model.layers[layer_idx]
-            layer._te_layer_idx = layer_idx
-
-            h_pre = layer.register_forward_pre_hook(self._layer_pre_hook)
-            h_post = layer.register_forward_hook(self._layer_post_hook)
-            self._hook_handles.extend([h_pre, h_post])
-
-            if layer_idx in self.extract_layers:
-                h_cap = layer.register_forward_hook(self._capture_hook)
-                self._hook_handles.append(h_cap)
-
-    def _layer_pre_hook(self, module: nn.Module, args):
-        idx = module._te_layer_idx
-        layer_keys = _get_layer_keys(self._seeker, idx)
-
-        with self._lock:
-            if self._next_future_idx == idx and self._next_future is not None:
-                gpu_sd = self._next_future.result()
-                self._next_future = None
-                self._next_future_idx = None
-            else:
-                gpu_sd = self._seeker.get_tensors(layer_keys, device=self.device, dtype=self.dtype)
-
-        self._place_tensors(gpu_sd)
-        module._te_loaded_sd = gpu_sd
-
-        next_idx = idx + 1
-        if next_idx < self._num_layers and self._executor is not None:
-            next_layer_keys = _get_layer_keys(self._seeker, next_idx)
-            with self._lock:
-                self._next_future = self._executor.submit(
-                    self._seeker.get_tensors, next_layer_keys, self.device, self.dtype
-                )
-                self._next_future_idx = next_idx
-
-    def _layer_post_hook(self, module: nn.Module, args, output):
-        self._evict_layer(getattr(module, "_te_loaded_sd", {}))
-        module._te_loaded_sd = {}
-        return output
-
-    def _capture_hook(self, module: nn.Module, args, output):
-        idx = module._te_layer_idx
-        hidden = output[0] if isinstance(output, tuple) else output
-        self._captured[idx] = hidden.detach().clone()
-        return output
-
-    # ------------------------------------------------------------------
-    # Encoding
-    # ------------------------------------------------------------------
+    # -- Encoding --
 
     @torch.no_grad()
     def encode(self, prompt: str) -> torch.Tensor:
@@ -195,22 +82,19 @@ class Mistral3ForConditionalGenerationStreamer:
             messages, tokenize=False, add_generation_prompt=True, enable_thinking=False,
         )
         inputs = self._tokenizer(
-            text, return_tensors="pt", padding="max_length", truncation=True, max_length=self.max_length,
+            text, return_tensors="pt", padding="max_length",
+            truncation=True, max_length=self.max_length,
         )
-        input_ids = inputs["input_ids"].to(self.device)
+        input_ids      = inputs["input_ids"].to(self.device)
         attention_mask = inputs["attention_mask"].to(self.device)
 
         self._captured.clear()
+        _ = self._model.model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
 
-        _ = self._model.model(
-            input_ids=input_ids, attention_mask=attention_mask, use_cache=False,
-        )
-
-        stacked = torch.stack([self._captured[k] for k in self.extract_layers], dim=1)
+        stacked = torch.stack([self._captured[k] for k in self._extract_layers], dim=1)
         B, num_captured, seq, hidden = stacked.shape
         prompt_embeds = stacked.permute(0, 2, 1, 3).reshape(B, seq, num_captured * hidden)
         prompt_embeds = prompt_embeds.to(dtype=self.dtype)
-
         self._captured.clear()
         clean_memory(self.device)
         return prompt_embeds
@@ -222,47 +106,34 @@ class Mistral3ForConditionalGenerationStreamer:
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._ensure_initialized()
-
         input_ids = input_ids.to(self.device)
         if attention_mask is not None:
             attention_mask = attention_mask.to(self.device)
 
         self._captured.clear()
+        _ = self._model.model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
 
-        _ = self._model.model(
-            input_ids=input_ids, attention_mask=attention_mask, use_cache=False,
-        )
-
-        stacked = torch.stack([self._captured[k] for k in self.extract_layers], dim=1)
+        stacked = torch.stack([self._captured[k] for k in self._extract_layers], dim=1)
         B, num_captured, seq, hidden = stacked.shape
         prompt_embeds = stacked.permute(0, 2, 1, 3).reshape(B, seq, num_captured * hidden)
         prompt_embeds = prompt_embeds.to(dtype=self.dtype)
-
         self._captured.clear()
         clean_memory(self.device)
         return prompt_embeds
 
-    @property
-    def tokenizer(self):
-        self._ensure_initialized()
-        return self._tokenizer
-
     @classmethod
     def from_pretrained(
         cls,
-        model_dir: str | Path,
-        tokenizer,  # We accept it to match signature, but this streamer loads its own
+        model_dir,
+        tokenizer=None,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         cache_to_ram: bool = False,
         prefetch: bool = True,
-        max_length: int = 512
+        max_length: int = 512,
     ) -> "Mistral3ForConditionalGenerationStreamer":
-        # Note: we use model_dir for both text_encoder and tokenizer because they're 
-        # usually in the same HF folder if this is passed directly (or we just pass 
-        # the text_encoder dir and the tokenizer is handled by the caller, but the old 
-        # code expected text_encoder_dir and tokenizer_dir)
-        tokenizer_dir = Path(model_dir).parent / "tokenizer" if Path(model_dir).name == "text_encoder" else model_dir
+        model_dir = Path(model_dir)
+        tokenizer_dir = model_dir.parent / "tokenizer" if model_dir.name == "text_encoder" else model_dir
         return cls(
             text_encoder_dir=model_dir,
             tokenizer_dir=tokenizer_dir,
@@ -271,4 +142,3 @@ class Mistral3ForConditionalGenerationStreamer:
             dtype=dtype,
             max_length=max_length,
         )
-

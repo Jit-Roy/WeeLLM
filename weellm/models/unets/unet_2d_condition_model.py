@@ -17,6 +17,7 @@ from typing import List, Tuple
 import torch
 import torch.nn as nn
 from accelerate import init_empty_weights
+from weellm.utils import default_dtype
 from accelerate.utils.modeling import set_module_tensor_to_device
 from diffusers import UNet2DConditionModel
 
@@ -99,7 +100,7 @@ class UNet2DConditionModelStreamer(BaseTransformerStreamer):
 
         logger.info("Step 2/3 -- Instantiating UNet2DConditionModel on meta device ...")
         config = UNet2DConditionModel.load_config(os.path.join(path, "config.json"))
-        with init_empty_weights():
+        with default_dtype(dtype), init_empty_weights():
             model = UNet2DConditionModel.from_config(config)
         model.eval()
 

@@ -71,19 +71,33 @@ class SafetensorsBase:
             }
 
     def _find_single_shard(self) -> str:
-        """Return the filename of the single safetensors shard in model_dir."""
-        candidates = [
+        """Return the filename of the single safetensors shard in model_dir.
+
+        Checks preferred canonical names first for determinism, then falls back
+        to globbing for any ``.safetensors`` file in the directory.
+        """
+        preferred = [
             "model.safetensors",
             "model.fp16.safetensors",
             "diffusion_pytorch_model.safetensors",
             "diffusion_pytorch_model.fp16.safetensors",
         ]
-        for name in candidates:
+        for name in preferred:
             if (self.model_dir / name).exists():
                 return name
+
+        # Fall back: find any single .safetensors shard in the directory.
+        found = sorted(self.model_dir.glob("*.safetensors"))
+        if len(found) == 1:
+            return found[0].name
+        if len(found) > 1:
+            raise FileNotFoundError(
+                f"Multiple .safetensors files found in {self.model_dir} but no index file. "
+                f"Cannot determine which shard to use: {[f.name for f in found]}"
+            )
         raise FileNotFoundError(
-            f"Could not find a safetensors index or single shard in {self.model_dir}. "
-            f"Checked: {candidates}"
+            f"Could not find a safetensors index or any .safetensors shard in {self.model_dir}. "
+            f"Preferred names checked: {preferred}"
         )
 
     # ------------------------------------------------------------------

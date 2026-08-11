@@ -22,25 +22,12 @@ import torch
 import torch.nn as nn
 
 from accelerate import init_empty_weights
-from accelerate.utils.modeling import set_module_tensor_to_device
-
+from weellm.utils import default_dtype
 from weellm.seeker import get_seeker
 from weellm.utils import clean_memory, report_memory
+from weellm.memory import place_tensors, evict_module
+from accelerate.utils.modeling import set_module_tensor_to_device
 
-
-def _apply_state_dict(model: nn.Module, state_dict: dict, device: str, dtype: torch.dtype):
-    """Write tensors into model parameters – handles meta -> real device."""
-    for name, tensor in state_dict.items():
-        if tensor.is_floating_point():
-            set_module_tensor_to_device(model, name, device, value=tensor, dtype=dtype)
-        else:
-            set_module_tensor_to_device(model, name, device, value=tensor)
-
-
-def _evict_params(model: nn.Module, param_names: list):
-    """Move named parameters back to meta device (free VRAM)."""
-    for name in param_names:
-        set_module_tensor_to_device(model, name, "meta")
 
 
 class T5EncoderModelStreamer:
@@ -99,12 +86,10 @@ class T5EncoderModelStreamer:
         idx = module._t5_block_idx
         block_keys = self._get_block_keys(idx)
         sd = self.seeker.get_tensors(block_keys, device=self.device, dtype=self.dtype)
-        _apply_state_dict(self.model, sd, self.device, self.dtype)
-        module._t5_loaded_params = list(sd.keys())
+        place_tensors(self.model, sd, self.device, self.dtype)
 
     def _post_hook(self, module: nn.Module, args, output):
-        _evict_params(self.model, getattr(module, "_t5_loaded_params", []))
-        module._t5_loaded_params = []
+        evict_module(module)
         return output
 
     @classmethod
@@ -124,7 +109,7 @@ class T5EncoderModelStreamer:
 
         print(f"Instantiating T5EncoderModel on meta device ...")
         config = T5EncoderModel.config_class.from_pretrained(model_dir)
-        with init_empty_weights():
+        with default_dtype(dtype), init_empty_weights():
             model = T5EncoderModel(config)
         model.eval()
 
@@ -147,7 +132,7 @@ class T5EncoderModelStreamer:
         print(f"Loading resident T5 tensors to GPU ({len(resident_keys)} tensors) ...")
         resident_sd = seeker.get_tensors(resident_keys, device=device,
             dtype=dtype)
-        _apply_state_dict(model, resident_sd, device, dtype)
+        place_tensors(model, resident_sd, device, dtype)
         
         # T5 ties encoder.embed_tokens.weight to shared.weight, but loading via accelerate 
         # breaks the pointer when weights are on meta device. Manually tie them back.

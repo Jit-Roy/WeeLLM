@@ -20,10 +20,11 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 from accelerate import init_empty_weights
-from accelerate.utils.modeling import set_module_tensor_to_device
-
+from weellm.utils import default_dtype
 from weellm.utils import clean_memory, report_memory
+from weellm.memory import place_tensors, evict_module
 from weellm.seeker import get_seeker
+from accelerate.utils.modeling import set_module_tensor_to_device
 
 
 # The same prompt template used by QwenImagePipeline
@@ -58,19 +59,10 @@ def map_qwen_key(k: str) -> str:
     return k
 
 
-def _apply_state_dict(model: nn.Module, state_dict: Dict[str, torch.Tensor], device: str, dtype: torch.dtype):
-    for name, tensor in state_dict.items():
-        mapped_name = map_qwen_key(name)
-        if tensor.is_floating_point():
-            set_module_tensor_to_device(model, mapped_name, device, value=tensor, dtype=dtype)
-        else:
-            set_module_tensor_to_device(model, mapped_name, device, value=tensor)
-
-
-def _evict_params(model: nn.Module, param_names: List[str]):
-    for name in param_names:
-        mapped_name = map_qwen_key(name)
-        set_module_tensor_to_device(model, mapped_name, "meta")
+def _apply_state_dict(model, state_dict, device, dtype):
+    """Remap Qwen-specific key names then place tensors onto the model."""
+    mapped = {map_qwen_key(k): v for k, v in state_dict.items()}
+    place_tensors(model, mapped, device, dtype)
 
 
 class Qwen2_5_VLForConditionalGenerationStreamer:
@@ -109,8 +101,6 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         self._next_future_name: Optional[str] = None
         self._lock = threading.Lock()
 
-        # Populated by from_pretrained so evict_resident() knows what to release.
-        self._resident_keys: List[str] = []
 
         self._install_hooks()
         self._install_qwen_root_forward_patch()
@@ -187,51 +177,8 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
                 self._next_future_name = next_name
 
     def _post_hook(self, module: nn.Module, args, output):
-        _evict_params(self.model, getattr(module, "_qwen_te_loaded", []))
-        module._qwen_te_loaded = []
+        evict_module(module)
         return output
-
-    def evict_resident(self):
-        """
-        Move all resident weights (embed_tokens, norm, etc.) back to meta device.
-        Call this after encode() to free the ~3 GB of permanently-loaded tensors
-        that are only needed during the forward pass.
-        They will be re-loaded automatically the next time encode() is called.
-        """
-        if self._resident_keys:
-            _evict_params(self.model, self._resident_keys)
-
-    def reload_resident(self):
-        """
-        Reload resident weights from disk back onto GPU.
-        Called automatically at the start of encode() if needed.
-        """
-        if not self._resident_keys or not self.seeker:
-            return
-        resident_sd = self.seeker.get_tensors(self._resident_keys, device=self.device, dtype=self.dtype)
-        _apply_state_dict(self.model, resident_sd, self.device, self.dtype)
-        del resident_sd
-
-    def _is_resident_loaded(self) -> bool:
-        """Check if embed_tokens is currently on GPU (proxy for resident state)."""
-        try:
-            # Check the first resident key as a proxy
-            if not self._resident_keys:
-                return True
-            # map_qwen_key the first resident key and check its device
-            first = map_qwen_key(self._resident_keys[0])
-            mod = self.model
-            for part in first.split("."):
-                mod = getattr(mod, part, None)
-                if mod is None:
-                    return True  # can't tell, assume loaded
-            if hasattr(mod, "device"):
-                return mod.device.type != "meta"
-            if hasattr(mod, "weight"):
-                return getattr(mod.weight, "device", None) is not None and mod.weight.device.type != "meta"
-            return True
-        except Exception:
-            return True
 
     @torch.no_grad()
     def encode(self, prompt: str) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -243,10 +190,6 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         prompt = [prompt] if isinstance(prompt, str) else prompt
         drop_idx = PROMPT_TEMPLATE_DROP_IDX
         txt = [PROMPT_TEMPLATE.format(p) for p in prompt]
-
-        # Re-load resident weights if they were evicted after a previous encode() call.
-        if not self._is_resident_loaded():
-            self.reload_resident()
 
         tokens = self.tokenizer(
             txt,
@@ -316,7 +259,7 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         print(f"    Found {len(seeker.weight_map)} tensors.")
 
         print("  [TE 2/3] Instantiating Qwen2_5_VLForConditionalGeneration on meta device ...")
-        with init_empty_weights():
+        with default_dtype(dtype), init_empty_weights():
             from transformers import Qwen2_5_VLConfig
             cfg = Qwen2_5_VLConfig.from_pretrained(str(model_dir))
             model = Qwen2_5_VLForConditionalGeneration(cfg)
@@ -514,7 +457,4 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             prefetch=prefetch,
             max_length=max_length,
         )
-        # Store resident key list so evict_resident() can free them after encoding.
-        # This now includes lm_head, which can otherwise remain on GPU due to weight tying.
-        instance._resident_keys = resident_keys
         return instance

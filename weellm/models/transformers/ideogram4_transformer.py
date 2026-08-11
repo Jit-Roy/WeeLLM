@@ -4,261 +4,76 @@ ideogram4_transformer.py -- Hook-based layer-streaming for Ideogram 4 diffusion 
 Uses the Double-Stream buffer overlap to load the massive 34 FP8 blocks directly from the SSD
 while maintaining under 4.0 GB VRAM footprint.
 
-Note: Ideogram4 uses FP8 weight dequantization (weight * weight_scale) so it cannot
-cleanly use BaseTransformerStreamer's generic apply_state_dict. The custom _place_tensors
-and _map_state_dict logic is preserved here.
+Note: Ideogram4 uses FP8 weight dequantization (weight * weight_scale). We override
+`apply_state_dict` from BaseTransformerStreamer to perform the FP8 math on-the-fly.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Tuple
 
 import torch
 import torch.nn as nn
-from accelerate import init_empty_weights
 from accelerate.utils.modeling import set_module_tensor_to_device
 
+from weellm.models.base_streamer import BaseTransformerStreamer
 from weellm.seeker import get_seeker
-from weellm.utils import clean_memory
+from weellm.utils import clean_memory, report_memory
 
 logger = logging.getLogger("weellm")
 
 
-def _get_layer_keys(seeker, layer_idx: int) -> List[str]:
-    prefix = f"layers.{layer_idx}."
-    return [k for k in seeker.weight_map.keys() if k.startswith(prefix)]
-
-
-def _get_resident_keys(seeker) -> List[str]:
-    return [k for k in seeker.weight_map.keys() if not k.startswith("layers.")]
-
-
-class Ideogram4Transformer2DModelStreamer:
+class Ideogram4Transformer2DModelStreamer(BaseTransformerStreamer):
     """
     Hook-based streaming wrapper for Ideogram4Transformer2DModel.
-
     Loads 34 FP8-quantized blocks one at a time from SSD, dequantizes them
     (weight * weight_scale → bfloat16) before placing on GPU, and evicts
     immediately after the forward pass.
     """
 
-    def __init__(
-        self,
-        model_dir: Path | str,
-        device: str = "cuda",
-        dtype: torch.dtype = torch.bfloat16,
-        prefetch: bool = True,
-        cache_to_ram: bool = False,
-    ):
-        self.model_dir    = Path(model_dir)
-        self.device       = device
-        self.dtype        = dtype
-        self.prefetch     = prefetch
-        self.cache_to_ram = cache_to_ram
+    def _get_shard_order(self) -> List[Tuple[str, nn.Module]]:
+        order = []
+        blocks = getattr(self.model, "layers", getattr(self.model, "transformer_blocks", []))
+        prefix = "layers" if hasattr(self.model, "layers") else "transformer_blocks"
+        for i, block in enumerate(blocks):
+            order.append((f"{prefix}.{i}", block))
+        return order
 
-        self._seeker      = None
-        self._model       = None
-        self._num_layers  = 0
-        self._initialized = False
+    def _get_resident_keys(self) -> List[str]:
+        return [
+            k for k in self.seeker.weight_map
+            if not k.startswith("layers.") and not k.startswith("transformer_blocks.")
+        ]
 
-        self._executor          = None
-        self._next_future       = None
-        self._next_future_idx   = None
-        self._lock              = threading.Lock()
-
-        self._ensure_initialized()
-
-    # ------------------------------------------------------------------
-    # Lazy initialization
-    # ------------------------------------------------------------------
-
-    def _ensure_initialized(self) -> None:
-        if self._initialized:
-            return
-        logger.info("Initialising streaming Ideogram4 transformer ...")
-        self._seeker = get_seeker(self.model_dir, cache_to_ram=self.cache_to_ram)
-        self._load_model_skeleton()
-        self._load_resident_modules()
-        self._install_hooks()
-
-        if self.prefetch:
-            self._executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="ideo_gpu_load"
-            )
-        self._initialized = True
-        logger.info("Ideogram 4 transformer ready (streaming via Live Seek).")
-
-    def _load_model_skeleton(self) -> None:
-        import diffusers
-        if not hasattr(diffusers, "Ideogram4Transformer2DModel"):
-            raise ImportError(
-                "Diffusers does not have Ideogram4Transformer2DModel. "
-                "Please update diffusers: pip install -U diffusers"
-            )
-
-        config = diffusers.Ideogram4Transformer2DModel.load_config(str(self.model_dir))
-        with init_empty_weights():
-            self._model = diffusers.Ideogram4Transformer2DModel.from_config(config)
-        self._model.eval()
-
-        # Monkey-patch .to() to prevent diffusers from crashing on meta tensors
-        def _noop_to(self, *args, **kwargs):
-            return self
-        self._model.__class__.to = _noop_to
-
-        if hasattr(self._model, "layers"):
-            self._num_layers = len(self._model.layers)
-        elif hasattr(self._model, "transformer_blocks"):
-            self._num_layers = len(self._model.transformer_blocks)
-        else:
-            self._num_layers = 34
-
-    def _load_resident_modules(self) -> None:
-        resident_keys = _get_resident_keys(self._seeker)
-        resident_sd   = self._seeker.get_tensors(resident_keys, device=self.device, dtype=self.dtype)
-        self._place_tensors(resident_sd)
-        del resident_sd
-
-        for name, buf in list(self._model.named_buffers()):
-            if buf.device.type != self.device:
-                set_module_tensor_to_device(
-                    self._model, name, self.device,
-                    value=buf.to(self.device, dtype=self.dtype if buf.is_floating_point() else None),
-                )
-
-        clean_memory(self.device)
-
-    # ------------------------------------------------------------------
-    # FP8 dequantization tensor placement
-    # ------------------------------------------------------------------
-
-    def _place_tensors(self, state_dict: Dict[str, torch.Tensor]) -> None:
-        """Place tensors, dequantizing FP8 weights (weight * weight_scale → bfloat16)."""
-        processed_sd: Dict[str, torch.Tensor] = {}
+    def apply_state_dict(self, state_dict: Dict[str, torch.Tensor]) -> None:
+        """Override to apply FP8 dequantization (weight * scale) before placing on GPU."""
+        processed_sd = {}
         for name, tensor in state_dict.items():
             if name.endswith(".weight_scale"):
                 continue
-            scale_name = f"{name}_scale"
-            if name.endswith(".weight") and scale_name in state_dict:
-                scale = state_dict[scale_name].to(device=tensor.device, dtype=torch.float32)
+            
+            if name.endswith(".weight") and f"{name}_scale" in state_dict:
+                scale = state_dict[f"{name}_scale"].to(device=tensor.device, dtype=torch.float32)
+                
                 if scale.dim() == 1:
                     if scale.numel() == tensor.shape[0]:
                         scale = scale.view(-1, 1)
                     elif len(tensor.shape) > 1 and scale.numel() == tensor.shape[1]:
                         scale = scale.view(1, -1)
+                        
                 tensor = (tensor.to(torch.float32) * scale).to(self.dtype)
+                
             processed_sd[name] = tensor
 
         for name, tensor in processed_sd.items():
             if tensor.is_floating_point():
                 set_module_tensor_to_device(
-                    self._model, name, self.device, value=tensor, dtype=self.dtype
+                    self.model, name, self.device, value=tensor, dtype=self.dtype
                 )
             else:
-                set_module_tensor_to_device(self._model, name, self.device, value=tensor)
-
-    def _evict_layer(self, state_dict: Dict[str, torch.Tensor]) -> None:
-        for name in state_dict.keys():
-            if name.endswith(".weight_scale"):
-                continue
-            set_module_tensor_to_device(self._model, name, "meta")
-
-    # ------------------------------------------------------------------
-    # Hook installation
-    # ------------------------------------------------------------------
-
-    def _install_hooks(self) -> None:
-        layers = getattr(self._model, "layers", getattr(self._model, "transformer_blocks", None))
-        if layers is None:
-            raise ValueError("Could not find layers in Ideogram4Transformer2DModel.")
-
-        for layer_idx in range(self._num_layers):
-            layer = layers[layer_idx]
-            layer._ideo_layer_idx = layer_idx
-            layer.register_forward_pre_hook(self._layer_pre_hook)
-            layer.register_forward_hook(self._layer_post_hook)
-
-    # ------------------------------------------------------------------
-    # Weight key remapping (fused QKV → separate Q, K, V)
-    # ------------------------------------------------------------------
-
-    def _map_state_dict(self, state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        mapped: Dict[str, torch.Tensor] = {}
-        for k, v in state_dict.items():
-            if ".attention.o." in k:
-                mapped[k.replace(".attention.o.", ".attention.to_out.0.")] = v
-            elif ".attention.qkv." in k:
-                q, k_val, v_val = v.chunk(3, dim=0)
-                prefix = k.split(".attention.qkv.")[0] + ".attention."
-                suffix = k.split(".attention.qkv.")[1]
-                mapped[f"{prefix}to_q.{suffix}"] = q
-                mapped[f"{prefix}to_k.{suffix}"] = k_val
-                mapped[f"{prefix}to_v.{suffix}"] = v_val
-            else:
-                mapped[k] = v
-        return mapped
-
-    # ------------------------------------------------------------------
-    # Hooks
-    # ------------------------------------------------------------------
-
-    def _layer_pre_hook(self, module: nn.Module, args):
-        idx        = module._ideo_layer_idx
-        layer_keys = _get_layer_keys(self._seeker, idx)
-
-        with self._lock:
-            if self._next_future_idx == idx and self._next_future is not None:
-                gpu_sd = self._next_future.result()
-                self._next_future     = None
-                self._next_future_idx = None
-            else:
-                gpu_sd = self._seeker.get_tensors(layer_keys, device=self.device, dtype=self.dtype)
-
-        mapped_sd = self._map_state_dict(gpu_sd)
-        self._place_tensors(mapped_sd)
-        module._ideo_loaded_sd = mapped_sd
-
-        next_idx = idx + 1
-        if next_idx < self._num_layers and self._executor is not None:
-            next_layer_keys = _get_layer_keys(self._seeker, next_idx)
-            with self._lock:
-                self._next_future = self._executor.submit(
-                    self._seeker.get_tensors, next_layer_keys, self.device, self.dtype
-                )
-                self._next_future_idx = next_idx
-
-    def _layer_post_hook(self, module: nn.Module, args, output):
-        loaded_sd = getattr(module, "_ideo_loaded_sd", None)
-        if loaded_sd is not None:
-            self._evict_layer(loaded_sd)
-            module._ideo_loaded_sd = None
-        return output
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    def __del__(self) -> None:
-        if self._executor is not None:
-            try:
-                self._executor.shutdown(wait=False)
-            except Exception:
-                pass
-
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
-
-    @property
-    def model(self):
-        return self._model
-
-    def __call__(self, *args, **kwargs):
-        return self._model(*args, **kwargs)
+                set_module_tensor_to_device(self.model, name, self.device, value=tensor)
 
     @classmethod
     def from_pretrained(
@@ -268,12 +83,48 @@ class Ideogram4Transformer2DModelStreamer:
         dtype: torch.dtype = torch.bfloat16,
         prefetch: bool = True,
         cache_to_ram: bool = False,
-        **kwargs,
     ) -> "Ideogram4Transformer2DModelStreamer":
-        return cls(
-            model_dir=model_dir,
-            device=device,
-            prefetch=prefetch,
-            cache_to_ram=cache_to_ram,
-            dtype=dtype,
+        import diffusers
+        if not hasattr(diffusers, "Ideogram4Transformer2DModel"):
+            raise ImportError(
+                "Diffusers does not have Ideogram4Transformer2DModel. "
+                "Please update diffusers: pip install -U diffusers"
+            )
+
+        model_dir = Path(model_dir)
+
+        logger.info("Step 1/3 -- Initializing LiveSeeker on Ideogram4 Transformer weights ...")
+        seeker = get_seeker(model_dir, cache_to_ram=cache_to_ram)
+        logger.info("  Found %d tensors across HF shards.", len(seeker.weight_map))
+
+        logger.info("Instantiating Ideogram4Transformer2DModel on meta device ...")
+        from accelerate import init_empty_weights
+        from weellm.utils import default_dtype
+        config = diffusers.Ideogram4Transformer2DModel.load_config(str(model_dir))
+        with default_dtype(dtype), init_empty_weights():
+            model = diffusers.Ideogram4Transformer2DModel.from_config(config)
+        model.eval()
+
+        logger.info("Step 3/3 -- Loading resident transformer tensors to GPU ...")
+        streamer = cls(model=model, seeker=seeker, device=device, dtype=dtype, prefetch=prefetch)
+        
+        for name, buf in list(model.named_buffers()):
+            if buf.device.type != "meta":
+                set_module_tensor_to_device(
+                    model, name, device,
+                    value=buf.to(device, dtype=dtype if buf.is_floating_point() else None),
+                )
+
+        resident_keys = streamer._get_resident_keys()
+        resident_sd   = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
+        streamer.apply_state_dict(resident_sd)
+        del resident_sd
+        clean_memory(device)
+        report_memory("After resident load")
+
+        logger.info(
+            "Installed %d transformer blocks for streaming.",
+            len(streamer._get_shard_order())
         )
+        logger.info("Ideogram4Transformer2DModelStreamer ready. Mode: Live Seek from original shards")
+        return streamer

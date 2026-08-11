@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 import torch
 import torch.nn as nn
 from accelerate import init_empty_weights
+from weellm.utils import default_dtype
 from accelerate.utils.modeling import set_module_tensor_to_device
 from transformers import AutoConfig, AutoModel
 
@@ -49,7 +50,6 @@ class Qwen3VLModelStreamer:
         self._seeker: Optional[object] = None
         self._model: Optional[nn.Module] = None
         self._initialized = False
-        self._resident_keys: List[str] = []
         
         self._ensure_initialized()
 
@@ -67,7 +67,7 @@ class Qwen3VLModelStreamer:
 
     def _load_model_skeleton(self):
         config = AutoConfig.from_pretrained(str(self.text_encoder_dir), trust_remote_code=True)
-        with init_empty_weights():
+        with default_dtype(self.dtype), init_empty_weights():
             self._model = AutoModel.from_config(config, trust_remote_code=True)
         self._model.eval()
         
@@ -78,7 +78,6 @@ class Qwen3VLModelStreamer:
 
     def _load_resident_modules(self):
         resident_keys = _get_resident_keys(self._seeker)
-        self._resident_keys = resident_keys
         resident_sd = self._seeker.get_tensors(resident_keys, device=self.device, dtype=self.dtype)
         self._place_tensors(resident_sd)
         del resident_sd
@@ -128,14 +127,6 @@ class Qwen3VLModelStreamer:
                 continue
             set_module_tensor_to_device(self._model, name, "meta")
 
-    def _evict_resident(self):
-        for name in self._resident_keys:
-            if name.endswith(".weight_scale"):
-                continue
-            set_module_tensor_to_device(self._model, name, "meta")
-
-    def evict_resident(self):
-        self._evict_resident()
 
     def _install_hooks(self):
         # Hook Language Layers

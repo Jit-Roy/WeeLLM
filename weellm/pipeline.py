@@ -5,6 +5,13 @@ Builds native diffusers pipelines with WeeLLM layer-streamers injected for
 every major component (VAE, text encoders, transformer/UNet). Applies
 optimizations (VAE tiling, xformers, scheduler patching, meta-device eviction)
 transparently.
+
+``WeePipeline.from_pretrained()`` returns a :class:`WeePipeline` instance that
+wraps the diffusers pipeline.  The wrapper supports:
+
+* ``pipe(...)``              — direct diffusers pipeline call
+* ``pipe.generate(...)``    — convenience wrapper (returns first image)
+* ``pipe.<attr>``           — transparent attribute delegation to the inner pipeline
 """
 
 import gc
@@ -16,6 +23,9 @@ from pathlib import Path
 from typing import Optional, Union
 
 import torch
+
+from weellm.utils import clean_memory, report_memory, resolve_model_path
+from weellm.memory import evict_module
 
 logger = logging.getLogger("weellm")
 
@@ -56,25 +66,113 @@ _TR_MAP = {
 }
 
 
+# ---------------------------------------------------------------------------
+# WeePipeline wrapper
+# ---------------------------------------------------------------------------
+
 class WeePipeline:
     """
-    A unified entrypoint for creating native diffusers pipelines with
-    WeeLLM's memory-efficient layer-streamers injected.
+    A unified wrapper around a native diffusers pipeline that has WeeLLM
+    memory-efficient layer-streamers injected into every major component.
 
-    Usage::
+    Use :meth:`from_pretrained` to construct — do **not** instantiate directly.
+
+    The wrapper is transparent: attribute access and ``__call__`` are delegated
+    to the underlying diffusers pipeline, so all existing diffusers code works
+    unchanged.  Additionally, the :meth:`generate` convenience method is
+    available as an instance method.
+
+    Example::
 
         pipe = WeePipeline.from_pretrained("black-forest-labs/FLUX.1-schnell")
-        image = pipe.generate(prompt="A lion at sunset", seed=42)
+
+        # Text-to-image
+        image = pipe.generate("A lion at sunset", seed=42)
         image.save("output.png")
 
-    Or use the raw diffusers pipeline interface directly::
+        # Image-to-image (pass an img2img pipeline or use a native img2img model)
+        image2 = pipe.generate(
+            "A cyberpunk lion at sunset",
+            image=image,
+            strength=0.75,
+            num_inference_steps=20,
+            seed=0,
+        )
+        image2.save("output_img2img.png")
 
+        # Direct diffusers call — fully supported
         out = pipe(prompt="A lion at sunset", num_inference_steps=4)
-        out.images[0].save("output.png")
+        out.images[0].save("direct.png")
     """
 
+    def __init__(self, pipeline) -> None:
+        # Use object.__setattr__ to bypass our own __setattr__ during init.
+        object.__setattr__(self, "_pipeline", pipeline)
+
     # ------------------------------------------------------------------
-    # Public API
+    # Transparent delegation
+    # ------------------------------------------------------------------
+
+    def __call__(self, *args, **kwargs):
+        """Forward all calls directly to the underlying diffusers pipeline."""
+        return self._pipeline(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        """Delegate attribute access to the inner diffusers pipeline."""
+        return getattr(self._pipeline, name)
+
+    def __setattr__(self, name: str, value):
+        if name == "_pipeline":
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._pipeline, name, value)
+
+    def __repr__(self) -> str:
+        return f"WeePipeline({self._pipeline.__class__.__name__})"
+
+    # ------------------------------------------------------------------
+    # Convenience generate() — instance method
+    # ------------------------------------------------------------------
+
+    def generate(self, prompt: str, **kwargs):
+        """
+        Convenience wrapper that calls the pipeline and returns the first image.
+
+        Supports all standard diffusers kwargs, including image-to-image and
+        inpainting parameters::
+
+            pipe.generate("A lion", seed=42)
+            pipe.generate("A lion", image=pil_img, strength=0.75, num_inference_steps=20)
+            pipe.generate("A lion", image=pil_img, mask_image=pil_mask)
+
+        Parameters
+        ----------
+        prompt:
+            Text prompt for image generation.
+        seed:
+            Optional integer random seed (extracted from kwargs).
+        **kwargs:
+            Any additional arguments forwarded to the diffusers pipeline call
+            (e.g. ``height``, ``width``, ``num_inference_steps``, ``guidance_scale``,
+            ``image``, ``mask_image``, ``strength``, ``negative_prompt`` …).
+
+        Returns
+        -------
+        ``PIL.Image.Image`` — the first generated image.
+        """
+        seed = kwargs.pop("seed", None)
+        generator: Optional[torch.Generator] = None
+        if seed is not None:
+            device = getattr(self._pipeline, "device", torch.device("cpu"))
+            generator = torch.Generator(device=device).manual_seed(seed)
+
+        out = self._pipeline(prompt=prompt, generator=generator, **kwargs)
+        if hasattr(out, "images"):
+            return out.images[0]
+        return out[0][0]
+
+    # ------------------------------------------------------------------
+    # Construction
     # ------------------------------------------------------------------
 
     @classmethod
@@ -87,7 +185,7 @@ class WeePipeline:
         cache_to_ram: bool = False,
         vae_tile_size: int = 256,
         **kwargs,
-    ):
+    ) -> "WeePipeline":
         """
         Build a native diffusers pipeline with WeeLLM streamers injected.
 
@@ -98,8 +196,10 @@ class WeePipeline:
             or local directory containing ``model_index.json``.
         device:
             PyTorch device string (default: ``"cuda"``).
+            ``"cpu"`` is supported on Windows/Linux; Apple Silicon (MPS) is not.
         torch_dtype:
-            Compute dtype. Auto-downcast to float16 on pre-Ampere GPUs.
+            Compute dtype. Auto-downcast to float32 on GPUs that lack bfloat16
+            support; auto-upcast float32→bfloat16 when the GPU natively supports it.
         prefetch:
             Enable background prefetching of the next layer while the current
             one is computing (default: ``True``).
@@ -113,10 +213,10 @@ class WeePipeline:
 
         Returns
         -------
-        A native diffusers pipeline instance, ready for ``pipe(...)`` or
-        ``pipe.generate(...)`` calls.
+        :class:`WeePipeline` wrapping the native diffusers pipeline, ready for
+        ``pipe(...)`` or ``pipe.generate(...)`` calls.
         """
-        model_dir_str = cls._resolve_model_dir(str(model_dir))
+        model_dir_str  = str(resolve_model_path(str(model_dir)))
         model_dir_path = Path(model_dir_str)
 
         index = cls._load_index(model_dir_path)
@@ -128,7 +228,7 @@ class WeePipeline:
         logger.info("  WeeLLM -- Building Native %s with Streamers", pipeline_class_name)
         logger.info("============================================================\n")
 
-        effective_dtype = cls._resolve_dtype(torch_dtype)
+        effective_dtype  = cls._resolve_dtype(device, torch_dtype)
         diffusers_kwargs = dict(kwargs)
         diffusers_kwargs["torch_dtype"] = effective_dtype
 
@@ -138,11 +238,11 @@ class WeePipeline:
 
         # ── Step 2: VAE ─────────────────────────────────────────────────
         logger.info("\n[2/4] Initializing VAE (Lazy loading on meta device) ...")
-        
-        # VAEs often produce NaNs in float16 due to intermediate activation overflow.
-        # If we are running in float16, upcast the VAE to float32.
-        vae_dtype = torch.float32 if effective_dtype == torch.float16 else effective_dtype
-        lazy_vae = cls._load_vae(model_dir_path, device, vae_dtype, cache_to_ram)
+
+        # VAEs often produce artifacts in half-precision due to intermediate activation overflow.
+        # If we are running in float16 or bfloat16, upcast the VAE to float32.
+        vae_dtype = torch.float32 if effective_dtype in (torch.float16, torch.bfloat16) else effective_dtype
+        lazy_vae  = cls._load_vae(model_dir_path, device, vae_dtype, cache_to_ram)
         diffusers_kwargs["vae"] = lazy_vae.model
 
         # ── Step 3: Text Encoders ────────────────────────────────────────
@@ -179,76 +279,11 @@ class WeePipeline:
         cls._patch_pipeline_to(pipeline)
         cls._apply_optimizations(pipeline, device, cache_to_ram, te_streamers, transformer_key, vae_tile_size)
 
-        return pipeline
-
-    # ------------------------------------------------------------------
-    # Convenience .generate() wrapper
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def generate(pipeline, prompt: str, **kwargs):
-        """
-        Thin wrapper around ``pipeline(...)`` that returns the first generated image.
-
-        Parameters
-        ----------
-        pipeline:
-            The pipeline returned by ``WeePipeline.from_pretrained()``.
-        prompt:
-            Text prompt for image generation.
-        **kwargs:
-            Any additional arguments forwarded to the diffusers pipeline call
-            (e.g. ``height``, ``width``, ``num_inference_steps``, ``seed``).
-
-        Returns
-        -------
-        ``PIL.Image.Image``
-        """
-        seed = kwargs.pop("seed", None)
-        generator = None
-        if seed is not None:
-            device = getattr(pipeline, "device", torch.device("cpu"))
-            generator = torch.Generator(device=device).manual_seed(seed)
-
-        out = pipeline(prompt=prompt, generator=generator, **kwargs)
-        if hasattr(out, "images"):
-            return out.images[0]
-        return out[0][0]
+        return cls(pipeline)
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _resolve_model_dir(model_dir_str: str) -> str:
-        """Download from HF Hub if the path doesn't exist locally."""
-        if Path(model_dir_str).exists():
-            return model_dir_str
-
-        logger.info("Path '%s' not found locally. Attempting to download from Hugging Face Hub ...", model_dir_str)
-        try:
-            from huggingface_hub import snapshot_download
-
-            logger.info("Fetching model_index.json from '%s'...", model_dir_str)
-            index_dir  = snapshot_download(model_dir_str, allow_patterns=["model_index.json"])
-            index_path = Path(index_dir) / "model_index.json"
-            with open(index_path, "r", encoding="utf-8") as f:
-                index_data = json.load(f)
-
-            allow_patterns = ["model_index.json"]
-            for key in index_data:
-                if isinstance(index_data[key], list) and len(index_data[key]) == 2:
-                    allow_patterns.append(f"{key}/*")
-
-            logger.info("Downloading only required components: %s", allow_patterns)
-            return snapshot_download(model_dir_str, allow_patterns=allow_patterns)
-        except ImportError:
-            raise ImportError(
-                "huggingface_hub is required to download models. "
-                "Install it with: pip install huggingface_hub"
-            )
-        except Exception as e:
-            raise ValueError(f"Failed to download '{model_dir_str}' from Hugging Face Hub: {e}")
 
     @staticmethod
     def _load_index(model_dir: Path) -> dict:
@@ -257,22 +292,22 @@ class WeePipeline:
             return json.load(f)
 
     @staticmethod
-    def _resolve_dtype(torch_dtype: torch.dtype) -> torch.dtype:
-        """Smart dtype resolution based on GPU bfloat16 support.
-        
-        - bfloat16 on a GPU that doesn't support it → float32 (safe fallback)
-        - float32   on a GPU that supports bfloat16  → bfloat16 (same range, 2x faster)
+    def _resolve_dtype(device: str, torch_dtype: torch.dtype) -> torch.dtype:
+        """Smart dtype resolution.
+
+        * bfloat16 on a GPU that does not support it  → float32 (safe fallback)
+        * float32  on a GPU that natively supports bf16 → bfloat16 (2× speedup)
+        * CPU: bfloat16 is supported natively since PyTorch 1.10; keep as-is.
         """
-        if not torch.cuda.is_available():
+        if device == "cpu" or not torch.cuda.is_available():
+            # CPU supports bfloat16 natively in PyTorch ≥1.10; nothing to adjust.
             return torch_dtype
 
         bf16_supported = torch.cuda.is_bf16_supported()
 
         if torch_dtype == torch.bfloat16 and not bf16_supported:
             logger.info(
-                "  [WeeLLM] NOTE: bfloat16 is not supported on this GPU."
-            )
-            logger.info(
+                "  [WeeLLM] NOTE: bfloat16 is not supported on this GPU.\n"
                 "  [WeeLLM] Auto-casting to float32 (safe fallback) to prevent NaNs/black images "
                 "that can occur with float16 on large models.\n"
             )
@@ -281,10 +316,8 @@ class WeePipeline:
         if torch_dtype == torch.float32 and bf16_supported:
             logger.info(
                 "  [WeeLLM] NOTE: float32 requested but this GPU natively supports bfloat16, "
-                "which has the same numerical range."
-            )
-            logger.info(
-                "  [WeeLLM] Auto-casting to bfloat16 for ~2x speedup with no quality loss.\n"
+                "which has the same numerical range.\n"
+                "  [WeeLLM] Auto-casting to bfloat16 for ~2× speedup with no quality loss.\n"
             )
             return torch.bfloat16
 
@@ -438,7 +471,7 @@ class WeePipeline:
         if not module_path:
             raise ValueError(f"Unsupported architecture: {transformer_class_name}")
 
-        module                  = importlib.import_module(module_path)
+        module                   = importlib.import_module(module_path)
         transformer_cls_streamer = getattr(module, transformer_class_name + "Streamer")
 
         if transformer_key == "unet":
@@ -498,8 +531,8 @@ class WeePipeline:
             meta_params = 0
 
         if meta_params > 0:
-            real_device   = torch.device(device)
-            pipeline_cls  = pipeline.__class__
+            real_device  = torch.device(device)
+            pipeline_cls = pipeline.__class__
 
             if not hasattr(pipeline_cls, "_weellm_original_execution_device"):
                 pipeline_cls._weellm_original_execution_device = pipeline_cls._execution_device
@@ -551,8 +584,8 @@ class WeePipeline:
             original_set_timesteps = pipeline.scheduler.set_timesteps
             original_step          = pipeline.scheduler.step
 
-            def safe_set_timesteps(self_obj, num_inference_steps=None, device=None, sigmas=None, mu=None, timesteps=None):
-                # Build kwargs only for args the scheduler actually accepts
+            def safe_set_timesteps(num_inference_steps=None, device=None, sigmas=None, mu=None, timesteps=None):
+                # Build kwargs only for args the scheduler actually accepts.
                 import inspect
                 sig    = inspect.signature(original_set_timesteps)
                 params = sig.parameters
@@ -568,10 +601,10 @@ class WeePipeline:
                 if "timesteps" in params and timesteps is not None:
                     kw["timesteps"] = timesteps
                 result = original_set_timesteps(**kw)
-                _move_scheduler(self_obj, device)
+                _move_scheduler(pipeline.scheduler, device)
                 return result
 
-            def safe_step(self_obj, *args, **kwargs):
+            def safe_step(*args, **kwargs):
                 args = list(args)
                 tensor_device = None
                 for value in args[:3]:
@@ -587,7 +620,7 @@ class WeePipeline:
                 if tensor_device is None:
                     tensor_device = device
 
-                _move_scheduler(self_obj, tensor_device)
+                _move_scheduler(pipeline.scheduler, tensor_device)
                 for i, value in enumerate(args[:3]):
                     if torch.is_tensor(value) and value.device.type != tensor_device:
                         args[i] = value.to(tensor_device)
@@ -596,11 +629,14 @@ class WeePipeline:
                         kwargs[k] = value.to(tensor_device)
 
                 result = original_step(*args, **kwargs)
-                _move_scheduler(self_obj, tensor_device)
+                _move_scheduler(pipeline.scheduler, tensor_device)
                 return result
 
-            pipeline.scheduler.set_timesteps = types.MethodType(safe_set_timesteps, pipeline.scheduler)
-            pipeline.scheduler.step          = types.MethodType(safe_step, pipeline.scheduler)
+            # Assign as plain functions (not bound methods) — the originals are
+            # already bound to the scheduler object, so wrapping them this way
+            # avoids the self_obj first-arg inconsistency.
+            pipeline.scheduler.set_timesteps = safe_set_timesteps
+            pipeline.scheduler.step          = safe_step
 
     @staticmethod
     def _patch_pipeline_to(pipeline) -> None:
@@ -640,8 +676,10 @@ class WeePipeline:
 
         logger.info("\n[5/5] Applying Aggressive RAM Eviction...")
 
+        cuda_available = torch.cuda.is_available() and device != "cpu"
+
         # xformers for pre-Ampere GPUs
-        if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 8:
+        if cuda_available and torch.cuda.get_device_capability()[0] < 8:
             try:
                 pipeline.enable_xformers_memory_efficient_attention()
                 logger.info(
@@ -679,51 +717,24 @@ class WeePipeline:
                     if hasattr(pipeline, tr_name):
                         setattr(pipeline, tr_name, None)
                 gc.collect()
+
+                # Cast float inputs (latents) to VAE's expected dtype
+                tgt_dtype = getattr(self_obj, "dtype", None)
+                if tgt_dtype is not None:
+                    args = tuple(a.to(tgt_dtype) if torch.is_tensor(a) and a.is_floating_point() else a for a in args)
+                    kwargs = {k: (v.to(tgt_dtype) if torch.is_tensor(v) and v.is_floating_point() else v) for k, v in kwargs.items()}
+
                 return original_vae_decode(*args, **kwargs)
 
             pipeline.vae.decode = types.MethodType(aggressive_vae_decode, pipeline.vae)
 
-        # VRAM tracking helper
-        def _print_vram(tag: str) -> None:
-            try:
-                import psutil, os as _os
-                alloc = torch.cuda.memory_allocated() / (1024**3)
-                res   = torch.cuda.memory_reserved()  / (1024**3)
-                ram   = psutil.Process(_os.getpid()).memory_info().rss / (1024**3)
-                logger.debug(
-                    "[WeeLLM VRAM] %-45s | Alloc: %.3f GB | Reserved: %.3f GB | RAM: %.3f GB",
-                    tag, alloc, res, ram,
-                )
-            except Exception:
-                pass
-
         def _evict_module_to_meta(module, label: str) -> None:
             if module is None or not isinstance(module, torch.nn.Module):
                 return
-            try:
-                from accelerate.utils.modeling import set_module_tensor_to_device
-                evicted = 0
-                for name, param in list(module.named_parameters(recurse=True)):
-                    dev = getattr(param, "device", None)
-                    if dev is not None and dev.type != "meta":
-                        try:
-                            param.data = torch.empty(0, device="meta")
-                        except Exception:
-                            pass
-                        evicted += 1
-                for name, buf in module.named_buffers(recurse=True):
-                    dev = getattr(buf, "device", None)
-                    if dev is not None and dev.type != "meta":
-                        try:
-                            set_module_tensor_to_device(module, name, "meta")
-                        except Exception:
-                            pass
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                logger.debug("[WeeLLM Offload] Evicted %s tensors to meta (params=%d).", label, evicted)
-            except Exception as exc:
-                logger.debug("[WeeLLM Offload] Failed to evict %s: %s", label, exc)
+            evicted = evict_module(module)
+            if cuda_available:
+                torch.cuda.empty_cache()
+            logger.debug("[WeeLLM Offload] Evicted %d tensors to meta (%s).", evicted, label)
 
         # TE eviction hook: runs on FIRST forward of transformer/unet
         def _evict_te_before_unet(module, args):
@@ -731,17 +742,10 @@ class WeePipeline:
                 return
             module._weellm_te_evicted = True
 
-            _print_vram("Before Text Encoder Offload")
-            for te_key, streamer_obj in te_streamers.items():
-                if hasattr(streamer_obj, "evict_resident"):
-                    try:
-                        streamer_obj.evict_resident()
-                        logger.debug("[WeeLLM Offload] Evicted %s resident weights to meta.", te_key)
-                    except Exception as exc:
-                        logger.debug("[WeeLLM Offload] Failed to evict %s resident: %s", te_key, exc)
-                else:
-                    te_mod = getattr(pipeline, te_key, None)
-                    _evict_module_to_meta(te_mod, te_key)
+            report_memory("Before Text Encoder Offload")
+            for te_key in te_streamers.keys():
+                te_mod = getattr(pipeline, te_key, None)
+                _evict_module_to_meta(te_mod, te_key)
 
             if cache_to_ram:
                 logger.info("\n[WeeLLM] One-Shot: Freeing Text Encoders from RAM...")
@@ -751,9 +755,9 @@ class WeePipeline:
                         setattr(pipeline, te_name, None)
 
             gc.collect()
-            if torch.cuda.is_available():
+            if cuda_available:
                 torch.cuda.empty_cache()
-            _print_vram("After Text Encoder Offload")
+            report_memory("After Text Encoder Offload")
 
         tr_module = getattr(pipeline, "unet", None) or getattr(pipeline, "transformer", None)
         if tr_module is not None:
@@ -764,17 +768,26 @@ class WeePipeline:
             original_vae_decode_vram = pipeline.vae.decode
 
             def defrag_vae_decode(self_obj, *args, **kwargs):
-                _print_vram("Before VAE Decode (Before GC)")
+                report_memory("Before VAE Decode (Before GC)")
                 gc.collect()
-                torch.cuda.empty_cache()
-                _print_vram("Before VAE Decode (After GC)")
+                if cuda_available:
+                    torch.cuda.empty_cache()
+                report_memory("Before VAE Decode (After GC)")
                 _evict_module_to_meta(getattr(pipeline, "transformer", None), "transformer")
-                _print_vram("Before VAE Decode (After Transformer Offload)")
+                report_memory("Before VAE Decode (After Transformer Offload)")
+
+                # Cast float inputs (latents) to VAE's expected dtype
+                tgt_dtype = getattr(self_obj, "dtype", None)
+                if tgt_dtype is not None:
+                    args = tuple(a.to(tgt_dtype) if torch.is_tensor(a) and a.is_floating_point() else a for a in args)
+                    kwargs = {k: (v.to(tgt_dtype) if torch.is_tensor(v) and v.is_floating_point() else v) for k, v in kwargs.items()}
+
                 res = original_vae_decode_vram(*args, **kwargs)
-                _print_vram("After VAE Decode (Before GC)")
+                report_memory("After VAE Decode (Before GC)")
                 gc.collect()
-                torch.cuda.empty_cache()
-                _print_vram("After VAE Decode (After GC)")
+                if cuda_available:
+                    torch.cuda.empty_cache()
+                report_memory("After VAE Decode (After GC)")
                 return res
 
             pipeline.vae.decode = types.MethodType(defrag_vae_decode, pipeline.vae)

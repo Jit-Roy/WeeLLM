@@ -1,5 +1,9 @@
+import logging
 from pathlib import Path
 from typing import Union
+
+logger = logging.getLogger("weellm")
+
 
 def get_seeker(model_dir: Union[str, Path], cache_to_ram: bool = False):
     """
@@ -10,12 +14,15 @@ def get_seeker(model_dir: Union[str, Path], cache_to_ram: bool = False):
     """
     model_dir_path = Path(model_dir)
     if not model_dir_path.exists():
-        print(f"Directory {model_dir} not found. Attempting to download from Hugging Face Hub...")
+        logger.info("Directory '%s' not found. Attempting to download from Hugging Face Hub...", model_dir)
         from huggingface_hub import snapshot_download
         repo_id = str(model_dir).replace("\\", "/")
-        model_dir = snapshot_download(repo_id=repo_id, allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.json"])
+        model_dir = snapshot_download(
+            repo_id=repo_id,
+            allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.json"],
+        )
         model_dir_path = Path(model_dir)
-        
+
     if cache_to_ram:
         from weellm.ram_seek import SafetensorsRAMSeeker
         return SafetensorsRAMSeeker(model_dir_path)

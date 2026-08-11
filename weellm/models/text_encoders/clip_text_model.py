@@ -18,25 +18,10 @@ import torch.nn as nn
 import types
 
 from accelerate import init_empty_weights
-from accelerate.utils.modeling import set_module_tensor_to_device
-
+from weellm.utils import default_dtype
 from weellm.seeker import get_seeker
 from weellm.utils import clean_memory, report_memory
-
-
-def _apply_state_dict(model: nn.Module, state_dict: dict, device: str, dtype: torch.dtype):
-    """Write tensors into model parameters – handles meta -> real device."""
-    for name, tensor in state_dict.items():
-        if tensor.is_floating_point():
-            set_module_tensor_to_device(model, name, device, value=tensor, dtype=dtype)
-        else:
-            set_module_tensor_to_device(model, name, device, value=tensor)
-
-
-def _evict_params(model: nn.Module, param_names: list):
-    """Move named parameters back to meta device (free VRAM)."""
-    for name in param_names:
-        set_module_tensor_to_device(model, name, "meta")
+from weellm.memory import place_tensors, evict_module
 
 
 def _patch_forward_input_device(model: nn.Module):
@@ -134,12 +119,10 @@ class CLIPTextModelStreamer:
         else:
             sd = raw_sd
 
-        _apply_state_dict(self.model, sd, self.device, self.dtype)
-        module._clip_loaded_params = list(sd.keys())  # model-side names for eviction
+        place_tensors(self.model, sd, self.device, self.dtype)
 
     def _post_hook(self, module: nn.Module, args, output):
-        _evict_params(self.model, getattr(module, "_clip_loaded_params", []))
-        module._clip_loaded_params = []
+        evict_module(module)
         return output
 
     # ------------------------------------------------------------------
@@ -167,14 +150,14 @@ class CLIPTextModelStreamer:
 
         # Instantiate on meta device
         config = model_cls.config_class.from_pretrained(path)
-        with init_empty_weights():
+        with default_dtype(dtype), init_empty_weights():
             model = model_cls(config)
         model.eval()
 
         # Move any non-meta buffers (e.g. position_ids) to device immediately
         for buf_name, buf in model.named_buffers():
             if buf is not None and buf.device.type != "meta":
-                set_module_tensor_to_device(model, buf_name, device, value=buf)
+                place_tensors(model, {buf_name: buf}, device, buf.dtype if buf.is_floating_point() else torch.float32)
 
         # ------------------------------------------------------------------
         # Detect safetensors key structure vs. model object structure
@@ -215,7 +198,7 @@ class CLIPTextModelStreamer:
         else:
             resident_sd = resident_sd_raw
 
-        _apply_state_dict(model, resident_sd, device, dtype)
+        place_tensors(model, resident_sd, device, dtype)
         del resident_sd_raw, resident_sd
         clean_memory(device)
 

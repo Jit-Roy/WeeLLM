@@ -22,14 +22,13 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from accelerate.utils.modeling import set_module_tensor_to_device
+from accelerate.utils import set_module_tensor_to_device
+from weellm.memory import place_tensors, evict_module
 
 logger = logging.getLogger("weellm")
 
 # Attribute name stored on each streamed nn.Module block to track its shard name
 _SHARD_NAME_ATTR = "_weellm_shard_name"
-# Attribute name to store which parameter keys were loaded by the last pre_hook
-_LOADED_PARAMS_ATTR = "_weellm_loaded_params"
 
 
 class BaseTransformerStreamer(ABC):
@@ -110,20 +109,8 @@ class BaseTransformerStreamer(ABC):
 
     def apply_state_dict(self, state_dict: Dict[str, torch.Tensor]) -> None:
         """Write *state_dict* tensors into model parameters (meta → real device)."""
-        for name, tensor in state_dict.items():
-            if tensor.is_floating_point():
-                set_module_tensor_to_device(
-                    self.model, name, self.device, value=tensor, dtype=self.dtype
-                )
-            else:
-                set_module_tensor_to_device(
-                    self.model, name, self.device, value=tensor
-                )
+        place_tensors(self.model, state_dict, self.device, self.dtype)
 
-    def evict_params(self, param_names: List[str]) -> None:
-        """Move *param_names* back to the meta device (frees VRAM immediately)."""
-        for name in param_names:
-            set_module_tensor_to_device(self.model, name, "meta")
 
     def _get_layer_keys(self, shard_name: str) -> List[str]:
         return [
@@ -164,9 +151,10 @@ class BaseTransformerStreamer(ABC):
                 sd = self.seeker.get_tensors(layer_keys, device=self.device, dtype=self.dtype)
 
         self.apply_state_dict(sd)
-        setattr(module, _LOADED_PARAMS_ATTR, list(sd.keys()))
 
         # Clamp block INPUTS to prevent float16 overflow inside attention softmax.
+        # IMPORTANT: pre_hook must *return* a tuple for PyTorch to replace the inputs;
+        # assigning to a local variable and returning nothing is silently ignored.
         if self.dtype == torch.float16:
             clamped_args = []
             for arg in args:
@@ -187,9 +175,11 @@ class BaseTransformerStreamer(ABC):
                 )
                 self._next_future_name = next_name
 
+        # Return args so PyTorch replaces the module's inputs with the (possibly clamped) tuple.
+        return args
+
     def _post_hook(self, module: nn.Module, args, output):
-        self.evict_params(getattr(module, _LOADED_PARAMS_ATTR, []))
-        setattr(module, _LOADED_PARAMS_ATTR, [])
+        evict_module(module)
         return output
 
     # ------------------------------------------------------------------
@@ -222,10 +212,11 @@ class BaseTransformerStreamer(ABC):
         Returns the ready model.
         """
         from accelerate import init_empty_weights
+        from weellm.utils import default_dtype
         from weellm.utils import clean_memory, report_memory
 
         logger.info("  Instantiating %s on meta device ...", model_cls.__name__)
-        with init_empty_weights():
+        with default_dtype(dtype), init_empty_weights():
             cfg   = model_cls.load_config(str(transformer_dir / "config.json"))
             model = model_cls.from_config(cfg)
         model.eval()

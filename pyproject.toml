@@ -56,8 +56,7 @@ Repository = "https://github.com/Jit-Roy/weellm"
 where = ["."]
 include = ["weellm*"]
 
-[tool.setuptools.package-data]
-weellm = ["py.typed"]
+
 
 [tool.ruff]
 line-length = 120
