@@ -307,12 +307,11 @@ class WeePipeline:
     def _resolve_dtype(device: str, torch_dtype: torch.dtype) -> torch.dtype:
         """Smart dtype resolution.
 
-        * bfloat16 on a GPU that does not support it  → float32 (safe fallback)
-        * float32  on a GPU that natively supports bf16 → bfloat16 (2× speedup)
-        * CPU: bfloat16 is supported natively since PyTorch 1.10; keep as-is.
+        * bfloat16 on a GPU that does not support it → float32 (safe fallback)
+        * float32 is always honoured as-is — no silent upcast.
+        * CPU: bfloat16 is supported natively since PyTorch ≥1.10; keep as-is.
         """
         if device == "cpu" or not torch.cuda.is_available():
-            # CPU supports bfloat16 natively in PyTorch ≥1.10; nothing to adjust.
             return torch_dtype
 
         bf16_supported = torch.cuda.is_bf16_supported()
@@ -325,13 +324,12 @@ class WeePipeline:
             )
             return torch.float32
 
-        if torch_dtype == torch.float32 and bf16_supported:
+        if torch_dtype == torch.float32:
             logger.info(
-                "  [WeeLLM] NOTE: float32 requested but this GPU natively supports bfloat16, "
-                "which has the same numerical range.\n"
-                "  [WeeLLM] Auto-casting to bfloat16 for ~2× speedup with no quality loss.\n"
+                "  [WeeLLM] NOTE: float32 requested. Running in full precision.\n"
+                "  [WeeLLM] Memory budget is tighter — use --dtype bfloat16 for ~2× speedup "
+                "with equivalent quality.\n"
             )
-            return torch.bfloat16
 
         return torch_dtype
 
