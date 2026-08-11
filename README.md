@@ -67,6 +67,17 @@ python main.py --model ./my-local-flux-model --prompt "A cyberpunk city at night
 
 ---
 
+## 🛠 Troubleshooting: VRAM Spikes (e.g. 6GB+ on Kaggle T4)
+
+If your Peak VRAM unexpectedly shoots up during generation (e.g., reaching 6 GB instead of the expected 2 GB), it is almost certainly a **hardware dtype compatibility issue**. 
+
+When running on older GPUs like the NVIDIA T4 (Turing architecture) commonly found on Kaggle/Colab, the hardware **does not natively support `bfloat16`**. 
+If you force `--dtype bfloat16`, PyTorch will silently disable memory-efficient FlashAttention kernels and fall back to the unoptimized **Math backend** for `scaled_dot_product_attention`. 
+
+The Math backend materializes the full $N \times N$ attention matrix in VRAM, which for modern high-resolution diffusion models (like FLUX) causes a colossal memory allocation.
+
+---
+
 ## Model Setup
 
 You can pass a **Hugging Face Repository ID** (e.g. `Tongyi-MAI/Z-Image-Turbo`) or an absolute/relative path to a local folder. 
