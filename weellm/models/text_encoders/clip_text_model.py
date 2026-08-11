@@ -24,15 +24,12 @@ from weellm.utils import clean_memory, report_memory
 from weellm.memory import place_tensors, evict_module
 
 
-def _patch_forward_input_device(model: nn.Module):
+def _patch_forward_input_device(model: nn.Module, target_device: str = "cuda"):
     """Move CLIP text inputs onto the model device before forward runs."""
     original_forward = model.forward
+    model_device = torch.device(target_device)
 
     def patched_forward(self_obj, *args, **kwargs):
-        try:
-            model_device = next(self_obj.parameters()).device
-        except StopIteration:
-            model_device = torch.device("cpu")
 
         args = list(args)
         if args and torch.is_tensor(args[0]) and args[0].device != model_device:
@@ -214,7 +211,7 @@ class CLIPTextModelStreamer:
         del resident_sd_raw, resident_sd, cpu_sd, gpu_sd
         clean_memory(device)
 
-        _patch_forward_input_device(model)
+        _patch_forward_input_device(model, device)
 
         if model_has_text_model:
             num_layers = len(model.text_model.encoder.layers)
