@@ -25,7 +25,7 @@ from accelerate import init_empty_weights
 from weellm.utils import default_dtype
 from weellm.seeker import get_seeker
 from weellm.utils import clean_memory, report_memory
-from weellm.memory import place_tensors, evict_module
+from weellm.memory import place_tensors
 from accelerate.utils.modeling import set_module_tensor_to_device
 
 
@@ -88,8 +88,51 @@ class T5EncoderModelStreamer:
         sd = self.seeker.get_tensors(block_keys, device=self.device, dtype=self.dtype)
         place_tensors(self.model, sd, self.device, self.dtype)
 
+    def _evict_block(self, module: nn.Module, block_idx: int) -> None:
+        """
+        Evict a T5 encoder block back to meta device.
+
+        Block 0 is special: it owns ``relative_attention_bias`` which T5 uses
+        to compute ``position_bias`` and then *passes that tensor forward* to
+        every subsequent block.  We must keep ``relative_attention_bias`` resident
+        on GPU for the entire encode pass, otherwise the forward through blocks
+        1..N-1 will see a CUDA ``position_bias`` but try to touch meta-device
+        tensors inside block 0's attention sub-module, causing:
+            RuntimeError: Tensor on device cuda:0 is not on the expected device meta!
+
+        Solution: when evicting block 0, skip the relative_attention_bias sub-module.
+        For all other blocks evict everything as usual.
+        """
+        from weellm.memory import evict_module as _evict
+        from accelerate.utils.modeling import set_module_tensor_to_device
+
+        if block_idx != 0:
+            _evict(module)
+            return
+
+        # Block 0: evict everything EXCEPT relative_attention_bias
+        for name, param in list(module.named_parameters(recurse=True)):
+            if "relative_attention_bias" in name:
+                continue  # keep resident
+            dev = getattr(param, "device", None)
+            if dev is not None and dev.type != "meta":
+                try:
+                    set_module_tensor_to_device(module, name, "meta")
+                except Exception:
+                    pass
+
+        for name, buf in list(module.named_buffers(recurse=True)):
+            if "relative_attention_bias" in name:
+                continue
+            dev = getattr(buf, "device", None)
+            if dev is not None and dev.type != "meta":
+                try:
+                    set_module_tensor_to_device(module, name, "meta")
+                except Exception:
+                    pass
+
     def _post_hook(self, module: nn.Module, args, output):
-        evict_module(module)
+        self._evict_block(module, module._t5_block_idx)
         return output
 
     @classmethod
