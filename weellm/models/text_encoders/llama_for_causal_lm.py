@@ -87,10 +87,6 @@ class LlamaForCausalLMStreamer(BaseLazyDecoderStreamer):
         clean_memory(self.device)
         return stacked
 
-    @property
-    def dtype(self):
-        return self._dtype if hasattr(self, "_dtype") else self.dtype
-
     @classmethod
     def from_pretrained(
         cls,
