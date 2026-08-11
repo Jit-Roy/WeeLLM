@@ -79,8 +79,8 @@ examples:
         "--negative_prompt", type=str, default="",
         help="Negative prompt to guide generation away from unwanted content (default: empty)",
     )
-    parser.add_argument("--height", type=int, default=512, help="Output height in pixels (default: 512)")
-    parser.add_argument("--width",  type=int, default=512, help="Output width in pixels  (default: 512)")
+    parser.add_argument("--height", type=int, default=1024, help="Output height in pixels (default: 1024)")
+    parser.add_argument("--width",  type=int, default=1024, help="Output width in pixels  (default: 1024)")
     parser.add_argument("--steps",  type=int, default=4,   help="Denoising steps         (default: 4)")
     parser.add_argument(
         "--guidance_scale", type=float, default=1.0,

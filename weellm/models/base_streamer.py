@@ -165,7 +165,9 @@ class BaseTransformerStreamer(ABC):
                     clamped_args.append(arg)
             args = tuple(clamped_args)
 
-        # Launch background prefetch for the next block.
+        # Launch background prefetch for the next block directly to VRAM.
+        # Loading straight to GPU avoids creating intermediate CPU tensors that
+        # accumulate in RSS during long sequences of blocks.
         next_pos = pos + 1
         if self.prefetch and self._executor is not None and next_pos < len(self._shard_order):
             next_name, _ = self._shard_order[next_pos]
