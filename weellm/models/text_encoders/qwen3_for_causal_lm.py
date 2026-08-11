@@ -52,10 +52,10 @@ class Qwen3ForCausalLMStreamer(BaseLazyDecoderStreamer):
         return f"model.layers.{idx}."
 
     def _resident_key_filter(self, key: str) -> bool:
-        return key.startswith("norm.")
+        return "norm" in key
 
     def _cpu_resident_key_filter(self, key: str) -> bool:
-        return key.startswith("embed_tokens.")
+        return "embed_tokens" in key
 
     def _get_model_layers(self) -> nn.ModuleList:
         return self._model.model.layers
