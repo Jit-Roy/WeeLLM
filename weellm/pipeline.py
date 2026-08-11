@@ -246,7 +246,7 @@ class WeePipeline:
 
         # ── Step 1: Tokenizers & Scheduler ──────────────────────────────
         logger.info("[1/4] Loading Tokenizers and Scheduler ...")
-        cls._load_tokenizers_and_scheduler(model_dir_path, index, effective_dtype, diffusers_kwargs)
+        cls._load_tokenizers_and_scheduler(model_dir_path, index, device, effective_dtype, diffusers_kwargs)
 
         # ── Step 2: VAE ─────────────────────────────────────────────────
         logger.info("\n[2/4] Initializing VAE (Lazy loading on meta device) ...")
@@ -337,7 +337,7 @@ class WeePipeline:
 
     @staticmethod
     def _load_tokenizers_and_scheduler(
-        model_dir: Path, index: dict, effective_dtype: torch.dtype, out: dict
+        model_dir: Path, index: dict, device: str, effective_dtype: torch.dtype, out: dict
     ) -> None:
         """Populate *out* with tokenizers, feature_extractor, safety_checker, scheduler."""
         if "feature_extractor" in index:
@@ -357,7 +357,11 @@ class WeePipeline:
             sc = None
             try:
                 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
-                sc = StableDiffusionSafetyChecker.from_pretrained(str(model_dir), subfolder="safety_checker")
+                sc = StableDiffusionSafetyChecker.from_pretrained(
+                    str(model_dir), subfolder="safety_checker", torch_dtype=effective_dtype
+                )
+                if sc is not None:
+                    sc = sc.to(device)
             except Exception as e:
                 logger.warning("Failed to load safety_checker, continuing with None: %s", e)
             out["safety_checker"] = sc
