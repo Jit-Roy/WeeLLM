@@ -30,11 +30,17 @@ class ZImageTransformer2DModelStreamer(BaseTransformerStreamer):
     """
 
     def _get_shard_order(self) -> List[Tuple[str, nn.Module]]:
+        # Match the upstream diffusers forward pass order exactly:
+        # 1) noise_refiner
+        # 2) context_refiner
+        # 3) main layers
+        # Loading in the wrong sequence causes the streamed blocks to be evicted
+        # and reloaded out of phase, which produces the repeated tile/block artifacts.
         order = []
-        for i, block in enumerate(self.model.context_refiner):
-            order.append((f"context_refiner.{i}", block))
         for i, block in enumerate(self.model.noise_refiner):
             order.append((f"noise_refiner.{i}", block))
+        for i, block in enumerate(self.model.context_refiner):
+            order.append((f"context_refiner.{i}", block))
         for i, block in enumerate(self.model.layers):
             order.append((f"layers.{i}", block))
         return order

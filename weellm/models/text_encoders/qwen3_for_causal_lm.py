@@ -4,8 +4,9 @@ qwen3_for_causal_lm.py -- Hook-based layer-streaming for Qwen3ForCausalLM (Flux2
 Uses BaseLazyDecoderStreamer. Architecture-specific details:
   - Layer prefix: ``model.layers.{i}.``
   - Resident: ``model.embed_tokens.*``, ``model.norm.*``
-  - Captures: configurable multi-layer (default: layers 14, 21, 35 for Flux2-Klein)
+  - Captures: penultimate layer only (layer 34 for Qwen3's 36 layers)
   - Special: Qwen3 rotary uses compute_default_rope_parameters
+  - Forward masking: applies attention_mask to filter padding tokens (native ZImage contract)
 """
 
 from __future__ import annotations
@@ -27,20 +28,28 @@ class Qwen3ForCausalLMStreamer(BaseLazyDecoderStreamer):
     """
     Streaming text encoder for Qwen3ForCausalLM (Flux2-Klein).
     Captures multi-layer hidden states and concatenates them.
+    
+    CRITICAL: When the model is placed into the diffusers pipeline, it will be called
+    directly as text_encoder(input_ids, attention_mask, output_hidden_states=True).
+    This wrapper overrides the forward method to match the native ZImage contract:
+    - Returns hidden_states[-2] (penultimate layer)
+    - Masks by attention_mask to remove padding
+    - Returns as a modified output that diffusers can consume
     """
 
     def __init__(
         self,
         text_encoder_dir,
         tokenizer_dir,
-        extract_layers: Tuple[int, ...] = (14, 21, 35),
+        extract_layers: Optional[Tuple[int, ...]] = None,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         cache_to_ram: bool = False,
         max_length: int = 512,
     ):
         super().__init__(text_encoder_dir, tokenizer_dir, device, dtype, cache_to_ram, max_length)
-        self._extract_layers = extract_layers
+        # Default: use penultimate layer only (matching native diffusers contract)
+        self._extract_layers = extract_layers if extract_layers is not None else None
 
     # -- Abstract implementations --
 
@@ -63,12 +72,15 @@ class Qwen3ForCausalLMStreamer(BaseLazyDecoderStreamer):
     def _load_model_skeleton(self) -> None:
         config = AutoConfig.from_pretrained(str(self.text_encoder_dir), trust_remote_code=True)
         self._num_layers = config.num_hidden_layers
+        # Default to penultimate layer if not explicitly set (matching native diffusers)
+        if self._extract_layers is None:
+            self._extract_layers = (self._num_layers - 2,)
         with default_dtype(self.dtype), init_empty_weights():
             self._model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
         self._model.eval()
 
     def _load_resident_extra(self) -> None:
-        """Fix up Qwen3 rotary embeddings (may use compute_default_rope_parameters)."""
+        """Fix up Qwen3 rotary embeddings and wrap forward method for diffusers compatibility."""
         rotary = self._model.model.rotary_emb
         if hasattr(rotary, "compute_default_rope_parameters"):
             inv_freq, _ = rotary.compute_default_rope_parameters(self._model.config, device="cpu")
@@ -82,62 +94,111 @@ class Qwen3ForCausalLMStreamer(BaseLazyDecoderStreamer):
                     
         # Embeddings are on CPU, run them on CPU!
         pin_module_to_cpu(self._model, "model.embed_tokens")
+        
+        # Wrap the model's forward method to apply masking when called by diffusers
+        self._install_forward_wrapper()
 
     def _capture_layer_indices(self) -> set:
-        # hooks use 0-indexed layer idx; extract_layers are 1-indexed (HF convention)
-        return {L - 1 for L in self._extract_layers}
+        return set(self._extract_layers)
+
+    def _install_forward_wrapper(self) -> None:
+        """
+        Wrap the model's forward method to ensure output_hidden_states=True.
+        
+        Diffusers expects: text_encoder(input_ids, attention_mask, output_hidden_states=True)
+        The wrapper ensures we always return hidden_states even if not explicitly requested.
+        """
+        original_forward = self._model.forward
+        
+        @torch.no_grad()
+        def ensure_hidden_states_forward(input_ids, attention_mask=None, output_hidden_states=False, **kwargs):
+            # Call the original forward with output_hidden_states=True to get all layers
+            output = original_forward(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,  # Always compute hidden states
+                **kwargs
+            )
+            # Return the unmodified output. Diffusers pipeline will:
+            # 1. Extract .hidden_states[-2] (the penultimate layer)
+            # 2. Then mask it by attention_mask: prompt_embeds[i][prompt_masks[i]]
+            return output
+        
+        self._model.forward = ensure_hidden_states_forward
 
     # -- Encoding --
 
     @torch.no_grad()
-    def encode(self, prompt: str) -> torch.Tensor:
+    def encode(self, prompt: str) -> list[torch.Tensor]:
+        """
+        Encode a prompt to embeddings, matching native ZImagePipeline._encode_prompt contract.
+        
+        Returns:
+            list[torch.Tensor]: One tensor per batch item, with padding removed via attention_mask.
+        """
         self._ensure_initialized()
 
         messages = [{"role": "user", "content": prompt}]
         text = self._tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False,
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=True,
         )
         inputs = self._tokenizer(
             text, return_tensors="pt", padding="max_length",
             truncation=True, max_length=self.max_length,
         )
         input_ids      = inputs["input_ids"].to(self.device)
-        attention_mask = inputs["attention_mask"].to(self.device)
+        attention_mask = inputs["attention_mask"].to(self.device).bool()
 
         self._captured.clear()
         _ = self._model.model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
 
-        target_layers = [L - 1 for L in self._extract_layers]
-        stacked = torch.stack([self._captured[k] for k in target_layers], dim=1)
-        B, num_captured, seq, hidden = stacked.shape
-        prompt_embeds = stacked.permute(0, 2, 1, 3).reshape(B, seq, num_captured * hidden)
-        prompt_embeds = prompt_embeds.to(dtype=self.dtype)
+        # Extract penultimate (or specified) layer
+        target_layer = list(self._extract_layers)[0]  # Use first layer in extract set
+        hidden = self._captured[target_layer].to(dtype=self.dtype)
+        
+        # Mask by valid tokens (remove padding) - matching native contract
+        embeddings_list = []
+        for i in range(hidden.shape[0]):
+            embeddings_list.append(hidden[i][attention_mask[i]])
+        
         self._captured.clear()
         clean_memory(self.device)
-        return prompt_embeds
+        return embeddings_list
 
     @torch.no_grad()
     def encode_ids(
         self,
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    ) -> list[torch.Tensor]:
+        """
+        Encode token IDs to embeddings, matching native ZImagePipeline._encode_prompt contract.
+        
+        Returns:
+            list[torch.Tensor]: One tensor per batch item, with padding removed via attention_mask.
+        """
         self._ensure_initialized()
         input_ids = input_ids.to(self.device)
         if attention_mask is not None:
-            attention_mask = attention_mask.to(self.device)
+            attention_mask = attention_mask.to(self.device).bool()
+        else:
+            attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
 
         self._captured.clear()
         _ = self._model.model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
 
-        target_layers = [L - 1 for L in self._extract_layers]
-        stacked = torch.stack([self._captured[k] for k in target_layers], dim=1)
-        B, num_captured, seq, hidden = stacked.shape
-        prompt_embeds = stacked.permute(0, 2, 1, 3).reshape(B, seq, num_captured * hidden)
-        prompt_embeds = prompt_embeds.to(dtype=self.dtype)
+        # Extract penultimate (or specified) layer
+        target_layer = list(self._extract_layers)[0]  # Use first layer in extract set
+        hidden = self._captured[target_layer].to(dtype=self.dtype)
+        
+        # Mask by valid tokens (remove padding) - matching native contract
+        embeddings_list = []
+        for i in range(hidden.shape[0]):
+            embeddings_list.append(hidden[i][attention_mask[i]])
+        
         self._captured.clear()
         clean_memory(self.device)
-        return prompt_embeds
+        return embeddings_list
 
     @classmethod
     def from_pretrained(
