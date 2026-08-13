@@ -10,6 +10,7 @@ Uses BaseLazyDecoderStreamer. Architecture-specific details:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +22,8 @@ from transformers import AutoConfig, AutoModelForCausalLM
 from weellm.utils import default_dtype, clean_memory
 from weellm.memory import place_tensors, pin_module_to_cpu
 from weellm.models.text_encoders.base_te_streamer import BaseLazyDecoderStreamer
+
+logger = logging.getLogger("weellm")
 
 
 class LlamaForCausalLMStreamer(BaseLazyDecoderStreamer):
@@ -68,6 +71,23 @@ class LlamaForCausalLMStreamer(BaseLazyDecoderStreamer):
         # HiDream needs every layer
         return set(range(self._num_layers))
 
+    def _capture_hook(self, module: nn.Module, args, output):
+        """
+        HiDream-specific override: store captured hidden states on CPU.
+
+        The base class stores on GPU (.clone()), which is fine when only a
+        handful of layers are captured.  HiDream captures ALL 32 Llama layers
+        simultaneously, so GPU storage accumulates 32 × 1 MB = 32 MB on VRAM
+        and creates a double-allocation spike during torch.stack().  Offloading
+        to CPU immediately costs one tiny PCIe transfer per layer (~1 ms) but
+        keeps VRAM flat throughout the entire Llama forward pass.
+        """
+        idx    = module._te_layer_idx
+        hidden = output[0] if isinstance(output, tuple) else output
+        self._captured[idx] = hidden.detach().cpu()  # CPU, not GPU
+        logger.debug("[capture] layer %02d  shape=%s  stored on CPU", idx, tuple(hidden.shape))
+        return output
+
     # -- Encoding --
 
     def encode(self, prompt) -> torch.Tensor:
@@ -87,9 +107,15 @@ class LlamaForCausalLMStreamer(BaseLazyDecoderStreamer):
         self._captured.clear()
         _ = self._model.model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
 
-        # HiDream: stack all layer outputs (layers[0]..layers[N-1])
-        stacked = torch.stack([self._captured[k] for k in range(self._num_layers)], dim=0)
-        self._captured.clear()
+        # HiDream: stack all layer outputs (layers[0]..layers[N-1]).
+        # Captured tensors live on CPU (see _capture_hook override above).
+        # Stack on CPU first (free), then do a single fused H2D transfer.
+        # This avoids the double-allocation spike that occurs when all 32 GPU
+        # source tensors are alive alongside the newly allocated stacked output.
+        stacked_cpu = torch.stack([self._captured[k] for k in range(self._num_layers)], dim=0)
+        self._captured.clear()              # free CPU tensors immediately
+        stacked = stacked_cpu.to(self.device)  # single H2D transfer
+        del stacked_cpu
         clean_memory(self.device)
         return stacked
 
