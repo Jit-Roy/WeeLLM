@@ -51,6 +51,15 @@ python main.py --model ./my-local-flux-model --prompt "A cyberpunk city at night
 
 ---
 
+## ⚠️ Autoregressive & Vision-Language Model Limitations
+
+> [!WARNING]
+> Dense autoregressive text-to-image models (like GLM-Image or other Vision-Language Models) are **not practically supported** by SSD streaming without quantization.
+> Unlike diffusion models which process latents in a few discrete steps (e.g., 4 to 20 steps), autoregressive models must generate tokens sequentially. A 1024x1024 image requires generating over 1000 tokens. Generating 1000 tokens means doing 1000 full forward passes through the massive text encoder. 
+> Streaming a 20GB model from an SSD 1000 times requires transferring ~20 Terabytes of data, which mathematically takes **several hours** to generate a single image. While the code technically executes without crashing under 4GB VRAM, the wait time is completely impractical. If you wish to run these autoregressive models efficiently, you must use 4-bit/8-bit quantization so the weights can sit entirely in System RAM or VRAM.
+
+---
+
 ## 🛠 Troubleshooting: VRAM Spikes (e.g. 6GB+ on Kaggle T4)
 
 If your Peak VRAM unexpectedly shoots up during generation (e.g., reaching 6 GB instead of the expected 2 GB), it is almost certainly a **hardware dtype compatibility issue**. 
