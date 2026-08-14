@@ -47,6 +47,7 @@ _TE_MAP = {
     "Gemma2Model":                            "weellm.models.text_encoders.gemma2_model",
     "LlamaForCausalLM":                       "weellm.models.text_encoders.llama_for_causal_lm",
     "ChatGLMModel":                           "weellm.models.text_encoders.chatglm_model",
+    "Mistral3Model":                          "weellm.models.text_encoders.mistral3_model",
 }
 
 # ---------------------------------------------------------------------------
@@ -77,6 +78,7 @@ _TR_MAP = {
     "Ideogram4Transformer2DModel":         "weellm.models.transformers.ideogram4_transformer",
     "WanTransformer3DModel":               "weellm.models.transformers.wan_transformer_3d_model",
     "UNet2DConditionModel":                "weellm.models.unets.unet_2d_condition_model",
+    "ErnieImageTransformer2DModel":        "weellm.models.transformers.ernie_image_transformer_2d_model",
 }
 
 
@@ -129,6 +131,9 @@ class WeePipeline:
 
     def __call__(self, *args, **kwargs):
         """Forward all calls directly to the underlying diffusers pipeline."""
+        if self._pipeline.__class__.__name__ == "ErnieImagePipeline" and kwargs.get("use_pe", False):
+            logger.warning("[WeeLLM] Prompt Enhancer (PE) is currently disabled for ErnieImagePipeline due to performance constraints.")
+            kwargs["use_pe"] = False
         return self._pipeline(*args, **kwargs)
 
     def __getattr__(self, name: str):
@@ -179,6 +184,10 @@ class WeePipeline:
         if seed is not None:
             device = getattr(self._pipeline, "device", torch.device("cpu"))
             generator = torch.Generator(device=device).manual_seed(seed)
+
+        if self._pipeline.__class__.__name__ == "ErnieImagePipeline" and kwargs.get("use_pe", False):
+            logger.warning("[WeeLLM] Prompt Enhancer (PE) is currently disabled for ErnieImagePipeline due to performance constraints.")
+            kwargs["use_pe"] = False
 
         out = self._pipeline(prompt=prompt, generator=generator, **kwargs)
         if hasattr(out, "images"):

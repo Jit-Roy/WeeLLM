@@ -24,8 +24,9 @@ WeeLLM streams one transformer layer at a time from disk to GPU for large models
 | `SD 1.5`                         |      ~1.7B | **0.90 GB** | **1.40 GB** |  ~68s · 20 steps |
 | `Qwen-Image` (`Qwen/Qwen-Image`) |       ~20B | **2.47 GB** | **1.60 GB** | ~795s · 10 steps |
 | `AuraFlow` (`fal/AuraFlow`)      |        ~4B | **1.34 GB** | **1.61 GB** | ~405s · 10 steps |
+| `ERNIE-Image` (`Baidu/ERNIE-Image`)|    ~10B | **1.69 GB** | **2.54 GB** | ~123s · 5 steps (1024x1024) |
 
-> The models run with **no quantization** on RTX-3050 — full bfloat16 weights streamed layer-by-layer from disk.
+> The models run with **no quantization** on RTX-3050 — full bfloat16(1024 x 1024) weights streamed layer-by-layer from disk.
 
 ---
 
