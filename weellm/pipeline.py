@@ -46,6 +46,7 @@ _TE_MAP = {
     "GlmModel":                               "weellm.models.text_encoders.glm_model",
     "Gemma2Model":                            "weellm.models.text_encoders.gemma2_model",
     "LlamaForCausalLM":                       "weellm.models.text_encoders.llama_for_causal_lm",
+    "ChatGLMModel":                           "weellm.models.text_encoders.chatglm_model",
 }
 
 # ---------------------------------------------------------------------------
@@ -237,6 +238,24 @@ class WeePipeline:
         if not pipeline_class_name:
             raise ValueError("No _class_name found in model_index.json")
 
+        # Kolors and similar custom-model repos declare a single text encoder/tokenizer pair,
+        # which does not match the standard SDXL class signature. If the repo uses a custom
+        # Kolors pipeline, select the proper diffusers class before instantiation.
+        if (
+            pipeline_class_name == "StableDiffusionXLPipeline"
+            and "text_encoder" in index
+            and "text_encoder_2" not in index
+            and "tokenizer" in index
+            and "tokenizer_2" not in index
+        ):
+            try:
+                pipeline_module = importlib.import_module("diffusers")
+                if hasattr(pipeline_module, "KolorsPipeline"):
+                    pipeline_class_name = "KolorsPipeline"
+                    logger.info("  [WeeLLM] Detected custom Kolors repo — using diffusers.KolorsPipeline.")
+            except Exception:
+                pass
+
         logger.info("\n============================================================")
         logger.info("  WeeLLM -- Building Native %s with Streamers", pipeline_class_name)
         logger.info("============================================================\n")
@@ -264,11 +283,26 @@ class WeePipeline:
             model_dir_path, index, device, effective_dtype, effective_dtype, cache_to_ram, diffusers_kwargs
         )
 
+        for key in ["text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4"]:
+            if key in te_streamers:
+                streamer = te_streamers[key]
+                tok_key = key.replace("text_encoder", "tokenizer")
+                if tok_key not in diffusers_kwargs:
+                    # Streamers lazy load, so force initialization to get the tokenizer
+                    streamer._ensure_initialized()
+                    tok = getattr(streamer, "tokenizer", getattr(streamer, "_tokenizer", None))
+                    if tok is not None:
+                        diffusers_kwargs[tok_key] = tok
+
         # ── Step 4: Transformer / UNet ──────────────────────────────────
         logger.info("\n[4/4] Preparing Transformer / UNet ...")
         transformer_key, transformer_streamer = cls._load_transformer(
             model_dir_path, index, device, effective_dtype, prefetch, cache_to_ram
         )
+        # Disable UNet prefetch to prevent overlapping VRAM blocks (especially crucial for massive SDXL models in float32)
+        if hasattr(transformer_streamer, "prefetch"):
+            transformer_streamer.prefetch = False
+
         tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
         tr_model = cls._patch_to(tr_model)
         diffusers_kwargs[transformer_key] = tr_model
@@ -290,7 +324,15 @@ class WeePipeline:
         cls._patch_execution_device(pipeline, device, te_streamers)
         cls._patch_scheduler(pipeline, device)
         cls._patch_pipeline_to(pipeline)
-        cls._apply_optimizations(pipeline, device, cache_to_ram, te_streamers, transformer_key, vae_tile_size)
+        cls._apply_optimizations(
+            pipeline,
+            device,
+            cache_to_ram,
+            te_streamers,
+            transformer_key,
+            vae_tile_size,
+            transformer_streamer,
+        )
 
         return cls(pipeline)
 
@@ -369,7 +411,9 @@ class WeePipeline:
             if key in index:
                 try:
                     from transformers import AutoTokenizer
-                    out[key] = AutoTokenizer.from_pretrained(str(model_dir), subfolder=key)
+                    out[key] = AutoTokenizer.from_pretrained(
+                        str(model_dir), subfolder=key, trust_remote_code=True
+                    )
                 except Exception as e:
                     logger.warning("Failed to load %s: %s", key, e)
 
@@ -643,8 +687,31 @@ class WeePipeline:
                     kw["mu"] = mu
                 if "timesteps" in params and timesteps is not None:
                     kw["timesteps"] = timesteps
-                result = original_set_timesteps(**kw)
-                _move_scheduler(pipeline.scheduler, device)
+
+                # Several Diffusers schedulers compute NumPy arrays from internal
+                # tensors during set_timesteps(); those tensors must stay on CPU.
+                scheduler_device = None
+                if hasattr(pipeline.scheduler, "alphas_cumprod") and torch.is_tensor(pipeline.scheduler.alphas_cumprod):
+                    scheduler_device = pipeline.scheduler.alphas_cumprod.device
+                    _move_scheduler(pipeline.scheduler, "cpu")
+                try:
+                    result = original_set_timesteps(**kw)
+                    
+                    # Capture devices before _move_scheduler nukes them
+                    sigmas_device = getattr(pipeline.scheduler, "sigmas", None)
+                    sigmas_device = sigmas_device.device if torch.is_tensor(sigmas_device) else None
+                    
+                    timesteps_device = getattr(pipeline.scheduler, "timesteps", None)
+                    timesteps_device = timesteps_device.device if torch.is_tensor(timesteps_device) else None
+                finally:
+                    if scheduler_device is not None:
+                        _move_scheduler(pipeline.scheduler, scheduler_device)
+                        
+                        # Restore
+                        if sigmas_device is not None and hasattr(pipeline.scheduler, "sigmas"):
+                            pipeline.scheduler.sigmas = pipeline.scheduler.sigmas.to(sigmas_device)
+                        if timesteps_device is not None and hasattr(pipeline.scheduler, "timesteps"):
+                            pipeline.scheduler.timesteps = pipeline.scheduler.timesteps.to(timesteps_device)
                 return result
 
             def safe_step(*args, **kwargs):
@@ -714,6 +781,7 @@ class WeePipeline:
         te_streamers: dict,
         transformer_key: str,
         vae_tile_size: int,
+        transformer_streamer=None,
     ) -> None:
         """Apply xformers, VAE tiling, text-encoder eviction hooks, and VRAM defrag."""
 

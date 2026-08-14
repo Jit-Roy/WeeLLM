@@ -19,6 +19,7 @@ WeeLLM streams one transformer layer at a time from disk to GPU for large models
 | `CogView4-6B`                    |       ~15B | **2.44 GB** | **1.92 GB** | ~411s · 10 steps |
 | `SD 3.5 Medium`                  |        ~8B | **3.48 GB** | **3.96 GB** | ~219s · 20 steps |
 | `Z-Image-Turbo`                  |       ~10B | **1.60 GB** | **1.70 GB** |  ~167s · 4 steps |
+| `Kolors` (`Kwai-Kolors/Kolors`)  |      ~8.7B | **2 GB** | **2.89 GB**    | ~352s · 20 steps |
 | `HiDream-I1-Full`                |       ~15B | **3.68 GB** | **2.02 GB** | ~797s · 10 steps |
 | `SDXL` (Juggernaut XL v9)        |      ~6.6B | **2.98 GB** | **1.50 GB** | ~120s · 20 steps |
 | `SD 1.5`                         |      ~1.7B | **0.90 GB** | **1.40 GB** |  ~68s · 20 steps |
