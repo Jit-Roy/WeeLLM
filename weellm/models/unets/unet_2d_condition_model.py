@@ -67,28 +67,28 @@ class UNet2DConditionModelStreamer(BaseTransformerStreamer):
 
     def _get_shard_order(self) -> List[Tuple[str, nn.Module]]:
         order: List[Tuple[str, nn.Module]] = []
-        
-        def _add_fine_grained(base_name: str, block: nn.Module):
-            # Target the heaviest blocks that cause VRAM spikes (especially in float32 / SDXL)
-            if base_name in ["down_blocks.2", "up_blocks.0", "up_blocks.1", "mid_block"]:
-                for child_name, child_module in block.named_children():
-                    if isinstance(child_module, nn.ModuleList):
-                        for i, sub_module in enumerate(child_module):
-                            order.append((f"{base_name}.{child_name}.{i}", sub_module))
-                    else:
-                        order.append((f"{base_name}.{child_name}", child_module))
-            else:
-                order.append((base_name, block))
+
+
+
+
+
+
+
+
+
+
+
+
 
         for i, block in enumerate(self.model.down_blocks):
-            _add_fine_grained(f"down_blocks.{i}", block)
-            
+            order.append((f"down_blocks.{i}", block))
+
         if hasattr(self.model, "mid_block") and self.model.mid_block is not None:
-            _add_fine_grained("mid_block", self.model.mid_block)
-            
+            order.append(("mid_block", self.model.mid_block))
+
         for i, block in enumerate(self.model.up_blocks):
-            _add_fine_grained(f"up_blocks.{i}", block)
-            
+            order.append((f"up_blocks.{i}", block))
+
         return order
 
     def _get_resident_keys(self) -> List[str]:

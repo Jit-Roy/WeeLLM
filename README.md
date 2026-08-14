@@ -19,7 +19,6 @@ WeeLLM streams one transformer layer at a time from disk to GPU for large models
 | `CogView4-6B`                    |       ~15B | **2.44 GB** | **1.92 GB** | ~411s · 10 steps |
 | `SD 3.5 Medium`                  |        ~8B | **3.48 GB** | **3.96 GB** | ~219s · 20 steps |
 | `Z-Image-Turbo`                  |       ~10B | **1.60 GB** | **1.70 GB** |  ~167s · 4 steps |
-| `Kolors` (`Kwai-Kolors/Kolors`)  |      ~8.7B | **2 GB** | **2.89 GB**    | ~352s · 20 steps |
 | `HiDream-I1-Full`                |       ~15B | **3.68 GB** | **2.02 GB** | ~797s · 10 steps |
 | `SDXL` (Juggernaut XL v9)        |      ~6.6B | **2.98 GB** | **1.50 GB** | ~120s · 20 steps |
 | `SD 1.5`                         |      ~1.7B | **0.90 GB** | **1.40 GB** |  ~68s · 20 steps |
@@ -33,27 +32,10 @@ WeeLLM streams one transformer layer at a time from disk to GPU for large models
 ## Quick Start
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
 
 # Run directly from a Hugging Face repository ID!
-# (It will automatically download to your HF cache if you don't have it)
-
-# Flux2-Klein (4B)
 python main.py --model black-forest-labs/FLUX.1-dev --prompt "A majestic lion at golden hour"
-
-# Z-Image-Turbo (~10B) — photorealistic powerhouse
-python main.py --model Tongyi-MAI/Z-Image-Turbo --prompt "A serene Japanese zen garden at sunrise, photorealistic, 8k"
-
-# SDXL (Juggernaut XL v9 — 6.6B) — classic photorealistic quality
-python main.py --model RunDiffusion/Juggernaut-XL-v9 \
-  --prompt "A cyberpunk city at night with neon signs" \
-  --steps 20 --guidance_scale 7.0
-
-# Stable Diffusion 1.5 — ultra-lightweight, under 1 GB VRAM!
-python main.py --model runwayml/stable-diffusion-v1-5 \
-  --prompt "A cyberpunk city at night with neon signs" \
-  --steps 20 --guidance_scale 7.5
 
 # Run from a local folder (skips download)
 python main.py --model ./my-local-flux-model --prompt "A cyberpunk city at night"
@@ -76,14 +58,6 @@ When running on older GPUs like the NVIDIA T4 (Turing architecture) commonly fou
 If you force `--dtype bfloat16`, PyTorch will silently disable memory-efficient FlashAttention kernels and fall back to the unoptimized **Math backend** for `scaled_dot_product_attention`. 
 
 The Math backend materializes the full $N \times N$ attention matrix in VRAM, which for modern high-resolution diffusion models (like FLUX) causes a colossal memory allocation.
-
----
-
-## Model Setup
-
-You can pass a **Hugging Face Repository ID** (e.g. `Tongyi-MAI/Z-Image-Turbo`) or an absolute/relative path to a local folder. 
-
-If you pass a Hugging Face repo ID, WeeLLM will automatically download the necessary safetensors and config files using `huggingface_hub.snapshot_download` and cache them in your default Hugging Face cache folder.
 
 ---
 
@@ -126,40 +100,4 @@ image = pipe.generate(
     seed=42,
 )
 image.save("output.png")
-
-# SDXL (Juggernaut XL v9)
-pipe = WeePipeline.from_pretrained("RunDiffusion/Juggernaut-XL-v9", device="cuda", cache_to_ram=False)
-image = pipe.generate(
-    prompt="A photorealistic cyberpunk city at night with neon signs",
-    height=512,
-    width=512,
-    num_inference_steps=20,
-    guidance_scale=7.0,
-    seed=42,
-)
-image.save("sdxl_output.png")
-
-# Stable Diffusion 1.5 — ultra-lightweight, under 1 GB VRAM!
-pipe = WeePipeline.from_pretrained("runwayml/stable-diffusion-v1-5", device="cuda", cache_to_ram=False)
-image = pipe.generate(
-    prompt="A photorealistic cyberpunk city at night with neon signs",
-    height=512,
-    width=512,
-    num_inference_steps=20,
-    guidance_scale=7.5,
-    seed=42,
-)
-image.save("sd15_output.png")
-
-# Qwen-Image (~20B parameters)
-pipe = WeePipeline.from_pretrained("Qwen/Qwen-Image", device="cuda", cache_to_ram=False)
-image = pipe.generate(
-    prompt="A photorealistic cyberpunk city at night with neon signs",
-    height=512,
-    width=512,
-    num_inference_steps=4,
-    true_cfg_scale=4.0,
-    seed=42,
-)
-image.save("qwen_output.png")
 ```
