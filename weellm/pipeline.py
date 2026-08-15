@@ -79,6 +79,7 @@ _TR_MAP = {
     "WanTransformer3DModel":               "weellm.models.transformers.wan_transformer_3d_model",
     "UNet2DConditionModel":                "weellm.models.unets.unet_2d_condition_model",
     "ErnieImageTransformer2DModel":        "weellm.models.transformers.ernie_image_transformer_2d_model",
+    "LongCatImageTransformer2DModel":      "weellm.models.transformers.longcat_transformer_2d_model",
 }
 
 
@@ -134,6 +135,13 @@ class WeePipeline:
         if self._pipeline.__class__.__name__ == "ErnieImagePipeline" and kwargs.get("use_pe", False):
             logger.warning("[WeeLLM] Prompt Enhancer (PE) is currently disabled for ErnieImagePipeline due to performance constraints.")
             kwargs["use_pe"] = False
+            
+        import inspect
+        if "enable_prompt_rewrite" in inspect.signature(self._pipeline.__call__).parameters:
+            if kwargs.get("enable_prompt_rewrite", True):
+                logger.info("[WeeLLM] Disabling 'enable_prompt_rewrite' to prevent slow autoregressive generation.")
+                kwargs["enable_prompt_rewrite"] = False
+                
         return self._pipeline(*args, **kwargs)
 
     def __getattr__(self, name: str):
@@ -416,11 +424,15 @@ class WeePipeline:
                 logger.warning("Failed to load safety_checker, continuing with None: %s", e)
             out["safety_checker"] = sc
 
-        for key in ["tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4"]:
+        for key in ["tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4", "text_processor"]:
             if key in index:
                 try:
-                    from transformers import AutoTokenizer
-                    out[key] = AutoTokenizer.from_pretrained(str(model_dir), subfolder=key)
+                    if key == "text_processor":
+                        from transformers import AutoProcessor
+                        out[key] = AutoProcessor.from_pretrained(str(model_dir), subfolder=key)
+                    else:
+                        from transformers import AutoTokenizer
+                        out[key] = AutoTokenizer.from_pretrained(str(model_dir), subfolder=key)
 
 
                 except Exception as e:

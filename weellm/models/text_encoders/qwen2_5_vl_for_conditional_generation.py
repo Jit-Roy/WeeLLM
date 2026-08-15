@@ -119,28 +119,41 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
 
             def patched_qwen_forward(self_obj, *args, **kwargs):
                 if kwargs.get("pixel_values") is None and kwargs.get("pixel_values_videos") is None:
-                    # Pure-text bypass: route through inner language_model directly,
-                    # skipping the multimodal masking logic that may inherit meta-device state.
+                    # Pure-text bypass: route through inner language_model directly
+                    input_ids = kwargs.get("input_ids")
+                    if input_ids is None and len(args) > 0:
+                        input_ids = args[0]
                     inner_kwargs = {
-                        "input_ids": kwargs.get("input_ids"),
+                        "input_ids": input_ids,
                         "attention_mask": kwargs.get("attention_mask"),
                         "position_ids": kwargs.get("position_ids"),
                         "past_key_values": kwargs.get("past_key_values"),
                         "inputs_embeds": kwargs.get("inputs_embeds"),
-                        "use_cache": False,
+                        "use_cache": kwargs.get("use_cache", False),
                         "output_attentions": kwargs.get("output_attentions", False),
                         "output_hidden_states": True,
                         "return_dict": True,
                         "cache_position": kwargs.get("cache_position"),
                     }
-                    inner_kwargs = {k: v for k, v in inner_kwargs.items() if v is not None}
+                    inner_kwargs = {k: v for k, v in inner_kwargs.items() if v is not None}               
                     inner_out = self_obj.model.language_model(**inner_kwargs)
-                    import types as _types
-                    return _types.SimpleNamespace(
-                        hidden_states=inner_out.hidden_states,
-                        past_key_values=getattr(inner_out, "past_key_values", None),
+                    logits = self_obj.lm_head(inner_out[0])
+                    
+                    past_kv = getattr(inner_out, "past_key_values", inner_out[1] if isinstance(inner_out, tuple) and len(inner_out) > 1 else None)
+                    hidden_states = getattr(inner_out, "hidden_states", inner_out[2] if isinstance(inner_out, tuple) and len(inner_out) > 2 else None)
+                    
+                    # Diffusers relies on hidden_states[-1]. If the inner model didn't return all hidden states,
+                    # we can fallback to providing just the last hidden state in a tuple.
+                    if hidden_states is None:
+                        hidden_states = (inner_out[0],)
+                        
+                    from transformers.modeling_outputs import CausalLMOutputWithPast
+                    return CausalLMOutputWithPast(
+                        loss=None,
+                        logits=logits,
+                        past_key_values=past_kv,
+                        hidden_states=hidden_states,
                         attentions=getattr(inner_out, "attentions", None),
-                        logits=None,
                     )
 
                 return original_forward(*args, **kwargs)
