@@ -22,9 +22,12 @@ from weellm.seeker import get_seeker
 
 
 def _get_resident_keys(seeker) -> List[str]:
-    # Everything that is not a layer block is resident
+    # Everything that is not a layer block is resident, EXCLUDING the lm_head
+    # which is unused in diffusion models but takes 5.44 GB of RAM in float32.
     keys = []
     for k in seeker.weight_map.keys():
+        if "lm_head" in k:
+            continue
         if not ("layers." in k or "encoder.layers" in k or "visual.blocks." in k):
             keys.append(k)
     return keys

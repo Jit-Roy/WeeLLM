@@ -1,10 +1,6 @@
 ![WeeLLM Banner](docs/banner.png)
 
 <div align="center">
-  <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python">
-  <img src="https://img.shields.io/badge/PyTorch-2.0+-EE4C2C.svg?logo=pytorch" alt="PyTorch">
-  <img src="https://img.shields.io/badge/Diffusers-0.31+-blue.svg?logo=huggingface" alt="Diffusers">
-  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/Status-Active-success.svg" alt="Status">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
@@ -36,6 +32,7 @@ WeeLLM streams one transformer layer at a time from disk to GPU for large models
 | `Qwen-Image` (`Qwen/Qwen-Image`)   |       ~20B | **2.47 GB** | **1.60 GB** | ~795s · 10 steps |
 | `AuraFlow` (`fal/AuraFlow`)        |        ~4B | **1.34 GB** | **1.61 GB** | ~405s · 10 steps |
 | `ERNIE-Image` (`Baidu/ERNIE-Image`)|       ~10B | **1.69 GB** | **2.54 GB** | ~123s · 5 steps  |
+| `Krea-2-Turbo`                     |       ~13B | **~3   GB** | **~3   GB** | ~600s · 5 steps  |
 
 <div align="center">
   <img src="docs/bar_chart.png" alt="Performance Bar Chart" width="85%">

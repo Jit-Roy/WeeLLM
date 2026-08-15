@@ -80,6 +80,7 @@ _TR_MAP = {
     "UNet2DConditionModel":                "weellm.models.unets.unet_2d_condition_model",
     "ErnieImageTransformer2DModel":        "weellm.models.transformers.ernie_image_transformer_2d_model",
     "LongCatImageTransformer2DModel":      "weellm.models.transformers.longcat_transformer_2d_model",
+    "Krea2Transformer2DModel":             "weellm.models.transformers.krea2_transformer_2d_model",
 }
 
 
