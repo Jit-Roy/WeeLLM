@@ -32,7 +32,7 @@ WeeLLM streams one transformer layer at a time from disk to GPU for large models
 | `Qwen-Image` (`Qwen/Qwen-Image`)   |       ~20B | **2.47 GB** | **1.60 GB** | ~795s · 10 steps |
 | `AuraFlow` (`fal/AuraFlow`)        |        ~4B | **1.34 GB** | **1.61 GB** | ~405s · 10 steps |
 | `ERNIE-Image` (`Baidu/ERNIE-Image`)|       ~10B | **1.69 GB** | **2.54 GB** | ~123s · 5 steps  |
-| `Krea-2-Turbo`                     |       ~13B | **~3   GB** | **~3   GB** | ~600s · 5 steps  |
+| `Krea-2-Turbo`                     |       ~13B | **~3   GB** | **~3   GB** | ~600s · 8 steps  |
 
 <div align="center">
   <img src="docs/bar_chart.png" alt="Performance Bar Chart" width="85%">
