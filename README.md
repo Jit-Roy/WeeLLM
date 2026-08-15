@@ -33,6 +33,10 @@ WeeLLM streams one transformer layer at a time from disk to GPU for large models
 | `AuraFlow` (`fal/AuraFlow`)        |        ~4B | **1.34 GB** | **1.61 GB** | ~405s · 10 steps |
 | `ERNIE-Image` (`Baidu/ERNIE-Image`)|       ~10B | **1.69 GB** | **2.54 GB** | ~123s · 5 steps  |
 
+<p align="center">
+  <img src="docs/bar_chart.png" alt="Performance Bar Chart">
+</p>
+
 # Supported Model List
 
 - SDXL
