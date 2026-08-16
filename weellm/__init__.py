@@ -22,7 +22,9 @@ import logging
 __version__ = "0.1.0"
 __all__ = [
     # Core pipeline
+    "WeeBasePipeline",
     "WeePipeline",
+    "WeeImagePipeline",
     # VAE
     "LazyVAEStreamer",
     # Transformers
@@ -44,7 +46,9 @@ __all__ = [
 # Applications that want output should configure their own handlers.
 logging.getLogger("weellm").addHandler(logging.NullHandler())
 
-from .pipeline import WeePipeline  # noqa: E402
+from .pipeline import WeeBasePipeline  # noqa: E402
+from .weepipeline import WeePipeline  # noqa: E402
+from .weeimagepipeline import WeeImagePipeline  # noqa: E402
 
 # VAE
 from .models.vaes.lazy_vae import LazyVAEStreamer  # noqa: E402

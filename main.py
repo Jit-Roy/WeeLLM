@@ -79,14 +79,24 @@ examples:
         "--negative_prompt", type=str, default="",
         help="Negative prompt to guide generation away from unwanted content (default: empty)",
     )
-    parser.add_argument("--height", type=int, default=1024, help="Output height in pixels (default: 1024)")
-    parser.add_argument("--width",  type=int, default=1024, help="Output width in pixels  (default: 1024)")
+    parser.add_argument("--height", type=int, default=None, help="Output height in pixels (default: 1024 for T2I, original for I2I)")
+    parser.add_argument("--width",  type=int, default=None, help="Output width in pixels (default: 1024 for T2I, original for I2I)")
     parser.add_argument("--steps",  type=int, default=4,   help="Denoising steps         (default: 4)")
     parser.add_argument(
-        "--guidance_scale", type=float, default=1.0,
-        help="Classifier-free guidance scale (default: 1.0, 1.0 = disabled)",
+        "--guidance_scale", type=float, default=None,
+        help="Classifier-free guidance scale (default: use pipeline default, usually 4.5 for SD3/LongCat or 1.0/3.5 for Flux)",
     )
     parser.add_argument("--seed", type=int, default=-1, help="Random seed (default: -1 for random)")
+    
+    # Image-to-Image / Editing
+    parser.add_argument(
+        "--image", type=str, default="",
+        help="Path to an input image for image-to-image or editing tasks",
+    )
+    parser.add_argument(
+        "--strength", type=float, default=0.8,
+        help="Denoising strength for image-to-image (default: 0.8)",
+    )
 
     # Output
     parser.add_argument(
@@ -139,6 +149,21 @@ def main() -> int:
     parser = _build_parser()
     args   = parser.parse_args()
 
+    if args.image:
+        try:
+            from PIL import Image
+            with Image.open(args.image) as temp_img:
+                if args.width is None:
+                    args.width = temp_img.width
+                if args.height is None:
+                    args.height = temp_img.height
+        except Exception:
+            if args.width is None: args.width = 1024
+            if args.height is None: args.height = 1024
+    else:
+        if args.width is None: args.width = 1024
+        if args.height is None: args.height = 1024
+
     _configure_logging(args.verbose)
     logger = logging.getLogger("weellm")
 
@@ -169,11 +194,22 @@ def main() -> int:
     logger.info("")
 
     # ── Load pipeline ────────────────────────────────────────────────────────
-    from weellm import WeePipeline
+    if args.image:
+        from weellm import WeeImagePipeline as PipelineClass
+        from PIL import Image
+        logger.info("  Mode:     Image-to-Image / Edit (Input: %s)", args.image)
+        try:
+            input_image = Image.open(args.image).convert("RGB")
+        except Exception as e:
+            print(f"ERROR: Could not load input image: {e}", file=sys.stderr)
+            return 1
+    else:
+        from weellm import WeePipeline as PipelineClass
+        input_image = None
 
     t_load = time.time()
     try:
-        pipe = WeePipeline.from_pretrained(
+        pipe = PipelineClass.from_pretrained(
             model_dir=args.model,
             device=device,
             torch_dtype=dtype,
@@ -203,9 +239,15 @@ def main() -> int:
         height=args.height,
         width=args.width,
         num_inference_steps=args.steps,
-        guidance_scale=args.guidance_scale,
         generator=generator,
     )
+    if args.guidance_scale is not None:
+        call_kwargs["guidance_scale"] = args.guidance_scale
+
+    if input_image is not None:
+        call_kwargs["image"] = input_image
+        call_kwargs["strength"] = args.strength
+        
     if args.negative_prompt:
         call_kwargs["negative_prompt"] = args.negative_prompt
 

@@ -62,6 +62,7 @@ OmniGen2/
 ERNIE-Image/
 LongCat-Image/
 Krea-2-Turbo/
+LongCat-Image-Edit/
 
 
 download.py
@@ -76,6 +77,8 @@ test_ideogram.py
 *.ckpt
 *.pkl
 *.txt
+*.png
+*.jpg
 
 # Ignore shard directories created by WeeLLM's splitter
 **/splitted_model/
