@@ -712,7 +712,6 @@ class WeeBasePipeline:
         te_streamers: dict,
         transformer_key: str,
         vae_tile_size: int,
-
     ) -> None:
         """Apply xformers, VAE tiling, text-encoder eviction hooks, and VRAM defrag."""
 

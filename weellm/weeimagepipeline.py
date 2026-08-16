@@ -13,8 +13,7 @@ logger = logging.getLogger("weellm")
 
 IMG2IMG_MAPPING = {
     "LongCatImagePipeline": "LongCatImageEditPipeline",
-    # Add other mappings here as needed, e.g.:
-    # "FluxPipeline": "FluxImg2ImgPipeline",
+    "StableDiffusionXLPipeline": "StableDiffusionXLImg2ImgPipeline",
 }
 
 class WeeImagePipeline(WeeBasePipeline):
