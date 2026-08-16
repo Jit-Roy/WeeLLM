@@ -88,7 +88,7 @@ _TR_MAP = {
 # WeePipeline wrapper
 # ---------------------------------------------------------------------------
 
-class WeePipeline:
+class WeeBasePipeline:
     """
     A unified wrapper around a native diffusers pipeline that has WeeLLM
     memory-efficient layer-streamers injected into every major component.
@@ -162,46 +162,6 @@ class WeePipeline:
     # Convenience generate() — instance method
     # ------------------------------------------------------------------
 
-    def generate(self, prompt: str, **kwargs):
-        """
-        Convenience wrapper that calls the pipeline and returns the first image.
-
-        Supports all standard diffusers kwargs, including image-to-image and
-        inpainting parameters::
-
-            pipe.generate("A lion", seed=42)
-            pipe.generate("A lion", image=pil_img, strength=0.75, num_inference_steps=20)
-            pipe.generate("A lion", image=pil_img, mask_image=pil_mask)
-
-        Parameters
-        ----------
-        prompt:
-            Text prompt for image generation.
-        seed:
-            Optional integer random seed (extracted from kwargs).
-        **kwargs:
-            Any additional arguments forwarded to the diffusers pipeline call
-            (e.g. ``height``, ``width``, ``num_inference_steps``, ``guidance_scale``,
-            ``image``, ``mask_image``, ``strength``, ``negative_prompt`` …).
-
-        Returns
-        -------
-        ``PIL.Image.Image`` — the first generated image.
-        """
-        seed = kwargs.pop("seed", None)
-        generator: Optional[torch.Generator] = None
-        if seed is not None:
-            device = getattr(self._pipeline, "device", torch.device("cpu"))
-            generator = torch.Generator(device=device).manual_seed(seed)
-
-        if self._pipeline.__class__.__name__ == "ErnieImagePipeline" and kwargs.get("use_pe", False):
-            logger.warning("[WeeLLM] Prompt Enhancer (PE) is currently disabled for ErnieImagePipeline due to performance constraints.")
-            kwargs["use_pe"] = False
-
-        out = self._pipeline(prompt=prompt, generator=generator, **kwargs)
-        if hasattr(out, "images"):
-            return out.images[0]
-        return out[0][0]
 
     # ------------------------------------------------------------------
     # Construction
@@ -217,7 +177,7 @@ class WeePipeline:
         cache_to_ram: bool = False,
         vae_tile_size: int = 256,
         **kwargs,
-    ) -> "WeePipeline":
+    ) -> "WeeBasePipeline":
         """
         Build a native diffusers pipeline with WeeLLM streamers injected.
 
@@ -245,34 +205,16 @@ class WeePipeline:
 
         Returns
         -------
-        :class:`WeePipeline` wrapping the native diffusers pipeline, ready for
-        ``pipe(...)`` or ``pipe.generate(...)`` calls.
+        :class:`WeeBasePipeline` wrapping the native diffusers pipeline, ready for
+        ``pipe(...)`` calls.
         """
         model_dir_str  = str(resolve_model_path(str(model_dir)))
         model_dir_path = Path(model_dir_str)
 
         index = cls._load_index(model_dir_path)
-        pipeline_class_name = index.get("_class_name")
+        pipeline_class_name = cls._get_diffusers_pipeline_class(index)
         if not pipeline_class_name:
-            raise ValueError("No _class_name found in model_index.json")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+            raise ValueError("Could not determine diffusers pipeline class from model_index.json")
 
         logger.info("\n============================================================")
         logger.info("  WeeLLM -- Building Native %s with Streamers", pipeline_class_name)
@@ -301,26 +243,11 @@ class WeePipeline:
             model_dir_path, index, device, effective_dtype, effective_dtype, cache_to_ram, diffusers_kwargs
         )
 
-
-
-
-
-
-
-
-
-
-
-
         # ── Step 4: Transformer / UNet ──────────────────────────────────
         logger.info("\n[4/4] Preparing Transformer / UNet ...")
         transformer_key, transformer_streamer = cls._load_transformer(
             model_dir_path, index, device, effective_dtype, prefetch, cache_to_ram
         )
-
-
-
-
         tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
         tr_model = cls._patch_to(tr_model)
         diffusers_kwargs[transformer_key] = tr_model
@@ -345,18 +272,19 @@ class WeePipeline:
         cls._apply_optimizations(pipeline, device, cache_to_ram, te_streamers, transformer_key, vae_tile_size)
 
 
-
-
-
-
-
-
-
         return cls(pipeline)
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    @classmethod
+    def _get_diffusers_pipeline_class(cls, index: dict) -> str:
+        """
+        Given the model_index.json dict, return the name of the diffusers pipeline class to instantiate.
+        Subclasses must implement this.
+        """
+        raise NotImplementedError("Subclasses must implement _get_diffusers_pipeline_class()")
 
     @staticmethod
     def _load_index(model_dir: Path) -> dict:
@@ -522,13 +450,16 @@ class WeePipeline:
 
             if "Qwen" in hf_cls_name or "Mistral" in hf_cls_name or "Llama" in hf_cls_name:
                 if hasattr(te_cls, "from_pretrained"):
-                    streamer = te_cls.from_pretrained(
-                        model_dir=te_path,
-                        tokenizer=out.get(tok_key),
-                        device=device,
-                        dtype=torch_dtype,
-                        cache_to_ram=cache_to_ram,
-                    )
+                    te_kwargs = {
+                        "model_dir": te_path,
+                        "tokenizer": out.get(tok_key),
+                        "device": device,
+                        "dtype": torch_dtype,
+                        "cache_to_ram": cache_to_ram,
+                    }
+                    if "Qwen2_5_VL" in hf_cls_name:
+                        te_kwargs["is_edit_model"] = "Edit" in index.get("_class_name", "")
+                    streamer = te_cls.from_pretrained(**te_kwargs)
                     if hasattr(streamer, "_ensure_initialized"):
                         streamer._ensure_initialized()
                 else:
@@ -559,7 +490,7 @@ class WeePipeline:
 
             te_streamers[key] = streamer
             te_model = getattr(streamer, "model", getattr(streamer, "_model", streamer))
-            te_model = WeePipeline._patch_to(te_model)
+            te_model = WeeBasePipeline._patch_to(te_model)
             out[key] = te_model
 
         return te_streamers
@@ -712,28 +643,6 @@ class WeePipeline:
                 result = original_set_timesteps(**kw)
                 _move_scheduler(pipeline.scheduler, device)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
                 return result
 
             def safe_step(*args, **kwargs):
@@ -840,26 +749,48 @@ class WeePipeline:
         except Exception:
             pass
 
-        # Aggressive one-shot RAM deletion for cache_to_ram mode
-        if cache_to_ram and hasattr(pipeline, "vae") and hasattr(pipeline.vae, "decode"):
-            original_vae_decode = pipeline.vae.decode
+        # Ensure VAE encode/decode always cast floating point inputs to the VAE's dtype.
+        # This prevents crashes when the pipeline (e.g., img2img) passes bfloat16 latents to a float32 VAE.
+        if hasattr(pipeline, "vae"):
+            def _wrap_vae_method(method_name: str):
+                if not hasattr(pipeline.vae, method_name):
+                    return
+                original_method = getattr(pipeline.vae, method_name)
+                
+                def safe_vae_call(self_obj, *args, **kwargs):
+                    if method_name == "decode" and cache_to_ram:
+                        logger.info("\n[WeeLLM] One-Shot: Freeing Transformer from RAM before VAE Decode...")
+                        for tr_name in ["transformer", "unet"]:
+                            if hasattr(pipeline, tr_name):
+                                setattr(pipeline, tr_name, None)
+                        gc.collect()
 
-            def aggressive_vae_decode(self_obj, *args, **kwargs):
-                logger.info("\n[WeeLLM] One-Shot: Freeing Transformer from RAM before VAE Decode...")
-                for tr_name in ["transformer", "unet"]:
-                    if hasattr(pipeline, tr_name):
-                        setattr(pipeline, tr_name, None)
-                gc.collect()
+                    tgt_dtype = getattr(self_obj, "dtype", None)
+                    if tgt_dtype is not None:
+                        args = tuple(a.to(tgt_dtype) if torch.is_tensor(a) and a.is_floating_point() else a for a in args)
+                        kwargs = {k: (v.to(tgt_dtype) if torch.is_tensor(v) and v.is_floating_point() else v) for k, v in kwargs.items()}
+                        
+                    return original_method(*args, **kwargs)
+                    
+                setattr(pipeline.vae, method_name, types.MethodType(safe_vae_call, pipeline.vae))
+                
+            _wrap_vae_method("encode")
+            _wrap_vae_method("decode")
 
-                # Cast float inputs (latents) to VAE's expected dtype
-                tgt_dtype = getattr(self_obj, "dtype", None)
-                if tgt_dtype is not None:
-                    args = tuple(a.to(tgt_dtype) if torch.is_tensor(a) and a.is_floating_point() else a for a in args)
-                    kwargs = {k: (v.to(tgt_dtype) if torch.is_tensor(v) and v.is_floating_point() else v) for k, v in kwargs.items()}
-
-                return original_vae_decode(*args, **kwargs)
-
-            pipeline.vae.decode = types.MethodType(aggressive_vae_decode, pipeline.vae)
+        # In Image-to-Image pipelines, _encode_vae_image is used. If VAE is float32, it returns float32 latents.
+        # This causes a crash when passing the latents to a bfloat16 transformer.
+        # We patch it to cast the output back to the dtype of the input image tensor.
+        if hasattr(pipeline, "_encode_vae_image"):
+            orig_encode_vae = pipeline._encode_vae_image
+            def safe_encode_vae(self_obj, *args, **kwargs):
+                result = orig_encode_vae(*args, **kwargs)
+                
+                img_tensor = args[0] if len(args) > 0 else kwargs.get("image", None)
+                if img_tensor is not None and torch.is_tensor(img_tensor) and img_tensor.is_floating_point():
+                    if torch.is_tensor(result) and result.dtype != img_tensor.dtype:
+                        result = result.to(img_tensor.dtype)
+                return result
+            pipeline._encode_vae_image = types.MethodType(safe_encode_vae, pipeline)
 
         def _evict_module_to_meta(module, label: str) -> None:
             if module is None or not isinstance(module, torch.nn.Module):

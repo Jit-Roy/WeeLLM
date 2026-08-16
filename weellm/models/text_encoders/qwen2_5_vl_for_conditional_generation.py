@@ -41,13 +41,18 @@ def _get_layer_keys(seeker, prefix: str) -> List[str]:
     return [k for k in seeker.weight_map.keys() if k.startswith(prefix + ".")]
 
 
-def _get_resident_keys(seeker) -> List[str]:
-    """Everything except the transformer layer blocks and visual encoder."""
-    return [
-        k for k in seeker.weight_map.keys() 
-        if not k.startswith("model.layers.") 
-        and not k.startswith("visual.")
-    ]
+def _get_resident_keys(seeker, is_edit_model: bool = False) -> List[str]:
+    """Everything except the transformer layer blocks, lm_head, and optionally the visual tower."""
+    keys = []
+    for k in seeker.weight_map.keys():
+        if k.startswith("model.layers."):
+            continue
+        if k.startswith("lm_head."):
+            continue
+        if not is_edit_model and k.startswith("visual."):
+            continue
+        keys.append(k)
+    return keys
 
 
 def map_qwen_key(k: str) -> str:
@@ -156,7 +161,19 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
                         attentions=getattr(inner_out, "attentions", None),
                     )
 
-                return original_forward(*args, **kwargs)
+                out = original_forward(*args, **kwargs)
+                
+                # Fix for missing hidden states in transformers output capturing hook when layers are streaming
+                if getattr(out, "hidden_states", None) is None and kwargs.get("output_hidden_states"):
+                    last_hidden = getattr(self, "_last_hidden_state", None)
+                    if last_hidden is not None:
+                        norm = getattr(self_obj.model.language_model, "norm", None)
+                        if norm is not None:
+                            last_hidden = norm(last_hidden)
+                        # We only need the last hidden state for diffusers
+                        out.hidden_states = (last_hidden,)
+                        
+                return out
 
             import types
             self.model.forward = types.MethodType(patched_qwen_forward, self.model)
@@ -190,6 +207,10 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
                 self._next_future_name = next_name
 
     def _post_hook(self, module: nn.Module, args, output):
+        if hasattr(module, "_qwen_te_shard") and module._qwen_te_shard == self._shard_order[-1]:
+            hidden = output[0] if isinstance(output, tuple) else output
+            self._last_hidden_state = hidden.detach()
+            
         evict_module(module)
         return output
 
@@ -261,7 +282,9 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         dtype: torch.dtype = torch.bfloat16,
         cache_to_ram: bool = False,
         prefetch: bool = True,
-        max_length: int = 512
+        max_length: int = 512,
+        is_edit_model: bool = False,
+        **kwargs
     ) -> "Qwen2_5_VLForConditionalGenerationStreamer":
         from transformers import Qwen2_5_VLForConditionalGeneration
 
@@ -297,7 +320,7 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
                     set_module_tensor_to_device(model, buf_name, device, value=buf)
 
         print("  [TE 3/3] Loading resident Qwen text encoder tensors ...")
-        resident_keys = _get_resident_keys(seeker)
+        resident_keys = _get_resident_keys(seeker, is_edit_model=is_edit_model)
         resident_sd = seeker.get_tensors(resident_keys, device="cpu", dtype=dtype)
         
         mapped_sd = {map_qwen_key(k): v for k, v in resident_sd.items()}
