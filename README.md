@@ -6,9 +6,9 @@
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
 </div>
 
-**Layer-streaming inference for large diffusion models — Under 4 GB VRAM, no quantization**
+# Layer-streaming inference for large diffusion models — Under 4 GB VRAM, no quantization
 
-WeeLLM streams one transformer layer at a time from disk to GPU for large models. The full model weights never reside in VRAM simultaneously — only the currently-executing layer is loaded.
+WeeLLM streams one transformer layer at a time to GPU for large models. The full model weights never reside in VRAM simultaneously — only the currently-executing layer is loaded.
 
 
 ---
@@ -34,11 +34,15 @@ WeeLLM streams one transformer layer at a time from disk to GPU for large models
 | `ERNIE-Image` (`Baidu/ERNIE-Image`)|       ~10B | **1.69 GB** | **2.54 GB** | ~123s · 5 steps  |
 | `Krea-2-Turbo`                     |       ~13B | **~ 3 GB**  | **3.23 GB** | ~810s · 10 steps |
 
+> The models run with **no quantization** on RTX-3050 — full bfloat16 (1024x1024) weights streamed layer-by-layer to GPU.
+
 <div align="center">
   <img src="docs/bar_chart.png" alt="Performance Bar Chart" width="85%">
 </div>
 
 # Supported Model List
+
+## Image Generation Models
 
 - SDXL
 - SD 1.5
@@ -59,7 +63,6 @@ WeeLLM streams one transformer layer at a time from disk to GPU for large models
 - Krea 2 Turbo
 - Krea 2 Raw
 - Qwen Image
-- Qwen Image Edit
 - Ideogram 4
 - ERNIE-Image
 - ERNIE-Image-Turbo
@@ -67,14 +70,16 @@ WeeLLM streams one transformer layer at a time from disk to GPU for large models
 - Hidream I1 Full
 - Auraflow
 
-> The models run with **no quantization** on RTX-3050 — full bfloat16 (1024x1024) weights streamed layer-by-layer from disk.
+## Image Edit Models
 
+- LongCat Image Edit
+- Sdxl Img To Img
 
 ---
 
 ## TODOs
 
-- [ ] **Image-to-Image (Img2Img) Pipeline:** Implement support for passing an initial image and strength parameter to modify existing images.
+- [ ] **Image-to-Image (Img2Img) Pipeline:** Implement support for the available models for image to image pipeline.
 - [ ] **Inpainting Support:** Allow mask-based image generation to edit specific regions while preserving the rest.
 - [ ] **ControlNet / T2I-Adapter Integration:** Enable structural conditioning (canny, depth, pose) while maintaining strict VRAM streaming budgets.
 - [ ] **LoRA Support:** Dynamically load and apply LoRA weights during the layer-streaming process without bloating system Vram and RAM.
@@ -104,7 +109,6 @@ python main.py --model ./my-local-flux-model --prompt "A cyberpunk city at night
 
 ## ⚠️ Autoregressive & Vision-Language Model Limitations
 
-> [!WARNING]
 > Dense autoregressive text-to-image models (like GLM-Image or other Vision-Language Models) are **not practically supported** by SSD streaming without quantization.
 > Unlike diffusion models which process latents in a few discrete steps (e.g., 4 to 20 steps), autoregressive models must generate tokens sequentially. A 1024x1024 image requires generating over 1000 tokens. Generating 1000 tokens means doing 1000 full forward passes through the massive text encoder. 
 > Streaming a 20GB model from an SSD 1000 times requires transferring ~20 Terabytes of data, which mathematically takes **several hours** to generate a single image. While the code technically executes without crashing under 4GB VRAM, the wait time is completely impractical. If you wish to run these autoregressive models efficiently, you must use 4-bit/8-bit quantization so the weights can sit entirely in System RAM or VRAM.
@@ -142,4 +146,4 @@ image.save("output.png")
 
 ## Resources
 
-- **Kaggle Notebook**: [WeeLLM Implementation & Benchmarks](https://www.kaggle.com/code/freedomfighter1290/weellm) — Interactive demonstrations and performance analysis
+- **Kaggle Notebook**: [WeeLLM Implementation](https://www.kaggle.com/code/freedomfighter1290/weellm) — Interactive demonstrations and performance analysis.
