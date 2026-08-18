@@ -32,8 +32,6 @@ class SafetensorsDiskSeeker(SafetensorsBase):
 
     def __init__(self, model_dir: Union[str, Path]):
         super().__init__(model_dir)
-        # Per-instance buffer to avoid global state; not shared across threads.
-        self._shared_buffer = bytearray()
         self._parse_index()
 
     def get_tensors(
@@ -83,13 +81,10 @@ class SafetensorsDiskSeeker(SafetensorsBase):
                     count    = int(np.prod(shape)) if shape else 1
                     nbytes   = count * np.dtype(np_dtype).itemsize
 
-                    # Grow the shared buffer on demand.
-                    if len(self._shared_buffer) < nbytes:
-                        self._shared_buffer = bytearray(
-                            max(nbytes, len(self._shared_buffer) * 2)
-                        )
-
-                    view       = memoryview(self._shared_buffer)[:nbytes]
+                    # Allocate a fresh bytearray for each tensor.
+                    # This avoids the need for t.clone() later, cutting peak RAM in half!
+                    buffer = bytearray(nbytes)
+                    view = memoryview(buffer)
                     f.seek(data_base + start)
                     bytes_read = f.readinto(view)
                     if bytes_read != nbytes:
@@ -109,18 +104,10 @@ class SafetensorsDiskSeeker(SafetensorsBase):
                         t = t.view(torch.float8_e4m3fn)
 
                     t = t.to(device=device)
-                    # Cloning ensures the tensor owns its memory after the
-                    # shared buffer is potentially reused on the next call.
-                    if t.device.type == "cpu":
-                        t = t.clone()
 
                     if dtype is not None and t.dtype != dtype and t.is_floating_point():
                         t = t.to(dtype=dtype)
 
                     result[key] = t
-
-        # Release the shared buffer when it grows large to avoid holding onto it.
-        if len(self._shared_buffer) > 128 * 1024 * 1024:
-            self._shared_buffer = bytearray()
 
         return result

@@ -32,6 +32,7 @@ def place_tensors(
     state_dict: Dict[str, torch.Tensor],
     device: str,
     dtype: torch.dtype,
+    skip_errors: bool = False,
 ) -> None:
     """
     Write *state_dict* tensors into *model* parameters (meta → real device).
@@ -50,12 +51,23 @@ def place_tensors(
         Target device string, e.g. ``"cuda"`` or ``"cpu"``.
     dtype:
         Target floating-point dtype, e.g. ``torch.bfloat16``.
+    skip_errors:
+        If True, silently skip keys that don't exist in the model rather than
+        raising an error. Useful when checkpoint names don't perfectly align
+        with the model's attribute names.
     """
     for name, tensor in state_dict.items():
-        if tensor.is_floating_point():
-            set_module_tensor_to_device(model, name, device, value=tensor, dtype=dtype)
-        else:
-            set_module_tensor_to_device(model, name, device, value=tensor)
+        try:
+            if tensor.is_floating_point():
+                set_module_tensor_to_device(model, name, device, value=tensor, dtype=dtype)
+            else:
+                set_module_tensor_to_device(model, name, device, value=tensor)
+        except (AttributeError, ValueError) as exc:
+            if skip_errors:
+                import logging
+                logging.getLogger("weellm").debug("Skipping tensor %s: %s", name, exc)
+            else:
+                raise
 
 
 def evict_module(module: nn.Module) -> int:

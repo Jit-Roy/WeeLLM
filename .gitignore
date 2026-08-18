@@ -81,6 +81,7 @@ test_ideogram.py
 *.txt
 *.png
 *.jpg
+temp
 
 # Ignore shard directories created by WeeLLM's splitter
 **/splitted_model/

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import gc
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
@@ -47,12 +48,17 @@ class BaseTransformerStreamer(ABC):
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         prefetch: bool = True,
+        prefetch_device: Optional[str] = None,
     ):
         self.model   = model
         self.seeker  = seeker
         self.device  = device
         self.dtype   = dtype
         self.prefetch = prefetch
+        # Where to load prefetched blocks:
+        #   None / "cuda" → directly to VRAM (may OOM on 4 GB cards)
+        #   "cpu"         → pinned CPU RAM; moved to VRAM in _pre_hook (safe)
+        self.prefetch_device: str = prefetch_device if prefetch_device else device
 
         # Build the ordered list of (shard_name, block_module) tuples.
         self._shard_order: List[Tuple[str, nn.Module]] = self._get_shard_order()
@@ -107,9 +113,9 @@ class BaseTransformerStreamer(ABC):
     # Tensor helpers
     # ------------------------------------------------------------------
 
-    def apply_state_dict(self, state_dict: Dict[str, torch.Tensor]) -> None:
+    def apply_state_dict(self, state_dict: Dict[str, torch.Tensor], skip_errors: bool = False) -> None:
         """Write *state_dict* tensors into model parameters (meta → real device)."""
-        place_tensors(self.model, state_dict, self.device, self.dtype)
+        place_tensors(self.model, state_dict, self.device, self.dtype, skip_errors=skip_errors)
 
 
     def _get_layer_keys(self, shard_name: str) -> List[str]:
@@ -136,6 +142,9 @@ class BaseTransformerStreamer(ABC):
         shard_name: str = getattr(module, _SHARD_NAME_ATTR)
         pos = self._shard_name_to_pos[shard_name]
         layer_keys = self._get_layer_keys(shard_name)
+        
+        # Add a visual progress log
+        print(f"    [Streamer] Streaming block {shard_name} ({pos+1}/{len(self._shard_order)}) ...", flush=True)
 
         # Retrieve weights — either from a background prefetch future or synchronously.
         with self._lock:
@@ -147,6 +156,13 @@ class BaseTransformerStreamer(ABC):
                 sd = self._next_future.result()
                 self._next_future = None
                 self._next_future_name = None
+                # If prefetched to CPU pinned memory, move to VRAM now.
+                if self.prefetch_device != self.device:
+                    sd = {
+                        k: v.to(self.device, non_blocking=True)
+                        for k, v in sd.items()
+                    }
+                    torch.cuda.synchronize()  # ensure transfer complete before forward
             else:
                 sd = self.seeker.get_tensors(layer_keys, device=self.device, dtype=self.dtype)
 
@@ -165,16 +181,17 @@ class BaseTransformerStreamer(ABC):
                     clamped_args.append(arg)
             args = tuple(clamped_args)
 
-        # Launch background prefetch for the next block directly to VRAM.
-        # Loading straight to GPU avoids creating intermediate CPU tensors that
-        # accumulate in RSS during long sequences of blocks.
+        # Launch background prefetch for the next block.
+        # prefetch_device == "cpu" → load to pinned RAM (zero VRAM cost, safe on 4 GB cards).
+        # prefetch_device == "cuda" → load directly to VRAM (faster transfer but needs headroom).
         next_pos = pos + 1
         if self.prefetch and self._executor is not None and next_pos < len(self._shard_order):
             next_name, _ = self._shard_order[next_pos]
             next_keys    = self._get_layer_keys(next_name)
+            _pdev = self.prefetch_device  # capture for closure
             with self._lock:
                 self._next_future = self._executor.submit(
-                    self.seeker.get_tensors, next_keys, self.device, self.dtype
+                    self.seeker.get_tensors, next_keys, _pdev, self.dtype
                 )
                 self._next_future_name = next_name
 
@@ -183,6 +200,8 @@ class BaseTransformerStreamer(ABC):
 
     def _post_hook(self, module: nn.Module, args, output):
         evict_module(module)
+        # We don't strictly need gc.collect() here because GPU memory is managed by PyTorch's
+        # caching allocator, but freeing Python references early is safer.
         return output
 
     # ------------------------------------------------------------------

@@ -82,6 +82,7 @@ examples:
     parser.add_argument("--height", type=int, default=None, help="Output height in pixels (default: 1024 for T2I, original for I2I)")
     parser.add_argument("--width",  type=int, default=None, help="Output width in pixels (default: 1024 for T2I, original for I2I)")
     parser.add_argument("--steps",  type=int, default=4,   help="Denoising steps         (default: 4)")
+    parser.add_argument("--num_frames", type=int, default=None, help="Number of video frames (default: 75 for video models)")
     parser.add_argument(
         "--guidance_scale", type=float, default=None,
         help="Classifier-free guidance scale (default: use pipeline default, usually 4.5 for SD3/LongCat or 1.0/3.5 for Flux)",
@@ -91,7 +92,11 @@ examples:
     # Image-to-Image / Editing
     parser.add_argument(
         "--image", type=str, default="",
-        help="Path to an input image for image-to-image or editing tasks",
+        help="Path to an input image (or first frame for video) for image-to-image or editing tasks",
+    )
+    parser.add_argument(
+        "--last_image", type=str, default="",
+        help="Path to the last frame image (specifically for MiniMax-H3 FL2VA video generation)",
     )
     parser.add_argument(
         "--strength", type=float, default=0.8,
@@ -161,8 +166,16 @@ def main() -> int:
             if args.width is None: args.width = 1024
             if args.height is None: args.height = 1024
     else:
-        if args.width is None: args.width = 1024
-        if args.height is None: args.height = 1024
+        # Detect model type first before applying resolution defaults
+        # (MiniMax-H3 has a native resolution of 544x960, not 1024x1024)
+        _model_lower = args.model.lower()
+        _is_minimax_default = "minimax" in _model_lower or "fl2va" in _model_lower or "h3" in _model_lower
+        if _is_minimax_default:
+            if args.width  is None: args.width  = 960
+            if args.height is None: args.height = 544
+        else:
+            if args.width  is None: args.width  = 1024
+            if args.height is None: args.height = 1024
 
     _configure_logging(args.verbose)
     logger = logging.getLogger("weellm")
@@ -196,16 +209,54 @@ def main() -> int:
     # ── Load pipeline ────────────────────────────────────────────────────────
     if args.image:
         from weellm import WeeImagePipeline as PipelineClass
-        from PIL import Image
+        from PIL import Image, ImageOps
         logger.info("  Mode:     Image-to-Image / Edit (Input: %s)", args.image)
         try:
-            input_image = Image.open(args.image).convert("RGB")
+            input_image = ImageOps.exif_transpose(Image.open(args.image)).convert("RGB")
         except Exception as e:
             print(f"ERROR: Could not load input image: {e}", file=sys.stderr)
             return 1
     else:
-        from weellm import WeePipeline as PipelineClass
+        # Check if this is a MiniMax-H3 model
+        model_index_path = None
+        try:
+            from pathlib import Path
+            if Path(args.model).is_dir():
+                model_index_path = Path(args.model) / "model_index.json"
+            elif args.model.startswith("MiniMax"):
+                model_index_path = None  # Will be downloaded
+        except:
+            pass
+        
+        # Check model type
+        is_minimax = False
+        if model_index_path and model_index_path.exists():
+            try:
+                import json
+                with open(model_index_path) as f:
+                    index = json.load(f)
+                is_minimax = "MiniMaxH3" in index.get("_class_name", "")
+            except:
+                pass
+        
+        if is_minimax or "MiniMax" in args.model:
+            from weellm.weevideopipeline import WeeVideoPipeline as PipelineClass
+            logger.info("  Mode:     Text-to-Video+Audio (MiniMax-H3)")
+        else:
+            from weellm import WeePipeline as PipelineClass
+            logger.info("  Mode:     Text-to-Image")
+        
         input_image = None
+
+    last_image = None
+    if getattr(args, "last_image", None):
+        try:
+            from PIL import Image, ImageOps
+            last_image = ImageOps.exif_transpose(Image.open(args.last_image)).convert("RGB")
+            logger.info("  Last Frame: %s", args.last_image)
+        except Exception as e:
+            print(f"ERROR: Could not load last_image: {e}", file=sys.stderr)
+            return 1
 
     t_load = time.time()
     try:
@@ -241,6 +292,8 @@ def main() -> int:
         num_inference_steps=args.steps,
         generator=generator,
     )
+    if args.num_frames is not None:
+        call_kwargs["num_frames"] = args.num_frames
     if args.guidance_scale is not None:
         call_kwargs["guidance_scale"] = args.guidance_scale
 
@@ -248,18 +301,110 @@ def main() -> int:
         call_kwargs["image"] = input_image
         call_kwargs["strength"] = args.strength
         
+    if last_image is not None:
+        call_kwargs["last_image"] = last_image
+        
     if args.negative_prompt:
         call_kwargs["negative_prompt"] = args.negative_prompt
 
     out   = pipe(**call_kwargs)
-    image = out.images[0] if hasattr(out, "images") else out[0][0]
-    gen_time = time.time() - t_gen
-    logger.info("Generation took %.1fs", gen_time)
+    
+    # Handle different output types (images, video+audio, etc)
+    if hasattr(out, "videos") or hasattr(out, "video") or (hasattr(out, "get") and ("videos" in out or "video" in out)):
+        # MiniMax-H3 returns videos and audio
+        logger.info("Video + Audio output (MiniMax-H3 model)")
+        
+        if hasattr(out, "videos") and out.videos is not None:
+            videos = out.videos[0] if isinstance(out.videos, list) else out.videos
+        elif hasattr(out, "video") and out.video is not None:
+            videos = out.video[0] if isinstance(out.video, list) else out.video
+        elif hasattr(out, "get"):
+            videos_raw = out.get("videos")
+            if videos_raw is None:
+                videos_raw = out.get("video")
+            videos = videos_raw[0] if isinstance(videos_raw, list) else videos_raw
+            
+        audio_raw = getattr(out, "audio", None)
+        if audio_raw is None and hasattr(out, "get"):
+            audio_raw = out.get("audio")
+        audio = audio_raw[0] if isinstance(audio_raw, list) else audio_raw
+        
+        sampling_rate = getattr(out, "sampling_rate", None)
+        if sampling_rate is None and hasattr(out, "get"):
+            sampling_rate = out.get("sampling_rate", 24000)
+        if sampling_rate is None:
+            sampling_rate = 24000
 
-    # ── Save ─────────────────────────────────────────────────────────────────
-    output_path = Path(args.output)
-    image.save(str(output_path))
-    logger.info("Saved to: %s", output_path.resolve())
+        gen_time = time.time() - t_gen
+        logger.info("Generation took %.1fs", gen_time)
+        
+        from diffusers.utils import encode_video
+        output_path = Path(args.output)
+        
+        if isinstance(videos, torch.Tensor):
+            # The MiniMax-H3 VAE output is ImageNet normalized.
+            # We must denormalize it to [0, 1] before saving to avoid massive clipping
+            # that causes visible 16x16 grid patches in the output.
+            mean = torch.tensor([0.485, 0.456, 0.406], device=videos.device, dtype=videos.dtype).view(-1, 1, 1)
+            std = torch.tensor([0.229, 0.224, 0.225], device=videos.device, dtype=videos.dtype).view(-1, 1, 1)
+            
+            # Identify the channel dimension to broadcast correctly
+            if videos.shape[0] == 3 and len(videos.shape) == 4:
+                # Shape is [C, T, H, W]
+                mean = mean.unsqueeze(1) # [C, 1, 1, 1]
+                std = std.unsqueeze(1)
+            elif len(videos.shape) == 4 and videos.shape[1] == 3:
+                # Shape is [T, C, H, W]
+                mean = mean.unsqueeze(0) # [1, C, 1, 1]
+                std = std.unsqueeze(0)
+            
+            # Apply denormalization
+            videos = (videos * std) + mean
+            videos = videos.clamp(0, 1)
+            
+        try:
+            encode_video(
+                videos,
+                fps=24,  # MiniMax-H3 default FPS
+                output_path=str(output_path),
+                audio=audio,
+                audio_sample_rate=sampling_rate,
+            )
+            logger.info("Saved to: %s", output_path.resolve())
+        except Exception as e:
+            logger.warning(f"encode_video failed, attempting manual video save: {e}")
+            import torchvision.io
+            if isinstance(videos, torch.Tensor):
+                # Ensure it's [T, C, H, W]
+                if videos.shape[0] == 3 and len(videos.shape) == 4:
+                    videos = videos.permute(1, 0, 2, 3) # [C, T, H, W] -> [T, C, H, W]
+                
+                # Convert to [0, 255] uint8
+                if videos.dtype in [torch.float16, torch.bfloat16, torch.float32]:
+                    videos = (videos * 255).clamp(0, 255).to(torch.uint8)
+                torchvision.io.write_video(str(output_path), videos.permute(0, 2, 3, 1), fps=24, audio_array=audio, audio_fps=sampling_rate, audio_codec='aac')
+                logger.info("Saved manually using torchvision.io.write_video to: %s", output_path.resolve())
+        
+    elif hasattr(out, "images"):
+        # Image generation (Flux, SD3, etc)
+        image = out.images[0]
+        gen_time = time.time() - t_gen
+        logger.info("Generation took %.1fs", gen_time)
+        
+        # ── Save ─────────────────────────────────────────────────────────────────
+        output_path = Path(args.output)
+        image.save(str(output_path))
+        logger.info("Saved to: %s", output_path.resolve())
+    else:
+        # Fallback
+        result = out[0][0] if hasattr(out, "__getitem__") else out
+        gen_time = time.time() - t_gen
+        logger.info("Generation took %.1fs", gen_time)
+        
+        if hasattr(result, "save"):
+            output_path = Path(args.output)
+            result.save(str(output_path))
+            logger.info("Saved to: %s", output_path.resolve())
 
     # ── Budget report ─────────────────────────────────────────────────────────
     if torch.cuda.is_available():

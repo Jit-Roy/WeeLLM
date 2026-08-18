@@ -42,6 +42,7 @@ _TE_MAP = {
     "Qwen3Model":                             "weellm.models.text_encoders.qwen3_for_causal_lm",
     "Qwen2_5_VLForConditionalGeneration":     "weellm.models.text_encoders.qwen2_5_vl_for_conditional_generation",
     "Qwen3VLModel":                           "weellm.models.text_encoders.qwen3_vl_model",
+    "MiniMaxH3Qwen3VLHFEncoder":              "weellm.models.text_encoders.minimax_h3_qwen3_vl_hf_encoder",
     "Mistral3ForConditionalGeneration":       "weellm.models.text_encoders.mistral3_for_conditional_generation",
     "GlmModel":                               "weellm.models.text_encoders.glm_model",
     "Gemma2Model":                            "weellm.models.text_encoders.gemma2_model",
@@ -81,6 +82,7 @@ _TR_MAP = {
     "ErnieImageTransformer2DModel":        "weellm.models.transformers.ernie_image_transformer_2d_model",
     "LongCatImageTransformer2DModel":      "weellm.models.transformers.longcat_transformer_2d_model",
     "Krea2Transformer2DModel":             "weellm.models.transformers.krea2_transformer_2d_model",
+    "MiniMaxH3DiTModel":                   "weellm.models.transformers.minimax_h3_dit_model",
 }
 
 
@@ -234,8 +236,16 @@ class WeeBasePipeline:
         # VAEs often produce artifacts in half-precision due to intermediate activation overflow.
         # If we are running in float16 or bfloat16, upcast the VAE to float32.
         vae_dtype = torch.float32 if effective_dtype in (torch.float16, torch.bfloat16) else effective_dtype
-        lazy_vae  = cls._load_vae(model_dir_path, device, vae_dtype, cache_to_ram)
-        diffusers_kwargs["vae"] = lazy_vae.model
+        for vae_key in ["vae", "video_vae", "audio_vae"]:
+            if vae_key in index:
+                if not (model_dir_path / vae_key).exists():
+                    logger.warning("Directory for %s does not exist, skipping.", vae_key)
+                    continue
+                try:
+                    lazy_vae = cls._load_vae(model_dir_path, device, vae_dtype, cache_to_ram, subfolder=vae_key)
+                    diffusers_kwargs[vae_key] = lazy_vae.model
+                except Exception as e:
+                    logger.warning("Failed to load %s: %s", vae_key, e)
 
         # ── Step 3: Text Encoders ────────────────────────────────────────
         logger.info("\n[3/4] Preparing Text Encoders ...")
@@ -353,10 +363,10 @@ class WeeBasePipeline:
                 logger.warning("Failed to load safety_checker, continuing with None: %s", e)
             out["safety_checker"] = sc
 
-        for key in ["tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4", "text_processor"]:
+        for key in ["tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4", "text_processor", "processor"]:
             if key in index:
                 try:
-                    if key == "text_processor":
+                    if key in ["text_processor", "processor"]:
                         from transformers import AutoProcessor
                         out[key] = AutoProcessor.from_pretrained(str(model_dir), subfolder=key)
                     else:
@@ -367,16 +377,17 @@ class WeeBasePipeline:
                 except Exception as e:
                     logger.warning("Failed to load %s: %s", key, e)
 
-        scheduler_cls = getattr(
-            importlib.import_module("diffusers"), index["scheduler"][1]
-        )
-        out["scheduler"] = scheduler_cls.from_pretrained(str(model_dir), subfolder="scheduler")
+        if index.get("scheduler") is not None:
+            scheduler_cls = getattr(
+                importlib.import_module("diffusers"), index["scheduler"][1]
+            )
+            out["scheduler"] = scheduler_cls.from_pretrained(str(model_dir), subfolder="scheduler")
 
     @staticmethod
-    def _load_vae(model_dir: Path, device: str, torch_dtype: torch.dtype, cache_to_ram: bool):
+    def _load_vae(model_dir: Path, device: str, torch_dtype: torch.dtype, cache_to_ram: bool, subfolder: str = "vae"):
         from weellm.models.vaes.lazy_vae import LazyVAEStreamer
         return LazyVAEStreamer.from_pretrained(
-            model_dir / "vae",
+            model_dir / subfolder,
             device=device,
             dtype=torch_dtype,
             cache_to_ram=cache_to_ram,
