@@ -29,9 +29,6 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
 log = logging.getLogger("generate_video")
 
-sys.path.insert(0, r"D:\Personal Projects\LightLLM")
-sys.path.insert(0, r"D:\Personal Projects\LightLLM\temp")  # h3_split_blocks, h3_lora, h3_aoti
-
 import torch
 from PIL import Image, ImageOps
 

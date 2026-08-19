@@ -154,7 +154,13 @@ def main() -> int:
     parser = _build_parser()
     args   = parser.parse_args()
 
-    if args.image:
+    _model_lower = args.model.lower()
+    _is_minimax_default = "minimax" in _model_lower or "fl2va" in _model_lower or "h3" in _model_lower
+
+    if _is_minimax_default:
+        if args.width is None: args.width = 960
+        if args.height is None: args.height = 544
+    elif args.image:
         try:
             from PIL import Image
             with Image.open(args.image) as temp_img:
@@ -166,16 +172,8 @@ def main() -> int:
             if args.width is None: args.width = 1024
             if args.height is None: args.height = 1024
     else:
-        # Detect model type first before applying resolution defaults
-        # (MiniMax-H3 has a native resolution of 544x960, not 1024x1024)
-        _model_lower = args.model.lower()
-        _is_minimax_default = "minimax" in _model_lower or "fl2va" in _model_lower or "h3" in _model_lower
-        if _is_minimax_default:
-            if args.width  is None: args.width  = 960
-            if args.height is None: args.height = 544
-        else:
-            if args.width  is None: args.width  = 1024
-            if args.height is None: args.height = 1024
+        if args.width  is None: args.width  = 1024
+        if args.height is None: args.height = 1024
 
     _configure_logging(args.verbose)
     logger = logging.getLogger("weellm")
@@ -204,49 +202,50 @@ def main() -> int:
         logger.info("  GPU:      %s (%.1f GB VRAM)", props.name, props.total_memory / 1e9)
     if args.dry_run:
         logger.info("  Mode:     DRY RUN (no inference)")
+
     logger.info("")
 
     # ── Load pipeline ────────────────────────────────────────────────────────
+    is_minimax = False
+    model_index_path = None
+    try:
+        from pathlib import Path
+        if Path(args.model).is_dir():
+            model_index_path = Path(args.model) / "model_index.json"
+        elif args.model.startswith("MiniMax"):
+            model_index_path = None
+    except:
+        pass
+    
+    if model_index_path and model_index_path.exists():
+        try:
+            import json
+            with open(model_index_path) as f:
+                index = json.load(f)
+            is_minimax = "MiniMaxH3" in index.get("_class_name", "")
+        except:
+            pass
+            
+    is_minimax = is_minimax or _is_minimax_default
+    
+    input_image = None
     if args.image:
-        from weellm import WeeImagePipeline as PipelineClass
         from PIL import Image, ImageOps
-        logger.info("  Mode:     Image-to-Image / Edit (Input: %s)", args.image)
         try:
             input_image = ImageOps.exif_transpose(Image.open(args.image)).convert("RGB")
         except Exception as e:
             print(f"ERROR: Could not load input image: {e}", file=sys.stderr)
             return 1
+
+    if is_minimax:
+        from weellm.weevideopipeline import WeeVideoPipeline as PipelineClass
+        logger.info("  Mode:     Text-to-Video+Audio (MiniMax-H3)%s", " (With Start Image)" if input_image else "")
+    elif input_image:
+        from weellm import WeeImagePipeline as PipelineClass
+        logger.info("  Mode:     Image-to-Image / Edit (Input: %s)", args.image)
     else:
-        # Check if this is a MiniMax-H3 model
-        model_index_path = None
-        try:
-            from pathlib import Path
-            if Path(args.model).is_dir():
-                model_index_path = Path(args.model) / "model_index.json"
-            elif args.model.startswith("MiniMax"):
-                model_index_path = None  # Will be downloaded
-        except:
-            pass
-        
-        # Check model type
-        is_minimax = False
-        if model_index_path and model_index_path.exists():
-            try:
-                import json
-                with open(model_index_path) as f:
-                    index = json.load(f)
-                is_minimax = "MiniMaxH3" in index.get("_class_name", "")
-            except:
-                pass
-        
-        if is_minimax or "MiniMax" in args.model:
-            from weellm.weevideopipeline import WeeVideoPipeline as PipelineClass
-            logger.info("  Mode:     Text-to-Video+Audio (MiniMax-H3)")
-        else:
-            from weellm import WeePipeline as PipelineClass
-            logger.info("  Mode:     Text-to-Image")
-        
-        input_image = None
+        from weellm import WeePipeline as PipelineClass
+        logger.info("  Mode:     Text-to-Image")
 
     last_image = None
     if getattr(args, "last_image", None):

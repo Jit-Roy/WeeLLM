@@ -150,7 +150,17 @@ class MiniMaxVAEStreamer:
                     report_memory("After VAE Encoder Load")
                     self._encoder_loaded = True
 
+            kwargs.pop("return_dict", None)
+            
+            # Cast first positional arg to correct dtype if it's a tensor
+            if args and isinstance(args[0], torch.Tensor):
+                args = (args[0].to(self.dtype),) + args[1:]
+                
             result = original_encode(*args, **kwargs)
+            
+            # Wrap in diffusers' DiagonalGaussianDistribution
+            from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
+            posterior = DiagonalGaussianDistribution(result)
 
             with self._encoder_lock:
                 if self._encoder_loaded:
@@ -160,7 +170,7 @@ class MiniMaxVAEStreamer:
                     report_memory("After VAE Encoder Eviction")
                     self._encoder_loaded = False
 
-            return result
+            return (posterior, )
 
         self.model.encode = _lazy_encode.__get__(self.model, self.model.__class__)
 

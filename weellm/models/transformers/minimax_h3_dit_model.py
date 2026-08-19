@@ -199,23 +199,14 @@ class MiniMaxH3DiTModelStreamer(BaseTransformerStreamer):
         # Step 2: Instantiate the model skeleton on meta device using from_config.
         # diffusers uses its own internal attribute names (proj_in, transformer_blocks, etc.)
         # We translate checkpoint keys → diffusers names when loading tensors.
-        try:
-            from diffusers import MiniMaxH3Transformer3DModel
-            from accelerate import init_empty_weights
-            from weellm.utils import default_dtype
-            logger.info("  Instantiating MiniMaxH3Transformer3DModel on meta device ...")
-            cfg = MiniMaxH3Transformer3DModel.load_config(str(transformer_dir))
-            with init_empty_weights(), default_dtype(dtype):
-                model = MiniMaxH3Transformer3DModel.from_config(cfg)
-            model.eval()
-        except Exception as e:
-            logger.warning("diffusers instantiation failed (%s), falling back to Mock skeleton.", e)
-            class MockMiniMaxH3DiTModel(nn.Module):
-                def __init__(self, num_blocks: int = 50):
-                    super().__init__()
-                    self.blocks = nn.ModuleList([nn.Module() for _ in range(num_blocks)])
-            model = MockMiniMaxH3DiTModel(num_blocks=50)
-            model.eval()
+        from diffusers import MiniMaxH3Transformer3DModel
+        from accelerate import init_empty_weights
+        from weellm.utils import default_dtype
+        logger.info("  Instantiating MiniMaxH3Transformer3DModel on meta device ...")
+        cfg = MiniMaxH3Transformer3DModel.load_config(str(transformer_dir))
+        with init_empty_weights(), default_dtype(dtype):
+            model = MiniMaxH3Transformer3DModel.from_config(cfg)
+        model.eval()
 
         logger.info("Step 3/3 -- Loading resident transformer tensors to device=%s ...", device)
         streamer = cls(model=model, seeker=seeker, device=device, dtype=dtype, prefetch=prefetch, prefetch_device=prefetch_device)
