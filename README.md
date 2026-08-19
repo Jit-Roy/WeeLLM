@@ -75,6 +75,8 @@ WeeLLM streams one transformer layer at a time to GPU for large models. The full
 
 - LongCat Image Edit
 - Sdxl Img To Img
+- Flux.2 Klein 4B
+- Flux.2 Klein 9B
 
 ## Video Generation Models
 
