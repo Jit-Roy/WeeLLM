@@ -129,8 +129,8 @@ class MiniMaxVAEStreamer:
         # Evict block weights from GPU — CPU has no cache so this is final
         self._evict_keys(getattr(module, "_vae_loaded_keys", []))
         module._vae_loaded_keys = []
-        # After a full chunk (every 36 blocks), clear fragmented VRAM
-        if self._call_counter % 36 == 0:
+        # Aggressively clear fragmented VRAM every 2 blocks instead of 36
+        if self._call_counter % 2 == 0:
             torch.cuda.empty_cache()
         return output
 
@@ -218,9 +218,11 @@ class MiniMaxVAEStreamer:
             # self.model is MiniMaxH3VideoVAE; self.model.model is AutoencoderKLLegacy
             inner = self.model.model
             with torch.no_grad():
+                report_memory("Before VAE decode_base")
                 # decode_base → decode_temporal → chunks of tokens_chunk_size latent frames
                 # Note: decode_base internally routes to decode() which applies post_quant_conv
                 result = inner.decode_base(latents)
+                report_memory("After VAE decode_base")
                 print(f"    [VAE Streamer] decode_base done: {tuple(result.shape)}", flush=True)
                 
             print(f"    [VAE Streamer] Saving video decode cache to {cache_file} ...", flush=True)
@@ -288,9 +290,8 @@ class MiniMaxVAEStreamer:
             "encoder_tiling": int(config["vae_encoder_tiling"]),
             "decoder_tiling": int(config["vae_decoder_tiling"]),
             "parallel_tiling": int(config["vae_parallel_tiling"]),
-            # Override tile_size to 99999 — disables spatial tiling entirely.
-            # Each temporal chunk (5 latent frames, ~10k tokens) fits in 4GB VRAM without
-            # spatial tiling, and this drops block calls from 120 → 8 (temporal only).
+            # We must use spatial tiling (tile_size=256) to ensure the 16x16 blocks get cross-block 
+            # self-attention smoothing. Disabling this (99999) causes visible grid artifacts in the final video.
             "tile_size": int(config["vae_tile_size"]) if "vae_tile_size" in config else 256,
             "tile_overlap_min": int(config["vae_tile_overlap_min"]),
             "encoder_parallel": int(config["vae_encoder_parallel"]),
