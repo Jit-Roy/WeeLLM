@@ -158,8 +158,38 @@ def main() -> int:
     _is_minimax_default = "minimax" in _model_lower or "fl2va" in _model_lower or "h3" in _model_lower
 
     if _is_minimax_default:
-        if args.width is None: args.width = 960
-        if args.height is None: args.height = 544
+        if args.image:
+            try:
+                from PIL import Image
+                with Image.open(args.image) as img:
+                    aspect = img.width / img.height
+                
+                canvases = [
+                    (544, 960), (576, 1024), (640, 1152), (704, 1280), (768, 1344), # 16:9
+                    (960, 544), (1152, 640), (1344, 768), # 9:16
+                    (544, 544), (768, 768), # 1:1
+                    (576, 768), (768, 1024), # 4:3
+                    (768, 576), (1024, 768), # 3:4
+                    (512, 1152), (672, 1536), # 21:9
+                ]
+                
+                fastest = {}
+                for h, w in canvases:
+                    r = w / h
+                    if r not in fastest or w * h < fastest[r][0] * fastest[r][1]:
+                        fastest[r] = (h, w)
+                
+                ratio = min(fastest, key=lambda r: abs(r - aspect))
+                target_h, target_w = fastest[ratio]
+                
+                if args.width is None: args.width = target_w
+                if args.height is None: args.height = target_h
+            except Exception:
+                if args.width is None: args.width = 960
+                if args.height is None: args.height = 544
+        else:
+            if args.width is None: args.width = 960
+            if args.height is None: args.height = 544
     elif args.image:
         try:
             from PIL import Image
