@@ -32,7 +32,7 @@ WeeLLM streams one transformer layer at a time to GPU for large models. The full
 | `Qwen-Image` (`Qwen/Qwen-Image`)   |       ~20B | **2.47 GB** | **1.60 GB** | ~795s · 10 steps |
 | `AuraFlow` (`fal/AuraFlow`)        |        ~4B | **1.34 GB** | **1.61 GB** | ~405s · 10 steps |
 | `ERNIE-Image` (`Baidu/ERNIE-Image`)|       ~10B | **1.69 GB** | **2.54 GB** | ~123s · 5 steps  |
-| `Krea-2-Turbo`                     |       ~13B | **~ 3 GB**  | **3.23 GB** | ~810s · 10 steps |
+| `Krea-2-Turbo`                     |       ~13B | **  3  GB** | **3.23 GB** | ~810s · 10 steps |
 | `MiniMax-H3`                       |       ~34B | **3.14 GB** |           — |                — |
 
 > The models run with **no quantization** on RTX-3050 — full bfloat16 (1024x1024) weights streamed layer-by-layer to GPU.
@@ -54,7 +54,6 @@ WeeLLM streams one transformer layer at a time to GPU for large models. The full
 - Flux.1 Schnell
 - Flux.1 Kontext
 - Flux.1 Krea
-- Flux Fill
 - Flux.2 Klein 4B
 - Flux.2 Klein 9B
 - CogView 4
@@ -77,6 +76,7 @@ WeeLLM streams one transformer layer at a time to GPU for large models. The full
 - Sdxl Img To Img
 - Flux.2 Klein 4B
 - Flux.2 Klein 9B
+- Flux.1 Fill Dev
 
 ## Video Generation Models
 

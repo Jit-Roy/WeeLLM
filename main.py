@@ -99,6 +99,10 @@ examples:
         help="Path to the last frame image (specifically for MiniMax-H3 FL2VA video generation)",
     )
     parser.add_argument(
+        "--mask_image", type=str, default="",
+        help="Path to a mask image for inpainting tasks",
+    )
+    parser.add_argument(
         "--strength", type=float, default=0.8,
         help="Denoising strength for image-to-image (default: 0.8)",
     )
@@ -205,6 +209,22 @@ def main() -> int:
         if args.width  is None: args.width  = 1024
         if args.height is None: args.height = 1024
 
+    is_flux_fill = False
+    try:
+        from pathlib import Path
+        import json
+        if Path(args.model).is_dir():
+            idx_path = Path(args.model) / "model_index.json"
+            if idx_path.exists():
+                with open(idx_path) as f:
+                    is_flux_fill = json.load(f).get("_class_name", "") == "FluxFillPipeline"
+    except:
+        pass
+
+    if is_flux_fill or ("flux" in _model_lower and "fill" in _model_lower):
+        args.width = max(16, (args.width // 16) * 16)
+        args.height = max(16, (args.height // 16) * 16)
+
     _configure_logging(args.verbose)
     logger = logging.getLogger("weellm")
 
@@ -263,6 +283,7 @@ def main() -> int:
         from PIL import Image, ImageOps
         try:
             input_image = ImageOps.exif_transpose(Image.open(args.image)).convert("RGB")
+            input_image = input_image.resize((args.width, args.height), Image.LANCZOS)
         except Exception as e:
             print(f"ERROR: Could not load input image: {e}", file=sys.stderr)
             return 1
@@ -282,9 +303,21 @@ def main() -> int:
         try:
             from PIL import Image, ImageOps
             last_image = ImageOps.exif_transpose(Image.open(args.last_image)).convert("RGB")
+            last_image = last_image.resize((args.width, args.height), Image.LANCZOS)
             logger.info("  Last Frame: %s", args.last_image)
         except Exception as e:
             print(f"ERROR: Could not load last_image: {e}", file=sys.stderr)
+            return 1
+
+    mask_image = None
+    if getattr(args, "mask_image", None):
+        try:
+            from PIL import Image, ImageOps
+            mask_image = ImageOps.exif_transpose(Image.open(args.mask_image)).convert("RGB")
+            mask_image = mask_image.resize((args.width, args.height), Image.LANCZOS)
+            logger.info("  Mask Image: %s", args.mask_image)
+        except Exception as e:
+            print(f"ERROR: Could not load mask_image: {e}", file=sys.stderr)
             return 1
 
     t_load = time.time()
@@ -332,6 +365,9 @@ def main() -> int:
         
     if last_image is not None:
         call_kwargs["last_image"] = last_image
+        
+    if mask_image is not None:
+        call_kwargs["mask_image"] = mask_image
         
     if args.negative_prompt:
         call_kwargs["negative_prompt"] = args.negative_prompt
