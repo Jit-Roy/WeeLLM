@@ -77,6 +77,7 @@ WeeLLM streams one transformer layer at a time to GPU for large models. The full
 - Flux.2 Klein 4B
 - Flux.2 Klein 9B
 - Flux.1 Fill Dev
+- Qwen Image Edit
 
 ## Video Generation Models
 
