@@ -29,6 +29,7 @@ import torch.nn as nn
 from weellm.models.base_streamer import BaseTransformerStreamer
 from weellm.seeker import get_seeker
 from weellm.utils import clean_memory, report_memory
+from typing import Dict
 
 logger = logging.getLogger("weellm")
 
@@ -40,6 +41,47 @@ class HiDreamImageTransformer2DModelStreamer(BaseTransformerStreamer):
     Wraps HiDreamImageTransformer2DModel for memory-efficient streaming.
     Streams directly from original Hugging Face safetensors shards via live seek.
     """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.refine_mode = False
+        self.lora_dict = None
+        self.lora_scale = 1.0 # default for r=16, alpha=16
+
+    def load_lora(self, lora_path: str):
+        from safetensors.torch import load_file
+        import os
+        if os.path.exists(lora_path):
+            logger.info(f"Loading E1 LoRA from {lora_path} for refining mode fallback...")
+            self.lora_dict = load_file(lora_path, device="cpu")
+        else:
+            logger.warning(f"LoRA file not found at {lora_path}. Refine mode fallback will not subtract LoRA weights.")
+
+    def set_refine_mode(self, refine: bool):
+        if self.refine_mode != refine:
+            logger.info(f"Transformer Streamer refine_mode changed to {refine}")
+        self.refine_mode = refine
+
+    def apply_state_dict(self, state_dict: Dict[str, torch.Tensor], skip_errors: bool = False) -> None:
+        if getattr(self, "refine_mode", False) and getattr(self, "lora_dict", None) is not None:
+            # We are in refining mode and have the E1 LoRA loaded in RAM.
+            # Since the streaming weights are the MERGED E1 weights (I1 + LoRA),
+            # we must SUBTRACT the LoRA on the fly to recover the I1 Base model weights!
+            for key, weight in state_dict.items():
+                if not key.endswith(".weight"):
+                    continue
+                
+                prefix = key[:-7] # e.g. 'double_stream_blocks.0.to_q'
+                lora_a_key = f"{prefix}.lora_A.default.weight"
+                lora_b_key = f"{prefix}.lora_B.default.weight"
+                
+                if lora_a_key in self.lora_dict and lora_b_key in self.lora_dict:
+                    # LoRA A is (r, in), B is (out, r)
+                    A = self.lora_dict[lora_a_key].to(weight.device, dtype=torch.float32)
+                    B = self.lora_dict[lora_b_key].to(weight.device, dtype=torch.float32)
+                    lora_weight = (B @ A) * self.lora_scale
+                    weight.sub_(lora_weight.to(weight.dtype))
+                    
+        super().apply_state_dict(state_dict, skip_errors)
 
     def _get_shard_order(self) -> List[Tuple[str, nn.Module]]:
         order = []

@@ -271,9 +271,42 @@ class WeeBasePipeline:
         logger.info("============================================================\n")
 
         diffusers_kwargs.pop("torch_dtype", None)
-        pipeline_module = importlib.import_module("diffusers")
-        pipeline_cls    = getattr(pipeline_module, pipeline_class_name)
+        
+        pipeline_cls = None
+        
+        # Try standard diffusers first
+        try:
+            import importlib
+            pipeline_module = importlib.import_module("diffusers")
+            if hasattr(pipeline_module, pipeline_class_name):
+                pipeline_cls = getattr(pipeline_module, pipeline_class_name)
+                logger.info(f"Loaded pipeline {pipeline_class_name} from standard diffusers")
+        except Exception:
+            pass
+
+
+        # If still not found, fallback to our bundled external pipelines
+        if pipeline_cls is None:
+            external_dir = Path(__file__).parent / "external_pipelines"
+            if external_dir.exists():
+                for py_file in external_dir.glob("*.py"):
+                    try:
+                        import importlib.util
+                        spec = importlib.util.spec_from_file_location("custom_pipeline", py_file)
+                        custom_module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(custom_module)
+                        if hasattr(custom_module, pipeline_class_name):
+                            pipeline_cls = getattr(custom_module, pipeline_class_name)
+                            logger.info(f"Loaded external pipeline {pipeline_class_name} from {py_file.name}")
+                            break
+                    except Exception as e:
+                        pass
+        
+        if pipeline_cls is None:
+            raise ImportError(f"Could not find pipeline class {pipeline_class_name} in diffusers, local custom files, or external_pipelines.")
+            
         pipeline        = pipeline_cls(**diffusers_kwargs)
+
 
         # ── Post-build patches ───────────────────────────────────────────
         cls._patch_execution_device(pipeline, device, te_streamers)

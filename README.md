@@ -78,6 +78,8 @@ WeeLLM streams one transformer layer at a time to GPU for large models. The full
 - Flux.2 Klein 9B
 - Flux.1 Fill Dev
 - Qwen Image Edit
+- HiDream E1 Full
+- Flux.1 Kontext 
 
 ## Video Generation Models
 
@@ -87,8 +89,6 @@ WeeLLM streams one transformer layer at a time to GPU for large models. The full
 
 ## TODOs
 
-- [ ] **Image-to-Image (Img2Img) Pipeline:** Implement support for the available models for image to image pipeline.
-- [ ] **Inpainting Support:** Allow mask-based image generation to edit specific regions while preserving the rest.
 - [ ] **ControlNet / T2I-Adapter Integration:** Enable structural conditioning (canny, depth, pose) while maintaining strict VRAM streaming budgets.
 - [ ] **LoRA Support:** Dynamically load and apply LoRA weights during the layer-streaming process without bloating system Vram and RAM.
 

@@ -87,6 +87,10 @@ examples:
         "--guidance_scale", type=float, default=None,
         help="Classifier-free guidance scale (default: use pipeline default, usually 4.5 for SD3/LongCat or 1.0/3.5 for Flux)",
     )
+    parser.add_argument(
+        "--image_guidance_scale", type=float, default=None,
+        help="Image guidance scale for editing models like HiDream (default: use pipeline default)",
+    )
     parser.add_argument("--seed", type=int, default=-1, help="Random seed (default: -1 for random)")
     
     # Image-to-Image / Editing
@@ -358,6 +362,8 @@ def main() -> int:
         call_kwargs["num_frames"] = args.num_frames
     if args.guidance_scale is not None:
         call_kwargs["guidance_scale"] = args.guidance_scale
+    if hasattr(args, "image_guidance_scale") and args.image_guidance_scale is not None:
+        call_kwargs["image_guidance_scale"] = args.image_guidance_scale
 
     if input_image is not None:
         call_kwargs["image"] = input_image
