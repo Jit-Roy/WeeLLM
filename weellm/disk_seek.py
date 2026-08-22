@@ -33,6 +33,21 @@ class SafetensorsDiskSeeker(SafetensorsBase):
     def __init__(self, model_dir: Union[str, Path]):
         super().__init__(model_dir)
         self._parse_index()
+        
+        self._ram_cache: Dict[str, torch.Tensor] = {}
+        self._ram_budget_bytes: int = 0
+        self._ram_used_bytes: int = 0
+        
+        try:
+            import psutil
+            mem = psutil.virtual_memory()
+            # Leave a 4GB safety margin on System RAM
+            self._ram_budget_bytes = mem.available - (4 * 1024 * 1024 * 1024)
+            if self._ram_budget_bytes < 0:
+                self._ram_budget_bytes = 0
+            logger.info(f"DiskSeeker RAM Cache Budget: {self._ram_budget_bytes/1e9:.2f}GB")
+        except ImportError:
+            logger.warning("psutil not installed, disabling CPU RAM caching.")
 
     def get_tensors(
         self,
@@ -56,15 +71,29 @@ class SafetensorsDiskSeeker(SafetensorsBase):
         -------
         Dict mapping tensor name → ``torch.Tensor``.
         """
-        # Group keys by source shard file to minimise file-open overhead.
+        # Group missing keys by source shard file
         by_src: Dict[str, List[str]] = {}
+        result: Dict[str, torch.Tensor] = {}
+        missing_keys = []
+        
         for key in keys:
             if key not in self.weight_map:
                 raise KeyError(f"Tensor '{key}' not found in model index.")
-            src = self.weight_map[key]
-            by_src.setdefault(src, []).append(key)
+            
+            # Fast path: Serve from RAM cache if available
+            if key in self._ram_cache:
+                t = self._ram_cache[key]
+                t = t.to(device=device)
+                if dtype is not None and t.dtype != dtype and t.is_floating_point():
+                    t = t.to(dtype=dtype)
+                result[key] = t
+            else:
+                missing_keys.append(key)
+                src = self.weight_map[key]
+                by_src.setdefault(src, []).append(key)
 
-        result: Dict[str, torch.Tensor] = {}
+        if not missing_keys:
+            return result
 
         for src_file, src_keys in by_src.items():
             filepath = self.model_dir / src_file
@@ -102,6 +131,20 @@ class SafetensorsDiskSeeker(SafetensorsBase):
                         t = t.view(torch.bfloat16)
                     elif dtype_str == "F8_E4M3":
                         t = t.view(torch.float8_e4m3fn)
+                        
+                    # Attempt to cache the tensor in RAM
+                    block_size = t.numel() * t.element_size()
+                    if block_size <= self._ram_budget_bytes - self._ram_used_bytes:
+                        try:
+                            # Optional: Pin memory for faster H2D transfers if CUDA is available
+                            if torch.cuda.is_available():
+                                self._ram_cache[key] = t.pin_memory()
+                            else:
+                                self._ram_cache[key] = t
+                        except Exception:
+                            self._ram_cache[key] = t
+                            
+                        self._ram_used_bytes += block_size
 
                     t = t.to(device=device)
 
