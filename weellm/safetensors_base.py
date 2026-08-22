@@ -9,7 +9,7 @@ and ensuring both implementations stay in sync.
 import json
 import struct
 from pathlib import Path
-from typing import Dict, Union
+from typing import Dict, List, Union
 
 import numpy as np
 
@@ -125,3 +125,25 @@ class SafetensorsBase:
         self._parsed_headers[filename] = header
         self._data_bases[filename]     = data_base
         return header, data_base
+
+    def get_block_bytes(self, keys: List[str]) -> int:
+        """Return the total byte footprint of *keys* using cached header metadata.
+
+        Reads shard headers (tiny JSON, cached after first access) but never
+        loads actual tensor data. Safe to call from any seeker subclass.
+        Used by streamers to compute adaptive prefetch depth without I/O.
+        """
+        total = 0
+        for key in keys:
+            if key not in self.weight_map:
+                continue
+            src = self.weight_map[key]
+            header, _ = self._read_header(self.model_dir / src)
+            if key not in header or key == "__metadata__":
+                continue
+            meta   = header[key]
+            shape  = meta.get("shape", [])
+            dstr   = meta.get("dtype", "F32")
+            count  = int(np.prod(shape)) if shape else 1
+            total += count * np.dtype(DTYPE_MAP[dstr]).itemsize
+        return total

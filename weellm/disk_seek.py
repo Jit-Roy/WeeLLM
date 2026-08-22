@@ -38,27 +38,6 @@ class SafetensorsDiskSeeker(SafetensorsBase):
         super().__init__(model_dir)
         self._parse_index()
 
-    def get_block_bytes(self, keys: List[str]) -> int:
-        """
-        Return the total byte footprint of *keys* using cached shard header
-        metadata — zero actual disk I/O beyond the first header parse per shard.
-
-        Used by streamers to compute adaptive prefetch depth without loading
-        any tensors.
-        """
-        total = 0
-        for key in keys:
-            if key not in self.weight_map:
-                raise KeyError(f"Tensor '{key}' not found in model index.")
-            src = self.weight_map[key]
-            header, _ = self._read_header(self.model_dir / src)
-            meta = header[key]
-            shape = meta["shape"]
-            dtype_str = meta["dtype"]
-            count = int(np.prod(shape)) if shape else 1
-            total += count * np.dtype(DTYPE_MAP[dtype_str]).itemsize
-        return total
-
     def get_tensors(
         self,
         keys: List[str],
