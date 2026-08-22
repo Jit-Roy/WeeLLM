@@ -18,6 +18,45 @@ from weellm.safetensors_base import DTYPE_MAP, SafetensorsBase
 logger = logging.getLogger("weellm")
 
 
+# ---------------------------------------------------------------------------
+# Module-level shared RAM cache — ONE pool shared across ALL seekers (VAE,
+# text encoder, transformer).
+#
+# BUG FIX: Previously, each SafetensorsDiskSeeker calculated its own
+# independent RAM budget from available system RAM. With 3 seekers, each saw
+# e.g. 26 GB "available" and independently tried to cache up to that amount,
+# resulting in 3x oversubscription and an OS-level RAM kill (silent OOM) on
+# Kaggle. The fix is to calculate the budget ONCE and share a single dict
+# across every seeker created during this process lifetime.
+# ---------------------------------------------------------------------------
+_RAM_CACHE: Dict[str, torch.Tensor] = {}
+_RAM_USED_BYTES: int = 0
+_RAM_BUDGET_BYTES: int = -1   # -1 = not yet initialised
+
+
+def _init_global_ram_budget() -> None:
+    """Calculate the shared global RAM budget exactly once, across all seekers."""
+    global _RAM_BUDGET_BYTES
+    if _RAM_BUDGET_BYTES != -1:
+        return   # already initialised
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        # Leave a 6 GB safety margin for OS, PyTorch activations, and other
+        # process overhead. This shared budget is used by VAE + TE + transformer
+        # combined — not per-seeker.
+        budget = mem.available - (6 * 1024 * 1024 * 1024)
+        _RAM_BUDGET_BYTES = max(0, budget)
+        logger.info(
+            "DiskSeeker Global RAM Cache Budget: %.2f GB  (system available: %.2f GB)",
+            _RAM_BUDGET_BYTES / 1e9,
+            mem.available / 1e9,
+        )
+    except ImportError:
+        _RAM_BUDGET_BYTES = 0
+        logger.warning("psutil not installed — RAM caching disabled.")
+
+
 class SafetensorsDiskSeeker(SafetensorsBase):
     """
     Reads specific tensors from Hugging Face safetensors files directly from
@@ -33,21 +72,8 @@ class SafetensorsDiskSeeker(SafetensorsBase):
     def __init__(self, model_dir: Union[str, Path]):
         super().__init__(model_dir)
         self._parse_index()
-        
-        self._ram_cache: Dict[str, torch.Tensor] = {}
-        self._ram_budget_bytes: int = 0
-        self._ram_used_bytes: int = 0
-        
-        try:
-            import psutil
-            mem = psutil.virtual_memory()
-            # Leave a 4GB safety margin on System RAM
-            self._ram_budget_bytes = mem.available - (4 * 1024 * 1024 * 1024)
-            if self._ram_budget_bytes < 0:
-                self._ram_budget_bytes = 0
-            logger.info(f"DiskSeeker RAM Cache Budget: {self._ram_budget_bytes/1e9:.2f}GB")
-        except ImportError:
-            logger.warning("psutil not installed, disabling CPU RAM caching.")
+        # Initialise the shared global RAM budget (no-op after the first call).
+        _init_global_ram_budget()
 
     def get_tensors(
         self,
@@ -69,21 +95,22 @@ class SafetensorsDiskSeeker(SafetensorsBase):
 
         Returns
         -------
-        Dict mapping tensor name → ``torch.Tensor``.
+        Dict mapping tensor name -> ``torch.Tensor``.
         """
+        global _RAM_CACHE, _RAM_USED_BYTES, _RAM_BUDGET_BYTES
+
         # Group missing keys by source shard file
         by_src: Dict[str, List[str]] = {}
         result: Dict[str, torch.Tensor] = {}
         missing_keys = []
-        
+
         for key in keys:
             if key not in self.weight_map:
                 raise KeyError(f"Tensor '{key}' not found in model index.")
-            
-            # Fast path: Serve from RAM cache if available
-            if key in self._ram_cache:
-                t = self._ram_cache[key]
-                t = t.to(device=device)
+
+            # Fast path: serve from shared global RAM cache if available.
+            if key in _RAM_CACHE:
+                t = _RAM_CACHE[key].to(device=device)
                 if dtype is not None and t.dtype != dtype and t.is_floating_point():
                     t = t.to(dtype=dtype)
                 result[key] = t
@@ -101,9 +128,9 @@ class SafetensorsDiskSeeker(SafetensorsBase):
 
             with open(filepath, "rb") as f:
                 for key in src_keys:
-                    meta      = header[key]
-                    dtype_str = meta["dtype"]
-                    shape     = meta["shape"]
+                    meta       = header[key]
+                    dtype_str  = meta["dtype"]
+                    shape      = meta["shape"]
                     start, end = meta["data_offsets"]
 
                     np_dtype = DTYPE_MAP[dtype_str]
@@ -113,7 +140,7 @@ class SafetensorsDiskSeeker(SafetensorsBase):
                     # Allocate a fresh bytearray for each tensor.
                     # This avoids the need for t.clone() later, cutting peak RAM in half!
                     buffer = bytearray(nbytes)
-                    view = memoryview(buffer)
+                    view   = memoryview(buffer)
                     f.seek(data_base + start)
                     bytes_read = f.readinto(view)
                     if bytes_read != nbytes:
@@ -131,20 +158,22 @@ class SafetensorsDiskSeeker(SafetensorsBase):
                         t = t.view(torch.bfloat16)
                     elif dtype_str == "F8_E4M3":
                         t = t.view(torch.float8_e4m3fn)
-                        
-                    # Attempt to cache the tensor in RAM
+
+                    # Attempt to cache the tensor in the shared global RAM pool.
+                    # _RAM_USED_BYTES is checked against the single shared budget so
+                    # all seekers combined never exceed the allowed RAM.
                     block_size = t.numel() * t.element_size()
-                    if block_size <= self._ram_budget_bytes - self._ram_used_bytes:
+                    if (
+                        _RAM_BUDGET_BYTES > 0
+                        and _RAM_USED_BYTES + block_size <= _RAM_BUDGET_BYTES
+                        and key not in _RAM_CACHE
+                    ):
                         try:
-                            # Optional: Pin memory for faster H2D transfers if CUDA is available
-                            if torch.cuda.is_available():
-                                self._ram_cache[key] = t.pin_memory()
-                            else:
-                                self._ram_cache[key] = t
+                            cached = t.pin_memory() if torch.cuda.is_available() else t
+                            _RAM_CACHE[key] = cached
+                            _RAM_USED_BYTES += block_size
                         except Exception:
-                            self._ram_cache[key] = t
-                            
-                        self._ram_used_bytes += block_size
+                            pass  # pinning failed — skip caching this tensor
 
                     t = t.to(device=device)
 
