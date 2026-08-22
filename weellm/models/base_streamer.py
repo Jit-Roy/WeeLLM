@@ -108,21 +108,55 @@ class BaseTransformerStreamer(ABC):
         self._prefetch_depth: int = self._compute_prefetch_depth()
 
         # ----------------------------------------------------------------
-        # Prefetch executor & future dict
+        # Prefetch executors & future dicts
         # ----------------------------------------------------------------
-        # _prefetch_futures maps shard_name -> Future[state_dict] for
-        # all blocks currently being read from disk in the background.
-        self._executor: Optional[ThreadPoolExecutor] = (
-            ThreadPoolExecutor(
+        self._disk_executor: Optional[ThreadPoolExecutor] = None
+        self._h2d_executor: Optional[ThreadPoolExecutor] = None
+        
+        if prefetch:
+            self._disk_executor = ThreadPoolExecutor(
                 max_workers=min(self._prefetch_depth, _MAX_PREFETCH_DEPTH),
-                thread_name_prefix="weellm_prefetch",
+                thread_name_prefix="weellm_disk",
             )
-            if prefetch else None
-        )
-        self._prefetch_futures: Dict[str, Future] = {}
+            self._h2d_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="weellm_h2d",
+            )
+            
+        self._disk_futures: Dict[str, Future] = {}
+        self._h2d_futures: Dict[str, Future] = {}
         self._lock = threading.Lock()
-
+        
+        if torch.cuda.is_available() and prefetch:
+            self._h2d_stream = torch.cuda.Stream(device=self.device)
+        else:
+            self._h2d_stream = None
+            
+        self._double_buffering_enabled = True
+        self._db_calibration_done = False
+            
         self._install_hooks()
+        
+        # ----------------------------------------------------------------
+        # Pipeline Seeding
+        # ----------------------------------------------------------------
+        if self.prefetch and self._disk_executor is not None:
+            # Seed disk reads for the initial blocks
+            for pos in range(self._prefetch_depth + 1):
+                if pos < len(self._shard_order):
+                    b_name, _ = self._shard_order[pos]
+                    b_keys = self._get_layer_keys(b_name)
+                    self._disk_futures[b_name] = self._disk_executor.submit(
+                        self.seeker.get_tensors, b_keys, "cpu", self.dtype
+                    )
+            
+            # Seed H2D for the very first block so it's ready when the loop starts
+            if len(self._shard_order) > 0:
+                b0_name, _ = self._shard_order[0]
+                b0_keys = self._get_layer_keys(b0_name)
+                self._h2d_futures[b0_name] = self._h2d_executor.submit(
+                    self._do_h2d, b0_name, b0_keys
+                )
 
     # ------------------------------------------------------------------
     # Adaptive prefetch depth computation
@@ -145,6 +179,10 @@ class BaseTransformerStreamer(ABC):
             max_block_bytes = max(block_bytes.values(), default=1)
         except Exception:
             logger.debug("[Streamer] Could not compute block sizes; defaulting prefetch_depth=1")
+            return 1
+
+        if self.prefetch_device != "cpu":
+            logger.info("[Streamer] Prefetching directly to %s — restricting depth to 1 to prevent VRAM overflow.", self.prefetch_device)
             return 1
 
         try:
@@ -225,6 +263,29 @@ class BaseTransformerStreamer(ABC):
     # Pre-hook  (Stage 1 wait + Stage 2 H2D + next prefetch launch)
     # ------------------------------------------------------------------
 
+    def _do_h2d(self, shard_name: str, layer_keys: List[str]) -> Optional[Dict[str, torch.Tensor]]:
+        """Stage 2: Wait for disk -> CPU RAM, then push to VRAM non-blocking."""
+        fut = None
+        with self._lock:
+            fut = self._disk_futures.pop(shard_name, None)
+        
+        sd = fut.result() if fut is not None else None
+        
+        if sd is None:
+            sd = self.seeker.get_tensors(layer_keys, device="cpu", dtype=self.dtype)
+            
+        if sd is None:
+            return None
+            
+        if self._h2d_stream is not None:
+            with torch.cuda.stream(self._h2d_stream):
+                # non_blocking=True allows the GPU transfer to overlap with compute
+                sd = {k: v.to(self.device, non_blocking=True) for k, v in sd.items()}
+        else:
+            sd = {k: v.to(self.device) for k, v in sd.items()}
+            
+        return sd
+
     def _pre_hook(self, module: nn.Module, args):
         shard_name: str = getattr(module, _SHARD_NAME_ATTR)
         pos = self._shard_name_to_pos[shard_name]
@@ -246,42 +307,45 @@ class BaseTransformerStreamer(ABC):
             logger.debug(
                 "    [Streamer] Block %s (%d/%d) [loading from %s]",
                 shard_name, pos + 1, len(self._shard_order),
-                "prefetch" if shard_name in self._prefetch_futures else "disk (sync)",
+                "prefetch" if shard_name in getattr(self, '_h2d_futures', {}) else "disk (sync)",
             )
 
         t0 = time.time()
 
         # ------------------------------------------------------------------
-        # Stage 1: collect prefetch future (if ready) or sync-load from disk.
+        # Stage 1 + 2 Wait: get the ready VRAM tensors from the H2D future
         # ------------------------------------------------------------------
         sd = None
         if not is_pinned:
-            # Grab the future reference under the lock, release lock before .result().
-            fut: Optional[Future] = None
-            with self._lock:
-                fut = self._prefetch_futures.pop(shard_name, None)
+            if self.prefetch:
+                fut: Optional[Future] = None
+                disk_fut: Optional[Future] = None
+                with self._lock:
+                    fut = self._h2d_futures.pop(shard_name, None)
+                    if fut is None:
+                        disk_fut = self._disk_futures.pop(shard_name, None)
 
-            if fut is not None:
-                sd = fut.result()   # blocks until this specific block's read is done
+                if fut is not None:
+                    sd = fut.result()   # blocks until this specific block is in VRAM
+                elif disk_fut is not None:
+                    cpu_sd = disk_fut.result()
+                    if cpu_sd is not None:
+                        sd = {k: v.to(self.device) for k, v in cpu_sd.items()}
 
             if sd is None:
-                # Sync fallback: read directly to VRAM (skips unnecessary CPU staging).
+                # Sync fallback: read directly to VRAM
                 sd = self.seeker.get_tensors(layer_keys, device=self.device, dtype=self.dtype)
 
         t1 = time.time()
 
-        # ------------------------------------------------------------------
-        # Stage 2: H2D transfer (only if block came from CPU RAM).
-        # Free the CPU copy immediately after — RAM is transit, not cache.
-        # ------------------------------------------------------------------
         if not is_pinned:
-            if self.prefetch and self.prefetch_device != self.device:
-                sd = {k: v.to(self.device, non_blocking=True) for k, v in sd.items()}
-                torch.cuda.synchronize()   # ensure DMA completes before forward()
-
+            if self._h2d_stream is not None:
+                # Synchronize main stream with H2D stream to ensure transfers are complete
+                torch.cuda.current_stream().wait_stream(self._h2d_stream)
+                
             self.apply_state_dict(sd)
             torch.cuda.synchronize()       # flush CUDA copy_ ops from place_tensors
-            del sd                          # ← CPU RAM freed here, immediately
+            del sd
 
         t2 = time.time()
 
@@ -303,26 +367,37 @@ class BaseTransformerStreamer(ABC):
             )
 
         # ------------------------------------------------------------------
-        # Launch background prefetch for the next `prefetch_depth` blocks.
-        # Done AFTER H2D so disk reads don't compete with the DMA bus.
-        # Only submit futures for blocks not already queued and not VRAM-pinned.
         # ------------------------------------------------------------------
-        if self.prefetch and self._executor is not None:
+        # Launch background operations for upcoming blocks
+        # ------------------------------------------------------------------
+        if self.prefetch and self._disk_executor is not None:
+            # 1. Queue H2D transfer for exactly the NEXT block (pos + 1)
+            # ONLY if we have proven it's safe during calibration
+            if self._db_calibration_done and self._double_buffering_enabled:
+                next_pos = pos + 1
+                if next_pos < len(self._shard_order):
+                    next_name, _ = self._shard_order[next_pos]
+                    if next_name not in self._pinned_blocks:
+                        with self._lock:
+                            if next_name not in self._h2d_futures:
+                                nkeys = self._get_layer_keys(next_name)
+                                self._h2d_futures[next_name] = self._h2d_executor.submit(
+                                    self._do_h2d, next_name, nkeys
+                                )
+            
+            # 2. Queue Disk reads for up to prefetch_depth blocks
             for ahead in range(1, self._prefetch_depth + 1):
                 npos = pos + ahead
                 if npos >= len(self._shard_order):
                     break
-                next_name, _ = self._shard_order[npos]
-                # If already pinned in VRAM, no need to prefetch.
-                if next_name in self._pinned_blocks:
+                ahead_name, _ = self._shard_order[npos]
+                if ahead_name in self._pinned_blocks:
                     continue
                 with self._lock:
-                    # Avoid submitting duplicate futures for the same block.
-                    if next_name not in self._prefetch_futures:
-                        nkeys = self._get_layer_keys(next_name)
-                        pdev  = self.prefetch_device
-                        self._prefetch_futures[next_name] = self._executor.submit(
-                            self.seeker.get_tensors, nkeys, pdev, self.dtype
+                    if ahead_name not in self._disk_futures:
+                        akeys = self._get_layer_keys(ahead_name)
+                        self._disk_futures[ahead_name] = self._disk_executor.submit(
+                            self.seeker.get_tensors, akeys, "cpu", self.dtype
                         )
 
         return args
@@ -341,7 +416,51 @@ class BaseTransformerStreamer(ABC):
         should_evict = True
 
         # ------------------------------------------------------------------
-        # VRAM calibration pass (first full pass only).
+        # Dynamic Double-Buffering Calibration (End of Block 0)
+        # ------------------------------------------------------------------
+        if not self._db_calibration_done and torch.cuda.is_available():
+            max_reserved = torch.cuda.max_memory_reserved(self.device)
+            _, total_vram = torch.cuda.mem_get_info(self.device)
+            
+            block_size = sum(
+                p.numel() * p.element_size()
+                for p in module.parameters()
+                if p.device.type != "meta"
+            )
+            
+            # Predict if VRAM can hold (current max_reserved + 1 extra block size + safety margin)
+            predicted_peak = max_reserved + block_size + _VRAM_SAFETY_BYTES
+            
+            if predicted_peak > total_vram:
+                self._double_buffering_enabled = False
+                logger.warning(
+                    "    [Streamer] VRAM too tight for double-buffering (predicted peak %.2f GB > %.2f GB). "
+                    "Disabling background H2D transfers.",
+                    predicted_peak / 1e9, total_vram / 1e9
+                )
+            else:
+                logger.debug(
+                    "    [Streamer] Double-buffering safe (predicted peak %.2f GB <= %.2f GB).",
+                    predicted_peak / 1e9, total_vram / 1e9
+                )
+                
+            self._db_calibration_done = True
+            
+            # If safe, kick off Block 1's H2D right now to salvage some overlap
+            if self._double_buffering_enabled and self.prefetch and getattr(self, '_h2d_executor', None) is not None:
+                next_pos = self._shard_name_to_pos[shard_name] + 1
+                if next_pos < len(self._shard_order):
+                    next_name, _ = self._shard_order[next_pos]
+                    if next_name not in self._pinned_blocks:
+                        with self._lock:
+                            if next_name not in getattr(self, '_h2d_futures', {}):
+                                nkeys = self._get_layer_keys(next_name)
+                                self._h2d_futures[next_name] = self._h2d_executor.submit(
+                                    self._do_h2d, next_name, nkeys
+                                )
+
+        # ------------------------------------------------------------------
+        # VRAM pinning calibration pass (first full pass only).
         # At the end of the first pass, measure peak VRAM reserved and derive
         # how many blocks we can permanently pin for free.
         # ------------------------------------------------------------------
@@ -422,9 +541,14 @@ class BaseTransformerStreamer(ABC):
     # ------------------------------------------------------------------
 
     def __del__(self) -> None:
-        """Shut down the background prefetch executor on garbage collection."""
-        if self._executor is not None:
+        """Shut down the background prefetch executors on garbage collection."""
+        if getattr(self, "_disk_executor", None) is not None:
             try:
-                self._executor.shutdown(wait=False)
+                self._disk_executor.shutdown(wait=False)
+            except Exception:
+                pass
+        if getattr(self, "_h2d_executor", None) is not None:
+            try:
+                self._h2d_executor.shutdown(wait=False)
             except Exception:
                 pass
