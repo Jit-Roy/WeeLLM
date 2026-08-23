@@ -8,12 +8,11 @@
 
 # Layer-streaming inference for large diffusion models — Under 4 GB VRAM, no quantization
 
-WeeLLM streams one transformer layer at a time to GPU for large models. The full model weights never reside in VRAM simultaneously — only the currently-executing layer is loaded.
-
+WeeLLM dynamically streams transformer layers to the GPU for massive models. Instead of forcing the entire model into VRAM, it intelligently pins as many blocks as your hardware allows, and seamlessly streams the rest layer-by-layer in the background — enabling massive models to run smoothly on budgets as low as 4GB VRAM.
 
 ---
 
-## Some Benchmarks
+## Some Benchmarks(For RTX 3050 Having <4GB Vram)
 
 | Model                              | Parameters |   Peak VRAM |    Peak RAM | Time (1024x1024) |
 | --------------------------------   | ---------: | ----------: | ----------: | ---------------: |
