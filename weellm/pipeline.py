@@ -226,6 +226,14 @@ class WeeBasePipeline:
         diffusers_kwargs = dict(kwargs)
         diffusers_kwargs["torch_dtype"] = effective_dtype
 
+        # Extract budget overrides to inject into the Streamer classes dynamically
+        vram_budget_gb = diffusers_kwargs.pop("vram_budget_gb", None)
+        ram_budget_gb = diffusers_kwargs.pop("ram_budget_gb", None)
+        
+        from weellm.models.base_streamer import BaseTransformerStreamer
+        BaseTransformerStreamer._global_vram_budget_gb = vram_budget_gb
+        BaseTransformerStreamer._global_ram_budget_gb = ram_budget_gb
+
         # ── Step 1: Tokenizers & Scheduler ──────────────────────────────
         logger.info("[1/4] Loading Tokenizers and Scheduler ...")
         cls._load_tokenizers_and_scheduler(model_dir_path, index, device, effective_dtype, diffusers_kwargs)

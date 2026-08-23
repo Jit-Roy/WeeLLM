@@ -187,15 +187,20 @@ class BaseTransformerStreamer(ABC):
 
         try:
             import psutil
-            available = psutil.virtual_memory().available
+            global_ram_budget_gb = getattr(self.__class__, "_global_ram_budget_gb", None)
+            if global_ram_budget_gb is not None:
+                available = global_ram_budget_gb * 1024**3
+            else:
+                available = psutil.virtual_memory().available
+            
             usable = max(0, available - _RAM_SAFETY_BYTES)
-            depth = max(1, min(_MAX_PREFETCH_DEPTH, usable // max_block_bytes))
+            depth = max(1, min(_MAX_PREFETCH_DEPTH, int(usable // max_block_bytes)))
         except ImportError:
             depth = 1
 
         logger.info(
             "[Streamer] Adaptive prefetch depth: %d  "
-            "(largest block: %.0f MB, available RAM: %.1f GB)",
+            "(largest block: %.0f MB, available RAM limit: %.1f GB)",
             depth,
             max_block_bytes / 1e6,
             (available - _RAM_SAFETY_BYTES) / 1e9 if 'available' in dir() else 0,
@@ -420,7 +425,12 @@ class BaseTransformerStreamer(ABC):
         # ------------------------------------------------------------------
         if not self._db_calibration_done and torch.cuda.is_available():
             max_reserved = torch.cuda.max_memory_reserved(self.device)
-            _, total_vram = torch.cuda.mem_get_info(self.device)
+            
+            global_vram_budget_gb = getattr(self.__class__, "_global_vram_budget_gb", None)
+            if global_vram_budget_gb is not None:
+                total_vram = global_vram_budget_gb * 1024**3
+            else:
+                _, total_vram = torch.cuda.mem_get_info(self.device)
             
             block_size = sum(
                 p.numel() * p.element_size()
@@ -467,7 +477,11 @@ class BaseTransformerStreamer(ABC):
         if not self._calibration_done:
             if shard_name == self._shard_order[-1][0] and torch.cuda.is_available():
                 max_reserved = torch.cuda.max_memory_reserved(self.device)
-                _, total_vram = torch.cuda.mem_get_info(self.device)
+                global_vram_budget_gb = getattr(self.__class__, "_global_vram_budget_gb", None)
+                if global_vram_budget_gb is not None:
+                    total_vram = global_vram_budget_gb * 1024**3
+                else:
+                    _, total_vram = torch.cuda.mem_get_info(self.device)
                 self._cache_budget_bytes = max(
                     0, total_vram - max_reserved - _VRAM_SAFETY_BYTES
                 )

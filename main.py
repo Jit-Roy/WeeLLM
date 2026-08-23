@@ -139,8 +139,12 @@ examples:
              "but possible tiling artifacts at boundaries.",
     )
     parser.add_argument(
-        "--vram_budget", type=float, default=4.0,
-        help="VRAM budget in GB for the pass/fail report (default: 4.0)",
+        "--vram_budget", type=float, default=None,
+        help="VRAM budget in GB. If None, dynamically calculates based on hardware.",
+    )
+    parser.add_argument(
+        "--ram_budget", type=float, default=None,
+        help="CPU RAM budget in GB. If None, dynamically calculates based on hardware.",
     )
     parser.add_argument(
         "--dry_run", action="store_true",
@@ -326,6 +330,12 @@ def main() -> int:
 
     t_load = time.time()
     try:
+        kwargs = {}
+        if args.vram_budget is not None:
+            kwargs["vram_budget_gb"] = args.vram_budget
+        if args.ram_budget is not None:
+            kwargs["ram_budget_gb"] = args.ram_budget
+
         pipe = PipelineClass.from_pretrained(
             model_dir=args.model,
             device=device,
@@ -333,6 +343,7 @@ def main() -> int:
             prefetch=not args.no_prefetch,
             cache_to_ram=args.cache_to_ram,
             vae_tile_size=args.vae_tile_size,
+            **kwargs
         )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -479,13 +490,17 @@ def main() -> int:
 
     # ── Budget report ─────────────────────────────────────────────────────────
     if torch.cuda.is_available():
-        peak  = torch.cuda.max_memory_allocated() / 1e9
-        limit = args.vram_budget
-        ok    = peak <= limit
-        logger.info("\nPeak VRAM: %.3f GB / %.1f GB  [%s]", peak, limit, "OK" if ok else "EXCEEDED")
-        if not ok:
-            print(f"WARNING: VRAM exceeded the {limit:.1f} GB budget!", file=sys.stderr)
+        peak_gb = torch.cuda.max_memory_allocated() / 1e9
+        limit_str = f"{args.vram_budget:.1f} GB" if args.vram_budget else "Dynamic"
+        
+        if args.vram_budget and peak_gb <= args.vram_budget:
+            logger.info("\nPeak VRAM: %.3f GB / %s  [OK]\n", peak_gb, limit_str)
+        elif args.vram_budget:
+            logger.info("\nPeak VRAM: %.3f GB / %s  [EXCEEDED]\n", peak_gb, limit_str)
+            print(f"WARNING: VRAM exceeded the {args.vram_budget:.1f} GB budget!", file=sys.stderr)
             return 2
+        else:
+            logger.info("\nPeak VRAM: %.3f GB (Dynamic Limit)  [OK]\n", peak_gb)
 
     return 0
 
