@@ -413,7 +413,7 @@ class WeeVideoPipeline(WeeBasePipeline):
         object.__setattr__(wrapper, "cache_to_ram", cache_to_ram)
         
         try:
-            from weellm.helpers.lora_loader import MiniMaxH3LoRALoader
+            from weellm.models.loras.lora_loader import MiniMaxH3LoRALoader
             lora_loader = MiniMaxH3LoRALoader()
             object.__setattr__(wrapper, "lora_loader", lora_loader)
         except Exception as e:
