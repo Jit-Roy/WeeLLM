@@ -8,19 +8,7 @@
 
 # Layer-streaming inference for large diffusion models — Under 4 GB VRAM, no quantization
 
-WeeLLM streams one transformer layer at a time to GPU for large models. The full model weights never reside in VRAM simultaneously — only the currently-executing layer is loaded.
-
-## How it Works: 3-Stage Dynamic Streaming
-
-WeeLLM utilizes a bleeding-edge **3-Stage Asynchronous Pipeline** that hides disk and RAM latency, guaranteeing the absolute theoretical minimum idle time for the GPU. 
-
-Instead of hardcoding memory budgets (like 4GB or 8GB), WeeLLM **dynamically auto-calibrates** to your hardware at runtime. It queries your exact system CPU RAM (using `psutil`) and exact GPU VRAM (using PyTorch), and allocates maximum safe buffers:
-
-1. **Stage 1 (Disk -> CPU RAM):** A background thread pool furiously reads upcoming blocks from your NVMe drive into system RAM. It calculates a safe queue depth based on your exact free CPU RAM to prevent memory thrashing.
-2. **Stage 2 (CPU RAM -> VRAM):** A dedicated background CUDA stream pushes blocks from RAM to VRAM using `non_blocking=True`. During the very first forward pass, it dynamically measures the exact VRAM footprint of the computational activations. If safe, it implements **VRAM Double Buffering** (transferring the next block while the current block computes). If VRAM is too tight, it safely falls back to synchronous transfers to prevent out-of-memory crashes or silent swapping.
-3. **Stage 3 (GPU Compute):** The main thread exclusively handles math. 
-
-**Zero Hardcoded Limits:** Because it dynamically measures your hardware, WeeLLM seamlessly runs massive models on budget cards with **strictly under 4 GB of VRAM**, while instantly scaling up to permanently pin weights in VRAM if you install it on a high-end 16GB+ or 24GB+ GPU!
+WeeLLM dynamically streams transformer layers to the GPU for massive models. Instead of forcing the entire model into VRAM, it intelligently pins as many blocks as your hardware allows, and seamlessly streams the rest layer-by-layer in the background — enabling massive models to run smoothly on budgets as low as 4GB VRAM.
 
 ---
 
