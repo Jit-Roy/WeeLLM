@@ -226,9 +226,21 @@ class WeeBasePipeline:
         diffusers_kwargs = dict(kwargs)
         diffusers_kwargs["torch_dtype"] = effective_dtype
 
-        # Extract budget overrides to inject into the Streamer classes dynamically
+        # Extract budget overrides to inject into the Streamer classes dynamically.
+        # Keep the shorter names as public aliases for direct Python use.
         vram_budget_gb = diffusers_kwargs.pop("vram_budget_gb", None)
+        vram_budget = diffusers_kwargs.pop("vram_budget", None)
+        if vram_budget_gb is not None and vram_budget is not None:
+            raise ValueError("Pass only one of vram_budget or vram_budget_gb")
+        if vram_budget_gb is None:
+            vram_budget_gb = vram_budget
+
         ram_budget_gb = diffusers_kwargs.pop("ram_budget_gb", None)
+        ram_budget = diffusers_kwargs.pop("ram_budget", None)
+        if ram_budget_gb is not None and ram_budget is not None:
+            raise ValueError("Pass only one of ram_budget or ram_budget_gb")
+        if ram_budget_gb is None:
+            ram_budget_gb = ram_budget
         
         from weellm.models.base_streamer import BaseTransformerStreamer
         BaseTransformerStreamer._global_vram_budget_gb = vram_budget_gb

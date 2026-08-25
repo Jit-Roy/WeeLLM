@@ -282,14 +282,21 @@ class BaseTransformerStreamer(ABC):
         if sd is None:
             return None
             
+        new_sd = {}
         if self._h2d_stream is not None:
             with torch.cuda.stream(self._h2d_stream):
                 # non_blocking=True allows the GPU transfer to overlap with compute
-                sd = {k: v.to(self.device, non_blocking=True) for k, v in sd.items()}
+                for k in list(sd.keys()):
+                    v = sd.pop(k)
+                    new_sd[k] = v.to(self.device, non_blocking=True)
+                    del v
         else:
-            sd = {k: v.to(self.device) for k, v in sd.items()}
-            
-        return sd
+            for k in list(sd.keys()):
+                v = sd.pop(k)
+                new_sd[k] = v.to(self.device)
+                del v
+                
+        return new_sd
 
     def _pre_hook(self, module: nn.Module, args):
         shard_name: str = getattr(module, _SHARD_NAME_ATTR)
@@ -309,10 +316,10 @@ class BaseTransformerStreamer(ABC):
                 shard_name, pos + 1, len(self._shard_order),
             )
         else:
+            src = "prefetch" if shard_name in getattr(self, '_h2d_futures', {}) else "disk (sync)"
             logger.debug(
                 "    [Streamer] Block %s (%d/%d) [loading from %s]",
-                shard_name, pos + 1, len(self._shard_order),
-                "prefetch" if shard_name in getattr(self, '_h2d_futures', {}) else "disk (sync)",
+                shard_name, pos + 1, len(self._shard_order), src
             )
 
         t0 = time.time()

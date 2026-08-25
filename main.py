@@ -285,6 +285,7 @@ def main() -> int:
             pass
             
     is_minimax = is_minimax or _is_minimax_default
+    _is_ltx = "ltx" in _model_lower
     
     input_image = None
     if args.image:
@@ -299,6 +300,9 @@ def main() -> int:
     if is_minimax:
         from weellm.weevideopipeline import WeeVideoPipeline as PipelineClass
         logger.info("  Mode:     Text-to-Video+Audio (MiniMax-H3)%s", " (With Start Image)" if input_image else "")
+    elif _is_ltx:
+        from weellm.weeltx2pipeline import WeeLTX2Pipeline as PipelineClass
+        logger.info("  Mode:     Text-to-Video (LTX-2.5)%s", " (With Start Image)" if input_image else "")
     elif input_image:
         from weellm import WeeImagePipeline as PipelineClass
         logger.info("  Mode:     Image-to-Image / Edit (Input: %s)", args.image)
@@ -392,18 +396,22 @@ def main() -> int:
     out   = pipe(**call_kwargs)
     
     # Handle different output types (images, video+audio, etc)
-    if hasattr(out, "videos") or hasattr(out, "video") or (hasattr(out, "get") and ("videos" in out or "video" in out)):
-        # MiniMax-H3 returns videos and audio
-        logger.info("Video + Audio output (MiniMax-H3 model)")
+    if hasattr(out, "videos") or hasattr(out, "video") or hasattr(out, "frames") or (hasattr(out, "get") and ("videos" in out or "video" in out or "frames" in out)):
+        # Video pipeline output
+        logger.info("Video output detected")
         
         if hasattr(out, "videos") and out.videos is not None:
             videos = out.videos[0] if isinstance(out.videos, list) else out.videos
         elif hasattr(out, "video") and out.video is not None:
             videos = out.video[0] if isinstance(out.video, list) else out.video
+        elif hasattr(out, "frames") and out.frames is not None:
+            videos = out.frames[0] if isinstance(out.frames, list) else out.frames
         elif hasattr(out, "get"):
             videos_raw = out.get("videos")
             if videos_raw is None:
                 videos_raw = out.get("video")
+            if videos_raw is None:
+                videos_raw = out.get("frames")
             videos = videos_raw[0] if isinstance(videos_raw, list) else videos_raw
             
         audio_raw = getattr(out, "audio", None)
@@ -422,7 +430,9 @@ def main() -> int:
         
         from diffusers.utils import encode_video
         output_path = Path(args.output)
-        
+        if output_path.suffix.lower() not in [".mp4", ".gif", ".avi", ".mov"]:
+            output_path = output_path.with_suffix(".mp4")
+            
         if isinstance(videos, torch.Tensor):
             # The MiniMax-H3 VAE output is ImageNet normalized.
             # We must denormalize it to [0, 1] before saving to avoid massive clipping
