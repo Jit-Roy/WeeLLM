@@ -207,6 +207,51 @@ class BaseTransformerStreamer(ABC):
         )
         return depth
 
+    def release_cached_blocks(self) -> int:
+        """Release streamed VRAM blocks after an allocation failure.
+
+        The next forward pass will reload any required block through its
+        normal hook. Resident model weights are not affected because only
+        modules in ``_shard_order`` are visited.
+        """
+        with self._lock:
+            futures = list(self._h2d_futures.values())
+            self._h2d_futures.clear()
+            self._pinned_blocks.clear()
+            self._cache_budget_bytes = 0
+            self._double_buffering_enabled = False
+
+        for future in futures:
+            future.cancel()
+
+        released = 0
+        visited = set()
+        for shard_name, module in self._shard_order:
+            target = module
+            if shard_name.endswith((".attn_half", ".ff_half")):
+                parent = self.model
+                try:
+                    for part in shard_name.rsplit(".", 1)[0].split("."):
+                        parent = getattr(parent, part)
+                    target = parent
+                except AttributeError:
+                    target = module
+
+            target_id = id(target)
+            if target_id not in visited:
+                released += evict_module(target)
+                visited.add(target_id)
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize(self.device)
+            torch.cuda.empty_cache()
+
+        logger.warning(
+            "[Streamer] Released %d streamed tensors after CUDA OOM; retrying without VRAM cache.",
+            released,
+        )
+        return released
+
     # ------------------------------------------------------------------
     # Abstract interface — implement in each architecture subclass
     # ------------------------------------------------------------------
@@ -484,20 +529,34 @@ class BaseTransformerStreamer(ABC):
         if not self._calibration_done:
             if shard_name == self._shard_order[-1][0] and torch.cuda.is_available():
                 max_reserved = torch.cuda.max_memory_reserved(self.device)
+                current_allocated = torch.cuda.memory_allocated(self.device)
+                current_reserved = torch.cuda.memory_reserved(self.device)
                 global_vram_budget_gb = getattr(self.__class__, "_global_vram_budget_gb", None)
                 if global_vram_budget_gb is not None:
                     total_vram = global_vram_budget_gb * 1024**3
+                    non_pytorch_vram = 0
                 else:
-                    _, total_vram = torch.cuda.mem_get_info(self.device)
+                    free_vram, total_vram = torch.cuda.mem_get_info(self.device)
+                    non_pytorch_vram = max(
+                        0,
+                        total_vram - free_vram - torch.cuda.memory_reserved(self.device),
+                    )
+                allocator_slack = max(0, current_reserved - current_allocated)
+                runtime_headroom = non_pytorch_vram + allocator_slack
                 self._cache_budget_bytes = max(
-                    0, total_vram - max_reserved - _VRAM_SAFETY_BYTES
+                    0, total_vram - max_reserved - runtime_headroom
                 )
                 self._calibration_done = True
+                predicted_peak = max_reserved + self._cache_budget_bytes
                 logger.debug(
                     "    [Streamer] VRAM calibration done: peak_reserved=%.2f GB, "
-                    "total=%.2f GB, pin_budget=%.2f GB",
+                    "total=%.2f GB, non_pytorch=%.2f GB, allocator_slack=%.2f GB, "
+                    "pin_budget=%.2f GB, "
+                    "predicted_pinned_peak=%.2f GB",
                     max_reserved / 1e9, total_vram / 1e9,
+                    non_pytorch_vram / 1e9, allocator_slack / 1e9,
                     self._cache_budget_bytes / 1e9,
+                    predicted_peak / 1e9,
                 )
 
         # ------------------------------------------------------------------

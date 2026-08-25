@@ -145,7 +145,24 @@ class WeeBasePipeline:
                 logger.info("[WeeLLM] Disabling 'enable_prompt_rewrite' to prevent slow autoregressive generation.")
                 kwargs["enable_prompt_rewrite"] = False
                 
-        return self._pipeline(*args, **kwargs)
+        try:
+            return self._pipeline(*args, **kwargs)
+        except torch.cuda.OutOfMemoryError:
+            if not torch.cuda.is_available():
+                raise
+
+            transformer = getattr(self._pipeline, "transformer", None)
+            if transformer is None:
+                transformer = getattr(self._pipeline, "unet", None)
+            streamer = getattr(transformer, "_weellm_streamer", None)
+            if streamer is None or not hasattr(streamer, "release_cached_blocks"):
+                raise
+
+            logger.warning(
+                "[WeeLLM] CUDA OOM during generation; clearing streamed VRAM cache and retrying once."
+            )
+            streamer.release_cached_blocks()
+            return self._pipeline(*args, **kwargs)
 
     def __getattr__(self, name: str):
         """Delegate attribute access to the inner diffusers pipeline."""
@@ -280,6 +297,7 @@ class WeeBasePipeline:
         )
         tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
         tr_model = cls._patch_to(tr_model)
+        tr_model._weellm_streamer = transformer_streamer
         diffusers_kwargs[transformer_key] = tr_model
 
         if "unconditional_transformer" in index:
