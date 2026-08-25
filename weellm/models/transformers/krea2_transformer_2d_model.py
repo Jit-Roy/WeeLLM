@@ -16,6 +16,7 @@ Strategy:
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Tuple
 
@@ -47,14 +48,35 @@ class VRAMTracker(TorchDispatchMode):
 _STREAMING_PREFIXES = ("text_fusion.layerwise_blocks.", "text_fusion.refiner_blocks.", "transformer_blocks.")
 
 
+@contextmanager
+def _krea2_sdp_kernel_context():
+    """Allow fused attention with a math-kernel fallback on older GPUs."""
+    try:
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+    except ImportError:
+        with torch.backends.cuda.sdp_kernel(
+            enable_flash=True,
+            enable_math=True,
+            enable_mem_efficient=True,
+        ):
+            yield
+    else:
+        with sdpa_kernel([
+            SDPBackend.FLASH_ATTENTION,
+            SDPBackend.EFFICIENT_ATTENTION,
+            SDPBackend.MATH,
+        ]):
+            yield
+
+
 def _apply_krea2_runtime_patches() -> None:
     """Apply model-specific Krea2 runtime patches used to keep memory under control.
 
     These patches are intentionally kept in this model module so the generic
     pipeline remains architecture-agnostic. The Krea2 attention path is the most
     expensive part of the patch set; it manually slices query/key/value heads and
-    dispatches them one head at a time, which avoids reusing the fused SDPA path
-    and slows generation substantially compared with the native optimized path.
+    dispatches them one head at a time, while retaining a math-kernel fallback
+    for GPUs where fused SDPA kernels are unavailable.
     """
     try:
         from diffusers.models.attention_dispatch import dispatch_attention_fn
@@ -223,8 +245,9 @@ def _apply_krea2_runtime_patches() -> None:
 
             q_chunk = q_chunk.contiguous()
 
-            # Dispatch attention!
-            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=True):
+            # Keep fused attention where the GPU supports it, but allow the
+            # math backend as a universal fallback (e.g. Kaggle's sm_7.5).
+            with _krea2_sdp_kernel_context():
                 out_chunk = dispatch_attention_fn(
                     q_chunk,
                     key,
