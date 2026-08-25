@@ -4,6 +4,8 @@
   <img src="https://img.shields.io/badge/Status-Active-success.svg" alt="Status">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
+  <br>
+  <a href="https://www.kaggle.com/code/freedomfighter1290/weellm"><img src="https://kaggle.com/static/images/open-in-kaggle.svg" alt="Open In Kaggle"></a>
 </div>
 
 # Layer-streaming inference for large diffusion models — Under 4 GB VRAM, no quantization
@@ -127,7 +129,7 @@ python main.py --model ./my-local-flux-model --prompt "A cyberpunk city at night
 ```python
 from weellm import WeePipeline
 
-pipe = WeePipeline.from_pretrained("Tongyi-MAI/Z-Image-Turbo", device="cuda", cache_to_ram=False)
+pipe = WeePipeline.from_pretrained("Tongyi-MAI/Z-Image-Turbo", device="cuda")
 image = pipe.generate(
     prompt="A serene Japanese zen garden at sunrise",
     height=512,
@@ -137,9 +139,4 @@ image = pipe.generate(
 )
 image.save("output.png")
 ```
-
----
-
-## Resources
-
-- **Kaggle Notebook**: [WeeLLM Implementation](https://www.kaggle.com/code/freedomfighter1290/weellm) — Interactive demonstrations and performance analysis.
+
