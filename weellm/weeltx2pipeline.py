@@ -280,12 +280,29 @@ class WeeLTX2Pipeline(WeeBasePipeline):
             log.info("Running denoise loop ...")
             t0 = time.time()
             if first_frame is not None:
+                pipe.vae.to(self.device)
+                prep_img = pipe.video_processor.preprocess(first_frame, height=height, width=width).to(device=self.device, dtype=prompt_embeds.dtype)
+                latents, _ = pipe.prepare_latents(
+                    image=prep_img,
+                    batch_size=1,
+                    num_channels_latents=pipe.transformer.config.in_channels,
+                    height=height,
+                    width=width,
+                    num_frames=num_frames,
+                    dtype=prompt_embeds.dtype,
+                    device=self.device,
+                    generator=generator,
+                    latents=None,
+                )
+                pipe.vae.to("cpu")
+                torch.cuda.empty_cache()
+                
                 result = pipe(
-                    image=first_frame,
+                    latents=latents,
                     prompt_embeds=prompt_embeds.to(self.device),
                     prompt_attention_mask=prompt_attention_mask.to(self.device),
-                    negative_prompt_embeds=negative_prompt_embeds.to(self.device) if negative_prompt_embeds is not None else None,
-                    negative_prompt_attention_mask=negative_prompt_attention_mask.to(self.device) if negative_prompt_attention_mask is not None else None,
+                    negative_prompt_embeds=torch.zeros_like(prompt_embeds).to(self.device),
+                    negative_prompt_attention_mask=torch.zeros_like(prompt_attention_mask).to(self.device),
                     height=height,
                     width=width,
                     num_frames=num_frames,
@@ -318,16 +335,53 @@ class WeeLTX2Pipeline(WeeBasePipeline):
 
         # Phase 2b: Decode
         log.info("Running VAE decode (video) ...")
-        # Free transformer streamer
-        del transformer_streamer
+        # Free transformer streamer and connectors streamer
+        if 'transformer_streamer' in locals():
+            del transformer_streamer
+            
+        from weellm.memory import evict_module
+        if pipe.transformer is not None:
+            n_evicted = evict_module(pipe.transformer)
+            log.info(f"Evicted {n_evicted} transformer tensors")
         pipe.transformer = None
+        
+        if 'connectors_streamer' in locals():
+            del connectors_streamer
+        if pipe.connectors is not None:
+            n_evicted = evict_module(pipe.connectors)
+            log.info(f"Evicted {n_evicted} connector tensors")
+        pipe.connectors = None
+        
         import gc
         gc.collect()
         if self.device == "cuda":
             torch.cuda.empty_cache()
             
+        _vram_log("After transformer eviction, right before VAE load")
+            
         t0 = time.time()
         latents = latents.to(device=self.device, dtype=vae.dtype)
+        
+        # Temporal-only tiling: tile along frames, NOT spatially.
+        # Spatial tiling causes visible 2×2 block artifacts (each tile decoded independently).
+        # Instead, we enable frame-wise decoding which processes a fixed number of frames at a
+        # time and stitches them in the temporal dimension — no spatial seams.
+        if hasattr(pipe.vae, "use_framewise_decoding"):
+            pipe.vae.use_framewise_decoding = True
+        if hasattr(pipe.vae, "tile_sample_min_num_frames"):
+            pipe.vae.tile_sample_min_num_frames = 9   # smaller chunks = lower VRAM spike
+        if hasattr(pipe.vae, "tile_sample_stride_num_frames"):
+            pipe.vae.tile_sample_stride_num_frames = 8  # must be >= 8 to avoid 0 stride after // 8
+        
+        # Make sure spatial tiling is disabled (tile size >= resolution = no trigger)
+        if hasattr(pipe.vae, "tile_sample_min_width"):
+            pipe.vae.tile_sample_min_width = 512
+        if hasattr(pipe.vae, "tile_sample_min_height"):
+            pipe.vae.tile_sample_min_height = 512
+        if hasattr(pipe.vae, "enable_slicing"):
+            pipe.vae.enable_slicing()
+        # Do NOT call enable_tiling — we use the framewise path instead
+        
         pipe.vae.to(self.device)
         
         # Decode

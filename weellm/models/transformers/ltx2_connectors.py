@@ -19,6 +19,18 @@ class LTX2ConnectorsStreamer(BaseTransformerStreamer):
     def _get_shard_order(self):
         order = []
         
+        # 1. Video Text Projection (1.44 GB)
+        if hasattr(self.model, "video_text_proj_in") and self.model.video_text_proj_in is not None:
+            order.append(("video_text_proj_in", self.model.video_text_proj_in))
+            
+        # 2. Audio Text Projection (1.44 GB)
+        if hasattr(self.model, "audio_text_proj_in") and self.model.audio_text_proj_in is not None:
+            order.append(("audio_text_proj_in", self.model.audio_text_proj_in))
+            
+        # 3. LTX-2.0 Text Projection
+        if hasattr(self.model, "text_proj_in") and self.model.text_proj_in is not None:
+            order.append(("text_proj_in", self.model.text_proj_in))
+        
         # 8 video blocks
         num_video_layers = self.model.config.video_connector_num_layers
         for i in range(num_video_layers):
@@ -34,10 +46,15 @@ class LTX2ConnectorsStreamer(BaseTransformerStreamer):
         return order
         
     def _get_resident_ckpt_keys(self):
+        # Exclude projection layers from resident VRAM, they are huge (1.44 GB each).
+        # We also exclude transformer blocks which are streamed.
         return [
             k for k in self.seeker.weight_map
             if not k.startswith("video_connector.transformer_blocks.") 
             and not k.startswith("audio_connector.transformer_blocks.")
+            and not k.startswith("video_text_proj_in")
+            and not k.startswith("audio_text_proj_in")
+            and not k.startswith("text_proj_in")
         ]
 
     def _ckpt_shard_name(self, diffusers_shard_name: str) -> str:

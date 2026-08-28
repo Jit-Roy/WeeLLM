@@ -85,6 +85,7 @@ WeeLLM dynamically streams transformer layers to the GPU for massive models. Ins
 ## Video Generation Models
 
 - MiniMax-H3 (FL2VA)
+- LTX 2.5 (Text To Video + Image To Video)
 
 ---
 
@@ -139,4 +140,4 @@ image = pipe.generate(
 )
 image.save("output.png")
 ```
-
+
