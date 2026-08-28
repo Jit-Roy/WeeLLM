@@ -127,6 +127,8 @@ python main.py --model ./my-local-flux-model --prompt "A cyberpunk city at night
 
 ## Python API
 
+### Text to Image
+
 ```python
 from weellm import WeePipeline
 
@@ -139,5 +141,61 @@ image = pipe.generate(
     seed=42,
 )
 image.save("output.png")
+```
+
+### Text + Image to Image (Image-to-Image)
+
+```python
+from weellm import WeePipeline
+from PIL import Image
+
+pipe = WeePipeline.from_pretrained("black-forest-labs/FLUX.1-dev", device="cuda")
+init_image = Image.open("input.jpg").convert("RGB")
+image = pipe.generate(
+    prompt="A futuristic cyberpunk city",
+    image=init_image,
+    height=1024,
+    width=1024,
+    num_inference_steps=20,
+    seed=42,
+)
+image.save("output_i2i.png")
+```
+
+### Text to Video
+
+```python
+from weellm import WeePipeline
+from weellm.utils import export_to_video
+
+pipe = WeePipeline.from_pretrained("Lightricks/LTX-Video", device="cuda")
+video_frames = pipe.generate(
+    prompt="A drone flying over a snowy mountain peak at sunrise.",
+    height=512,
+    width=704,
+    num_inference_steps=40,
+    seed=42,
+)
+export_to_video(video_frames, "output_video.mp4", fps=24)
+```
+
+### Text + Image to Video
+
+```python
+from weellm import WeePipeline
+from weellm.utils import export_to_video
+from PIL import Image
+
+pipe = WeePipeline.from_pretrained("Lightricks/LTX-Video", device="cuda")
+start_image = Image.open("start_frame.jpg").convert("RGB")
+video_frames = pipe.generate(
+    prompt="The camera pans slowly across the room.",
+    image=start_image,
+    height=512,
+    width=704,
+    num_inference_steps=40,
+    seed=42,
+)
+export_to_video(video_frames, "output_i2v.mp4", fps=24)
 ```
 
