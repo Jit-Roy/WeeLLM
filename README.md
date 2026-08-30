@@ -33,7 +33,7 @@ WeeLLM dynamically streams transformer layers to the GPU for massive models. Ins
 | `Qwen-Image` (`Qwen/Qwen-Image`)   |       ~20B | **2.47 GB** | **1.60 GB** | ~795s · 10 steps |
 | `AuraFlow` (`fal/AuraFlow`)        |        ~4B | **1.34 GB** | **1.61 GB** | ~405s · 10 steps |
 | `ERNIE-Image` (`Baidu/ERNIE-Image`)|       ~10B | **1.69 GB** | **2.54 GB** | ~123s · 5 steps  |
-| `Krea-2-Turbo`                     |       ~13B | **  3  GB** | **3.23 GB** | ~810s · 10 steps |
+| `Krea-2-Turbo`                     |       ~13B |   **3  GB** | **3.23 GB** | ~810s · 10 steps |
 | `MiniMax-H3`                       |       ~34B | **3.14 GB** |           — |                — |
 
 > The models run with **no quantization** on RTX-3050 — full bfloat16 (1024x1024) weights streamed layer-by-layer to GPU.
@@ -98,14 +98,55 @@ WeeLLM dynamically streams transformer layers to the GPU for massive models. Ins
 
 ## Quick Start
 
+### Local Setup
 ```bash
+git clone https://github.com/freedomfighter1290/weellm.git
+cd weellm
 pip install -r requirements.txt
+```
 
+### Kaggle / Colab Setup
+```bash
+!git clone https://github.com/freedomfighter1290/weellm.git
+%cd weellm
+!pip install -r requirements.txt
+```
+
+### Running the CLI
+Run the `main.py` script and explicitly pass your VRAM and RAM budgets (in GB) to ensure you stay within your hardware limits.
+
+```bash
 # Run directly from a Hugging Face repository ID!
-python main.py --model black-forest-labs/FLUX.1-dev --prompt "A majestic lion at golden hour"
+python main.py \
+    --model "black-forest-labs/FLUX.1-dev" \
+    --prompt "A majestic lion at golden hour" \
+    --negative_prompt "blurry, distorted, low quality" \
+    --height 1024 \
+    --width 1024 \
+    --steps 20 \
+    --guidance_scale 3.5 \
+    --seed 42 \
+    --dtype bfloat16 \
+    --vram_budget 4 \
+    --ram_budget 4 \
+    --output "flux_lion.png" \
+    --verbose
 
-# Run from a local folder (skips download)
-python main.py --model ./my-local-flux-model --prompt "A cyberpunk city at night"
+# Run Text-to-Video from a Hugging Face repository ID!
+python main.py \
+    --model "Lightricks/LTX-Video" \
+    --prompt "A drone flying over a snowy mountain peak at sunrise." \
+    --negative_prompt "worst quality, inconsistent motion, blurry" \
+    --height 512 \
+    --width 704 \
+    --steps 40 \
+    --guidance_scale 3.0 \
+    --seed 12345 \
+    --dtype bfloat16 \
+    --vram_budget 4 \
+    --ram_budget 4 \
+    --output "output_video.mp4" \
+    --verbose
 ```
 
 ---
@@ -131,13 +172,23 @@ python main.py --model ./my-local-flux-model --prompt "A cyberpunk city at night
 
 ```python
 from weellm import WeePipeline
+import torch
 
-pipe = WeePipeline.from_pretrained("Tongyi-MAI/Z-Image-Turbo", device="cuda")
+pipe = WeePipeline.from_pretrained(
+    "Tongyi-MAI/Z-Image-Turbo", 
+    device="cuda", 
+    torch_dtype=torch.bfloat16,
+    vram_budget=4, 
+    ram_budget=4
+)
+
 image = pipe.generate(
     prompt="A serene Japanese zen garden at sunrise",
+    negative_prompt="blurry, low quality",
     height=512,
     width=512,
     num_inference_steps=4,
+    guidance_scale=1.5,
     seed=42,
 )
 image.save("output.png")
@@ -148,15 +199,25 @@ image.save("output.png")
 ```python
 from weellm import WeePipeline
 from PIL import Image
+import torch
 
-pipe = WeePipeline.from_pretrained("black-forest-labs/FLUX.1-dev", device="cuda")
+pipe = WeePipeline.from_pretrained(
+    "black-forest-labs/FLUX.1-dev", 
+    device="cuda", 
+    torch_dtype=torch.bfloat16,
+    vram_budget=4, 
+    ram_budget=4
+)
+
 init_image = Image.open("input.jpg").convert("RGB")
 image = pipe.generate(
     prompt="A futuristic cyberpunk city",
+    negative_prompt="blurry, distorted",
     image=init_image,
     height=1024,
     width=1024,
     num_inference_steps=20,
+    guidance_scale=3.5,
     seed=42,
 )
 image.save("output_i2i.png")
@@ -167,13 +228,23 @@ image.save("output_i2i.png")
 ```python
 from weellm import WeePipeline
 from weellm.utils import export_to_video
+import torch
 
-pipe = WeePipeline.from_pretrained("Lightricks/LTX-Video", device="cuda")
+pipe = WeePipeline.from_pretrained(
+    "Lightricks/LTX-Video", 
+    device="cuda", 
+    torch_dtype=torch.bfloat16,
+    vram_budget=4, 
+    ram_budget=4
+)
+
 video_frames = pipe.generate(
     prompt="A drone flying over a snowy mountain peak at sunrise.",
+    negative_prompt="worst quality, inconsistent motion",
     height=512,
     width=704,
     num_inference_steps=40,
+    guidance_scale=3.0,
     seed=42,
 )
 export_to_video(video_frames, "output_video.mp4", fps=24)
@@ -185,15 +256,25 @@ export_to_video(video_frames, "output_video.mp4", fps=24)
 from weellm import WeePipeline
 from weellm.utils import export_to_video
 from PIL import Image
+import torch
 
-pipe = WeePipeline.from_pretrained("Lightricks/LTX-Video", device="cuda")
+pipe = WeePipeline.from_pretrained(
+    "Lightricks/LTX-Video", 
+    device="cuda", 
+    torch_dtype=torch.bfloat16,
+    vram_budget=4, 
+    ram_budget=4
+)
+
 start_image = Image.open("start_frame.jpg").convert("RGB")
 video_frames = pipe.generate(
     prompt="The camera pans slowly across the room.",
+    negative_prompt="worst quality, inconsistent motion",
     image=start_image,
     height=512,
     width=704,
     num_inference_steps=40,
+    guidance_scale=3.0,
     seed=42,
 )
 export_to_video(video_frames, "output_i2v.mp4", fps=24)

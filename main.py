@@ -53,23 +53,21 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-examples:
-  python main.py --model black-forest-labs/FLUX.1-dev --prompt "A majestic lion at golden hour"
-  python main.py --model Tongyi-MAI/Z-Image-Turbo --height 768 --width 768 --steps 4
-  python main.py --model ./my-local-flux-model --no_prefetch          # lower RAM usage
-  python main.py --model runwayml/stable-diffusion-v1-5 --prompt "..." --negative_prompt "blurry"
-  python main.py --model black-forest-labs/FLUX.1-schnell --dry_run   # load only, no generation
+            examples:
+            python main.py --model black-forest-labs/FLUX.1-dev --prompt "A majestic lion at golden hour"
+            python main.py --model Tongyi-MAI/Z-Image-Turbo --height 768 --width 768 --steps 4
+            python main.py --model ./my-local-flux-model --no_prefetch          # lower RAM usage
+            python main.py --model runwayml/stable-diffusion-v1-5 --prompt "..." --negative_prompt "blurry"
+            python main.py --model black-forest-labs/FLUX.1-schnell --dry_run   # load only, no generation
         """,
     )
 
-    # Model selection
+    # Text-to-Image 
     parser.add_argument(
         "--model", type=str, required=True,
         metavar="ID_OR_PATH",
         help="Hugging Face repo ID or path to local model directory (e.g. Tongyi-MAI/Z-Image-Turbo)",
     )
-
-    # Generation parameters
     parser.add_argument(
         "--prompt", type=str,
         default="A majestic lion in the savanna at golden hour",
@@ -87,11 +85,12 @@ examples:
         "--guidance_scale", type=float, default=None,
         help="Classifier-free guidance scale (default: use pipeline default, usually 4.5 for SD3/LongCat or 1.0/3.5 for Flux)",
     )
-    parser.add_argument(
-        "--image_guidance_scale", type=float, default=None,
-        help="Image guidance scale for editing models like HiDream (default: use pipeline default)",
-    )
     parser.add_argument("--seed", type=int, default=-1, help="Random seed (default: -1 for random)")
+    parser.add_argument(
+        "--dtype", type=str, default="bfloat16",
+        choices=["bfloat16", "float16", "float32"],
+        help="Compute dtype (default: bfloat16)",
+    )
     
     # Image-to-Image / Editing
     parser.add_argument(
@@ -99,8 +98,8 @@ examples:
         help="Path to an input image (or first frame for video) for image-to-image or editing tasks",
     )
     parser.add_argument(
-        "--last_image", type=str, default="",
-        help="Path to the last frame image (specifically for MiniMax-H3 FL2VA video generation)",
+        "--image_guidance_scale", type=float, default=None,
+        help="Image guidance scale for editing models like HiDream (default: use pipeline default)",
     )
     parser.add_argument(
         "--mask_image", type=str, default="",
@@ -111,17 +110,16 @@ examples:
         help="Denoising strength for image-to-image (default: 0.8)",
     )
 
+    # Video generation
+    parser.add_argument(
+        "--last_image", type=str, default="",
+        help="Path to the last frame image (specifically for MiniMax-H3 FL2VA video generation)",
+    )
+
     # Output
     parser.add_argument(
         "--output", type=str, default="output.png",
         help="Output image file path (default: output.png)",
-    )
-
-    # Dtype
-    parser.add_argument(
-        "--dtype", type=str, default="bfloat16",
-        choices=["bfloat16", "float16", "float32"],
-        help="Compute dtype (default: bfloat16)",
     )
 
     # Advanced / performance
@@ -132,11 +130,6 @@ examples:
     parser.add_argument(
         "--cache_to_ram", action="store_true",
         help="Load safetensors into CPU RAM instead of streaming from disk (faster on Kaggle/Colab)",
-    )
-    parser.add_argument(
-        "--vae_tile_size", type=int, default=256,
-        help="VAE tiling minimum tile size in pixels (default: 256). Smaller = less VRAM spike, "
-             "but possible tiling artifacts at boundaries.",
     )
     parser.add_argument(
         "--vram_budget", type=float, default=None,
