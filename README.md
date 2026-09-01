@@ -107,9 +107,14 @@ pip install -r requirements.txt
 
 ### Kaggle / Colab Setup
 ```bash
-!git clone https://github.com/freedomfighter1290/weellm.git
+!git clone https://github.com/Jit-Roy/weellm.git
 %cd weellm
 !pip install -r requirements.txt
+```
+
+### Kaggle / Colab Setup (via pip, no git clone needed)
+```bash
+!pip install -q git+https://github.com/Jit-Roy/weellm
 ```
 
 ### Running the CLI
@@ -280,3 +285,30 @@ video_frames = pipe.generate(
 export_to_video(video_frames, "output_i2v.mp4", fps=24)
 ```
 
+### Using GGUF Models
+
+You can use quantized `.gguf` weights for the transformer or text encoders to save disk space and RAM. The weights will be streamed and dequantized on the fly.
+
+```python
+from weellm import WeePipeline
+import torch
+
+pipe = WeePipeline.from_pretrained(
+    "black-forest-labs/FLUX.2-klein-4B", 
+    transformer_dir="unsloth/FLUX.2-klein-4B-GGUF/flux-2-klein-4b-Q4_K_M.gguf",
+    text_encoder_dir="unsloth/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf",
+    device="cuda", 
+    torch_dtype=torch.bfloat16,
+    vram_budget=4, 
+    ram_budget=4,
+    prefetch=False  # Recommended when using GGUF to avoid GPU contention
+)
+
+image = pipe.generate(
+    prompt="A majestic lion at golden hour",
+    height=1024,
+    width=1024,
+    num_inference_steps=4,
+)
+image.save("flux_klein_gguf.png")
+```
