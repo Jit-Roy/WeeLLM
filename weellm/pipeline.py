@@ -292,8 +292,12 @@ class WeeBasePipeline:
 
         # ── Step 4: Transformer / UNet ──────────────────────────────────
         logger.info("\n[4/4] Preparing Transformer / UNet ...")
+        
+        transformer_dir = diffusers_kwargs.pop("transformer_dir", None)
+        
         transformer_key, transformer_streamer = cls._load_transformer(
-            model_dir_path, index, device, effective_dtype, prefetch, cache_to_ram
+            model_dir_path, index, device, effective_dtype, prefetch, cache_to_ram,
+            transformer_dir_override=transformer_dir
         )
         tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
         tr_model = cls._patch_to(tr_model)
@@ -530,45 +534,49 @@ class WeeBasePipeline:
             else:
                 te_path = str(local_te_path)
 
-            if "Qwen" in hf_cls_name or "Mistral" in hf_cls_name or "Llama" in hf_cls_name:
-                if hasattr(te_cls, "from_pretrained"):
-                    te_kwargs = {
-                        "model_dir": te_path,
-                        "tokenizer": out.get(tok_key),
-                        "device": device,
-                        "dtype": torch_dtype,
-                        "cache_to_ram": cache_to_ram,
-                    }
-                    if "Qwen2_5_VL" in hf_cls_name:
-                        te_kwargs["is_edit_model"] = "Edit" in index.get("_class_name", "")
-                    streamer = te_cls.from_pretrained(**te_kwargs)
-                    if hasattr(streamer, "_ensure_initialized"):
-                        streamer._ensure_initialized()
-                else:
-                    streamer = te_cls(
-                        text_encoder_dir=te_path,
-                        tokenizer_dir=str(model_dir / tok_key),
-                        device=device,
-                        dtype=torch_dtype,
+            override_path = out.pop(f"{key}_dir", None)
+            from .seeker import override_weights_path
+            
+            with override_weights_path(override_path):
+                if "Qwen" in hf_cls_name or "Mistral" in hf_cls_name or "Llama" in hf_cls_name:
+                    if hasattr(te_cls, "from_pretrained"):
+                        te_kwargs = {
+                            "model_dir": te_path,
+                            "tokenizer": out.get(tok_key),
+                            "device": device,
+                            "dtype": torch_dtype,
+                            "cache_to_ram": cache_to_ram,
+                        }
+                        if "Qwen2_5_VL" in hf_cls_name:
+                            te_kwargs["is_edit_model"] = "Edit" in index.get("_class_name", "")
+                        streamer = te_cls.from_pretrained(**te_kwargs)
+                        if hasattr(streamer, "_ensure_initialized"):
+                            streamer._ensure_initialized()
+                    else:
+                        streamer = te_cls(
+                            text_encoder_dir=te_path,
+                            tokenizer_dir=str(model_dir / tok_key),
+                            device=device,
+                            dtype=torch_dtype,
+                            cache_to_ram=cache_to_ram,
+                        )
+                        if hasattr(streamer, "_ensure_initialized"):
+                            streamer._ensure_initialized()
+                elif "CLIP" in hf_cls_name:
+                    hf_module = importlib.import_module("transformers")
+                    hf_cls    = getattr(hf_module, hf_cls_name)
+                    streamer  = te_cls.from_pretrained(
+                        hf_cls, str(model_dir), key,
+                        device=device, dtype=torch_dtype,
+                        output_hidden_states=True,
                         cache_to_ram=cache_to_ram,
+                    )
+                else:
+                    streamer = te_cls.from_pretrained(
+                        model_dir=te_path, device=device, dtype=torch_dtype, cache_to_ram=cache_to_ram
                     )
                     if hasattr(streamer, "_ensure_initialized"):
                         streamer._ensure_initialized()
-            elif "CLIP" in hf_cls_name:
-                hf_module = importlib.import_module("transformers")
-                hf_cls    = getattr(hf_module, hf_cls_name)
-                streamer  = te_cls.from_pretrained(
-                    hf_cls, str(model_dir), key,
-                    device=device, dtype=torch_dtype,
-                    output_hidden_states=True,
-                    cache_to_ram=cache_to_ram,
-                )
-            else:
-                streamer = te_cls.from_pretrained(
-                    model_dir=te_path, device=device, dtype=torch_dtype, cache_to_ram=cache_to_ram
-                )
-                if hasattr(streamer, "_ensure_initialized"):
-                    streamer._ensure_initialized()
 
             te_streamers[key] = streamer
             te_model = getattr(streamer, "model", getattr(streamer, "_model", streamer))
@@ -585,6 +593,7 @@ class WeeBasePipeline:
         torch_dtype: torch.dtype,
         prefetch: bool,
         cache_to_ram: bool,
+        transformer_dir_override: Optional[Union[str, Path]] = None,
     ):
         transformer_key = "transformer" if "transformer" in index else "unet"
         transformer_class_name = index[transformer_key][1]
@@ -596,16 +605,21 @@ class WeeBasePipeline:
         module                   = importlib.import_module(module_path)
         transformer_cls_streamer = getattr(module, transformer_class_name + "Streamer")
 
-        if transformer_key == "unet":
-            streamer = transformer_cls_streamer.from_pretrained(
-                str(model_dir), device, torch_dtype, prefetch, cache_to_ram=cache_to_ram
-            )
-        else:
-            streamer = transformer_cls_streamer.from_pretrained(
-                model_dir / transformer_key,
-                device=device, dtype=torch_dtype,
-                prefetch=prefetch, cache_to_ram=cache_to_ram,
-            )
+        from .seeker import override_weights_path
+
+        with override_weights_path(transformer_dir_override):
+            if transformer_key == "unet":
+                tr_path = str(model_dir)
+                streamer = transformer_cls_streamer.from_pretrained(
+                    tr_path, device, torch_dtype, prefetch, cache_to_ram=cache_to_ram
+                )
+            else:
+                tr_path = model_dir / transformer_key
+                streamer = transformer_cls_streamer.from_pretrained(
+                    tr_path,
+                    device=device, dtype=torch_dtype,
+                    prefetch=prefetch, cache_to_ram=cache_to_ram
+                )
 
         if hasattr(streamer, "_ensure_initialized"):
             streamer._ensure_initialized()
@@ -811,7 +825,6 @@ class WeeBasePipeline:
             except Exception:
                 pass
 
-        # VAE tiling
         try:
             if hasattr(pipeline, "vae") and hasattr(pipeline.vae, "enable_tiling"):
                 pipeline.vae.enable_tiling()

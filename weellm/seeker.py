@@ -27,14 +27,59 @@ def _extract_hub_repo_from_cache_path(path: Path):
     return None, None
 
 
+import threading
+from contextlib import contextmanager
+
+_override_local = threading.local()
+
+@contextmanager
+def override_weights_path(path: Union[str, Path, None]):
+    """
+    Temporarily overrides the path used by get_seeker() within the current thread.
+    Useful for routing weights loading to a GGUF file without changing the directory
+    path used for loading config.json.
+    """
+    old = getattr(_override_local, "weights_path", None)
+    _override_local.weights_path = path
+    try:
+        yield
+    finally:
+        _override_local.weights_path = old
+
 def get_seeker(model_dir: Union[str, Path], cache_to_ram: bool = False):
     """
-    Factory function to return the appropriate Safetensors seeker.
-    If cache_to_ram is True, it returns SafetensorsRAMSeeker which loads the
-    full tensor file into CPU RAM to bypass slow disk I/O on cloud instances.
-    Otherwise, it returns SafetensorsDiskSeeker which streams directly from disk.
+    Factory function to return the appropriate tensor seeker.
+
+    - **.gguf file path**: returns a GGUFSeeker that dequantizes weights on the
+      fly using pure PyTorch — no custom CUDA compilation required.
+    - **directory (default)**: returns SafetensorsRAMSeeker when cache_to_ram
+      is True, otherwise SafetensorsDiskSeeker (original behaviour).
     """
+    override = getattr(_override_local, "weights_path", None)
+    if override is not None:
+        model_dir = override
+        
     model_dir_path = Path(model_dir)
+
+    # ── GGUF: single-file path ending in .gguf ────────────────────────────────
+    if model_dir_path.is_file() and model_dir_path.suffix.lower() == ".gguf":
+        from weellm.gguf_seek import GGUFSeeker
+        return GGUFSeeker(model_dir_path)
+        
+    model_dir_str = str(model_dir).replace("\\", "/")
+    if model_dir_str.lower().endswith(".gguf") and not model_dir_path.exists():
+        parts = model_dir_str.split("/")
+        if len(parts) >= 3 and not Path(model_dir_str).is_absolute():
+            repo_id = f"{parts[0]}/{parts[1]}"
+            filename = "/".join(parts[2:])
+            logger.info("  [WeeLLM] GGUF file '%s' not found locally. Downloading from Hugging Face Hub (repo: %s)...", model_dir_str, repo_id)
+            from huggingface_hub import hf_hub_download
+            downloaded_path = hf_hub_download(repo_id=repo_id, filename=filename)
+            from weellm.gguf_seek import GGUFSeeker
+            return GGUFSeeker(Path(downloaded_path))
+        else:
+            raise FileNotFoundError(f"GGUF file not found: {model_dir}")
+
     if not model_dir_path.exists():
         repo_id_str = str(model_dir).replace("\\", "/")
         is_hub_id   = repo_id_str.count("/") == 1 and not Path(repo_id_str).is_absolute()

@@ -69,6 +69,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Hugging Face repo ID or path to local model directory (e.g. Tongyi-MAI/Z-Image-Turbo)",
     )
     parser.add_argument(
+        "--transformer", type=str, default=None,
+        help="Optional path to a custom transformer/UNet weights file (e.g., a .gguf file). Overrides the base model's transformer."
+    )
+    parser.add_argument(
+        "--text_encoder", type=str, default=None,
+        help="Optional path to a custom text_encoder weights file (e.g., a .gguf file). Overrides the base model's text_encoder."
+    )
+    parser.add_argument(
+        "--text_encoder_2", type=str, default=None,
+        help="Optional path to a custom text_encoder_2 weights file (e.g., a .gguf file). Overrides the base model's text_encoder_2."
+    )
+    parser.add_argument(
+        "--text_encoder_3", type=str, default=None,
+        help="Optional path to a custom text_encoder_3 weights file (e.g., a .gguf file). Overrides the base model's text_encoder_3."
+    )
+    parser.add_argument(
+        "--text_encoder_4", type=str, default=None,
+        help="Optional path to a custom text_encoder_4 weights file (e.g., a .gguf file). Overrides the base model's text_encoder_4."
+    )
+    parser.add_argument(
         "--prompt", type=str,
         default="A majestic lion in the savanna at golden hour",
         help="Text prompt for image generation",
@@ -147,6 +167,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--verbose", action="store_true",
         help="Enable verbose debug logging (including per-layer VRAM tracking).",
     )
+    parser.add_argument(
+        "--vae_tile_size", type=int, default=512,
+        help="Tile size for VAE decoding to prevent VRAM spikes. 256=low VRAM but moire artifacts, 512=default, 1024=high VRAM.",
+    )
 
     return parser
 
@@ -158,6 +182,17 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = _build_parser()
     args   = parser.parse_args()
+
+    # Automatically disable prefetch for GGUF models to prevent GPU contention during dequantization
+    is_gguf = (args.transformer and str(args.transformer).lower().endswith('.gguf')) or \
+              (args.text_encoder and str(args.text_encoder).lower().endswith('.gguf')) or \
+              (args.text_encoder_2 and str(args.text_encoder_2).lower().endswith('.gguf')) or \
+              (args.text_encoder_3 and str(args.text_encoder_3).lower().endswith('.gguf')) or \
+              (args.text_encoder_4 and str(args.text_encoder_4).lower().endswith('.gguf')) or \
+              (args.model and str(args.model).lower().endswith('.gguf'))
+    if is_gguf and not args.no_prefetch:
+        print("\n[WeeLLM] Auto-routing to --no_prefetch mode because GGUF models require GPU dequantization.")
+        args.no_prefetch = True
 
     _model_lower = args.model.lower()
     _is_minimax_default = "minimax" in _model_lower or "fl2va" in _model_lower or "h3" in _model_lower
@@ -333,13 +368,24 @@ def main() -> int:
         if args.ram_budget is not None:
             kwargs["ram_budget_gb"] = args.ram_budget
 
+        if args.transformer is not None:
+            kwargs["transformer_dir"] = args.transformer
+        if args.text_encoder is not None:
+            kwargs["text_encoder_dir"] = args.text_encoder
+        if args.text_encoder_2 is not None:
+            kwargs["text_encoder_2_dir"] = args.text_encoder_2
+        if args.text_encoder_3 is not None:
+            kwargs["text_encoder_3_dir"] = args.text_encoder_3
+        if args.text_encoder_4 is not None:
+            kwargs["text_encoder_4_dir"] = args.text_encoder_4
+
         pipe = PipelineClass.from_pretrained(
             model_dir=args.model,
             device=device,
             torch_dtype=dtype,
             prefetch=not args.no_prefetch,
             cache_to_ram=args.cache_to_ram,
-            vae_tile_size=args.vae_tile_size,
+            vae_tile_size=getattr(args, "vae_tile_size", 256),
             **kwargs
         )
     except Exception as exc:

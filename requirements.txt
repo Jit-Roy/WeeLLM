@@ -30,3 +30,6 @@ tqdm>=4.65.0
 
 # Memory reporting
 psutil>=5.9.0
+
+# GGUF model support (optional — only needed for .gguf model files)
+gguf>=0.13.0

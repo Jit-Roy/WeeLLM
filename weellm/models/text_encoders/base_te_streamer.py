@@ -150,10 +150,14 @@ class BaseLazyDecoderStreamer(ABC):
         # Compute adaptive prefetch depth based on available RAM and layer size.
         self._prefetch_depth = self._compute_prefetch_depth()
 
-        self._executor = ThreadPoolExecutor(
-            max_workers=min(self._prefetch_depth, _MAX_PREFETCH_DEPTH),
-            thread_name_prefix="te_prefetch",
-        )
+        if self._prefetch_depth > 0:
+            self._executor = ThreadPoolExecutor(
+                max_workers=min(self._prefetch_depth, _MAX_PREFETCH_DEPTH),
+                thread_name_prefix="te_prefetch",
+            )
+        else:
+            self._executor = None
+
         self._initialized = True
         logger.info("Text encoder ready (streaming via Live Seek).")
 
@@ -171,7 +175,12 @@ class BaseLazyDecoderStreamer(ABC):
             import psutil
             available = psutil.virtual_memory().available
             usable = max(0, available - _RAM_SAFETY_BYTES)
-            depth = max(1, min(_MAX_PREFETCH_DEPTH, usable // layer_bytes))
+            
+            if usable <= 0:
+                logger.warning("[TE Streamer] Available RAM (%.1f GB) below safety threshold. Disabling TE prefetch.", available / 1e9)
+                return 0
+                
+            depth = max(1, min(_MAX_PREFETCH_DEPTH, int(usable // layer_bytes)))
             logger.debug(
                 "[TE Streamer] Adaptive prefetch depth: %d "
                 "(layer=%.0f MB, usable RAM=%.1f GB)",

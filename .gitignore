@@ -87,6 +87,7 @@ test_ideogram.py
 *.png
 *.jpg
 *.mp4
+*.gguf
 temp
 
 # Ignore shard directories created by WeeLLM's splitter
