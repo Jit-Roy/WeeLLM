@@ -227,7 +227,16 @@ class WeeBasePipeline:
         :class:`WeeBasePipeline` wrapping the native diffusers pipeline, ready for
         ``pipe(...)`` calls.
         """
-        model_dir_str  = str(resolve_model_path(str(model_dir)))
+        # Collect component keys that have a user-supplied override path (_dir kwargs).
+        # These components will NOT have their safetensors downloaded from HF — only
+        # their config/tokenizer sub-files are still needed from the main repo.
+        skip_components = {
+            k[:-4]  # strip "_dir" suffix → component folder name (e.g. "transformer")
+            for k, v in kwargs.items()
+            if k.endswith("_dir") and v is not None
+        }
+
+        model_dir_str  = str(resolve_model_path(str(model_dir), skip_components=skip_components or None))
         model_dir_path = Path(model_dir_str)
 
         index = cls._load_index(model_dir_path)

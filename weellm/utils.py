@@ -55,7 +55,7 @@ def report_memory(tag: str = "") -> None:
         pass
 
 
-def resolve_model_path(model_id_or_path: str) -> Path:
+def resolve_model_path(model_id_or_path: str, skip_components: set = None) -> Path:
     """
     Resolve a model string to a local Path.
 
@@ -91,9 +91,14 @@ def resolve_model_path(model_id_or_path: str) -> Path:
         index_data = json.load(f)
 
     # Phase 2: download only the required component subfolders.
+    # Components that have a user-supplied override (_dir kwarg pointing to a GGUF
+    # or local path) are skipped — no need to download their safetensors from HF.
     allow_patterns = ["model_index.json"]
     for key, value in index_data.items():
         if isinstance(value, list) and len(value) == 2:
+            if skip_components and key in skip_components:
+                logger.info("  Skipping download of '%s/*' (override path provided)", key)
+                continue
             allow_patterns.append(f"{key}/*")
 
     logger.info("  Downloading only required components: %s", allow_patterns)
