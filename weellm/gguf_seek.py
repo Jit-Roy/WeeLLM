@@ -11,36 +11,6 @@ import torch
 
 logger = logging.getLogger("weellm")
 
-# FLUX double/single block remapping (llama.cpp convention)
-_FLUX_KEY_MAP = {
-    # Double blocks
-    "blk.{i}.img_attn_q.weight":           "transformer_blocks.{i}.attn.to_q.weight",
-    "blk.{i}.img_attn_k.weight":           "transformer_blocks.{i}.attn.to_k.weight",
-    "blk.{i}.img_attn_v.weight":           "transformer_blocks.{i}.attn.to_v.weight",
-    "blk.{i}.img_attn_proj.weight":        "transformer_blocks.{i}.attn.to_out.0.weight",
-    "blk.{i}.img_mlp.0.weight":            "transformer_blocks.{i}.ff.net.0.proj.weight",
-    "blk.{i}.img_mlp.2.weight":            "transformer_blocks.{i}.ff.net.2.weight",
-    "blk.{i}.img_mod.lin.weight":          "transformer_blocks.{i}.norm1.linear.weight",
-    "blk.{i}.img_mod.lin.bias":            "transformer_blocks.{i}.norm1.linear.bias",
-    "blk.{i}.img_norm1.weight":            "transformer_blocks.{i}.norm1.norm.weight",
-    "blk.{i}.img_norm2.weight":            "transformer_blocks.{i}.norm1_context.norm.weight",
-    "blk.{i}.txt_attn_q.weight":           "transformer_blocks.{i}.attn.add_q_proj.weight",
-    "blk.{i}.txt_attn_k.weight":           "transformer_blocks.{i}.attn.add_k_proj.weight",
-    "blk.{i}.txt_attn_v.weight":           "transformer_blocks.{i}.attn.add_v_proj.weight",
-    "blk.{i}.txt_attn_proj.weight":        "transformer_blocks.{i}.attn.to_add_out.weight",
-    "blk.{i}.txt_mlp.0.weight":            "transformer_blocks.{i}.ff_context.net.0.proj.weight",
-    "blk.{i}.txt_mlp.2.weight":            "transformer_blocks.{i}.ff_context.net.2.weight",
-    "blk.{i}.txt_mod.lin.weight":          "transformer_blocks.{i}.norm1_context.linear.weight",
-    "blk.{i}.txt_mod.lin.bias":            "transformer_blocks.{i}.norm1_context.linear.bias",
-    "blk.{i}.txt_norm1.weight":            "transformer_blocks.{i}.norm1.norm.weight",
-    "blk.{i}.txt_norm2.weight":            "transformer_blocks.{i}.norm2_context.weight",
-    # Single blocks
-    "single_blk.{i}.linear1.weight":       "single_transformer_blocks.{i}.attn.to_q.weight",
-    "single_blk.{i}.linear2.weight":       "single_transformer_blocks.{i}.proj_out.weight",
-    "single_blk.{i}.pre_norm.weight":      "single_transformer_blocks.{i}.norm.linear.weight",
-    "single_blk.{i}.pre_norm.bias":        "single_transformer_blocks.{i}.norm.linear.bias",
-}
-
 # LLAMA / Qwen / Mistral / Gemma remapping
 _LLAMA_KEY_MAP = {
     "token_embd.weight": "model.embed_tokens.weight",
@@ -138,7 +108,46 @@ _COMFY_FLUX_KEY_MAP = {
     "final_layer.adaLN_modulation.1.bias": "norm_out.linear.bias",
 }
 
+# T5 encoder remapping (city96 t5encoder GGUF convention, arch=t5encoder)
+_T5_KEY_MAP = {
+    # Top-level (no block index)
+    "token_embd.weight":              "shared.weight",
+    "enc.output_norm.weight":         "encoder.final_layer_norm.weight",
+    # Per-block attention
+    "enc.blk.{i}.attn_q.weight":     "encoder.block.{i}.layer.0.SelfAttention.q.weight",
+    "enc.blk.{i}.attn_k.weight":     "encoder.block.{i}.layer.0.SelfAttention.k.weight",
+    "enc.blk.{i}.attn_v.weight":     "encoder.block.{i}.layer.0.SelfAttention.v.weight",
+    "enc.blk.{i}.attn_o.weight":     "encoder.block.{i}.layer.0.SelfAttention.o.weight",
+    "enc.blk.{i}.attn_rel_b.weight": "encoder.block.{i}.layer.0.SelfAttention.relative_attention_bias.weight",
+    "enc.blk.{i}.attn_norm.weight":  "encoder.block.{i}.layer.0.layer_norm.weight",
+    # Per-block FFN (T5 v1.1 gated activation: gate=wi_0, up=wi_1)
+    "enc.blk.{i}.ffn_gate.weight":   "encoder.block.{i}.layer.1.DenseReluDense.wi_0.weight",
+    "enc.blk.{i}.ffn_up.weight":     "encoder.block.{i}.layer.1.DenseReluDense.wi_1.weight",
+    "enc.blk.{i}.ffn_down.weight":   "encoder.block.{i}.layer.1.DenseReluDense.wo.weight",
+    "enc.blk.{i}.ffn_norm.weight":   "encoder.block.{i}.layer.1.layer_norm.weight",
+}
+
 def _build_remap_fn(gguf_keys: List[str], arch: str = "unknown"):
+    # Check if T5 encoder format (city96 convention, arch=t5encoder)
+    if arch == "t5encoder" or any(k.startswith("enc.blk.") for k in gguf_keys):
+        max_i = 0
+        for k in gguf_keys:
+            parts = k.split(".")
+            if len(parts) > 2 and parts[0] == "enc" and parts[1] == "blk":
+                try: max_i = max(max_i, int(parts[2]))
+                except ValueError: pass
+        remap = {}
+        for tmpl_src, tmpl_dst in _T5_KEY_MAP.items():
+            if "{i}" not in tmpl_src:
+                remap[tmpl_src] = [(tmpl_dst, None)]
+            else:
+                for i in range(max_i + 1):
+                    remap[tmpl_src.replace("{i}", str(i))] = [(tmpl_dst.replace("{i}", str(i)), None)]
+        def _remap(name: str):
+            return remap.get(name, [(name, None)])
+        logger.info("[GGUFSeeker] T5 encoder key naming detected — remapping to Diffusers convention.")
+        return _remap
+
     # Check if llama.cpp format
     if any(k.startswith("blk.") or k.startswith("single_blk.") for k in gguf_keys):
         max_i = 0
@@ -149,8 +158,7 @@ def _build_remap_fn(gguf_keys: List[str], arch: str = "unknown"):
                 except ValueError: pass
         
         remap = {}
-        tmpl_map = _LLAMA_KEY_MAP if arch in ("llama", "qwen2", "qwen2.5", "qwen3", "gemma2", "mistral", "chatglm", "glm") else _FLUX_KEY_MAP
-        for tmpl_src, tmpl_dst in tmpl_map.items():
+        for tmpl_src, tmpl_dst in _LLAMA_KEY_MAP.items():
             for i in range(max_i + 1):
                 remap[tmpl_src.replace("{i}", str(i))] = [(tmpl_dst.replace("{i}", str(i)), None)]
                 
