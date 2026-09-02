@@ -494,6 +494,8 @@ class WeeBasePipeline:
         te_streamers = {}
 
         for key in ["text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4"]:
+            override_path = out.pop(f"{key}_dir", None)
+            
             if key not in index:
                 continue
 
@@ -546,7 +548,6 @@ class WeeBasePipeline:
             else:
                 te_path = str(local_te_path)
 
-            override_path = out.pop(f"{key}_dir", None)
             from .seeker import override_weights_path
             
             with override_weights_path(override_path):
