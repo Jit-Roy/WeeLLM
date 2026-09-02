@@ -49,6 +49,8 @@ _TE_MAP = {
     "LlamaForCausalLM":                       "weellm.models.text_encoders.llama_for_causal_lm",
     "ChatGLMModel":                           "weellm.models.text_encoders.chatglm_model",
     "Mistral3Model":                          "weellm.models.text_encoders.mistral3_model",
+    "Gemma4UnifiedForConditionalGeneration":  "weellm.models.transformers.ltx2_gemma_streamer",
+    "LTX2TextConnectors":                     "weellm.models.transformers.ltx2_connectors",
 }
 
 # ---------------------------------------------------------------------------
@@ -83,6 +85,7 @@ _TR_MAP = {
     "LongCatImageTransformer2DModel":      "weellm.models.transformers.longcat_transformer_2d_model",
     "Krea2Transformer2DModel":             "weellm.models.transformers.krea2_transformer_2d_model",
     "MiniMaxH3DiTModel":                   "weellm.models.transformers.minimax_h3_dit_model",
+    "LTX2VideoTransformer3DModel":         "weellm.models.transformers.ltx2_dit_model",
 }
 
 
@@ -336,11 +339,11 @@ class WeeBasePipeline:
             pass
 
 
-        # If still not found, fallback to our bundled external pipelines
+        # If still not found, fallback to our custom pipelines directory
         if pipeline_cls is None:
-            external_dir = Path(__file__).parent / "external_pipelines"
-            if external_dir.exists():
-                for py_file in external_dir.glob("*.py"):
+            pipelines_dir = Path(__file__).parent / "pipelines" / "image"
+            if pipelines_dir.exists():
+                for py_file in pipelines_dir.glob("*.py"):
                     try:
                         import importlib.util
                         spec = importlib.util.spec_from_file_location("custom_pipeline", py_file)
@@ -348,7 +351,7 @@ class WeeBasePipeline:
                         spec.loader.exec_module(custom_module)
                         if hasattr(custom_module, pipeline_class_name):
                             pipeline_cls = getattr(custom_module, pipeline_class_name)
-                            logger.info(f"Loaded external pipeline {pipeline_class_name} from {py_file.name}")
+                            logger.info(f"Loaded custom pipeline {pipeline_class_name} from {py_file.name}")
                             break
                     except Exception as e:
                         pass
@@ -835,20 +838,43 @@ class WeeBasePipeline:
                 pass
 
         try:
-            if hasattr(pipeline, "vae") and hasattr(pipeline.vae, "enable_tiling"):
-                pipeline.vae.enable_tiling()
-                pipeline.vae.tile_sample_min_size = vae_tile_size
-                if hasattr(pipeline.vae.config, "block_out_channels"):
-                    pipeline.vae.tile_latent_min_size = int(
-                        vae_tile_size / (2 ** (len(pipeline.vae.config.block_out_channels) - 1))
+            vae = getattr(pipeline, "vae", None)
+            if vae is not None:
+                _is_video_vae = hasattr(vae, "use_framewise_decoding")
+                if _is_video_vae:
+                    # ── Video VAE (e.g. AutoencoderKLLTX2Video) ──────────────
+                    # Spatial tiling causes visible 2×2 block seams in video because
+                    # each tile is decoded independently with no cross-tile context.
+                    # Use TEMPORAL frame-wise decoding instead: process a fixed chunk
+                    # of frames at a time and stitch along the time axis.
+                    vae.use_framewise_decoding        = True
+                    vae.tile_sample_min_num_frames    = 9  # frames per chunk
+                    vae.tile_sample_stride_num_frames = 8  # stride (must be ≥8 to avoid 0-stride after //8)
+                    # Disable spatial tiling by setting thresholds above any real resolution.
+                    for _attr in ("tile_sample_min_width", "tile_sample_min_height", "tile_sample_min_size"):
+                        if hasattr(vae, _attr):
+                            setattr(vae, _attr, 10_000)
+                    if hasattr(vae, "enable_slicing"):
+                        vae.enable_slicing()
+                    logger.info(
+                        "      -> [WeeLLM] Video VAE detected: temporal frame-wise decoding "
+                        "enabled (chunk=9 frames). Spatial tiling disabled to prevent seam artifacts."
                     )
-                logger.info(
-                    "      -> [WeeLLM] Enabled Aggressive VAE Tiling (tile_size=%d) to prevent decoding VRAM spikes.",
-                    vae_tile_size,
-                )
-            elif hasattr(pipeline, "enable_vae_tiling"):
-                pipeline.enable_vae_tiling()
-                logger.info("      -> [WeeLLM] Enabled VAE Tiling (via pipeline) to prevent decoding VRAM spikes.")
+                elif hasattr(vae, "enable_tiling"):
+                    # ── Image VAE: standard spatial tiling ───────────────────
+                    vae.enable_tiling()
+                    vae.tile_sample_min_size = vae_tile_size
+                    if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
+                        vae.tile_latent_min_size = int(
+                            vae_tile_size / (2 ** (len(vae.config.block_out_channels) - 1))
+                        )
+                    logger.info(
+                        "      -> [WeeLLM] Enabled Aggressive VAE Tiling (tile_size=%d) "
+                        "to prevent decoding VRAM spikes.", vae_tile_size,
+                    )
+                elif hasattr(pipeline, "enable_vae_tiling"):
+                    pipeline.enable_vae_tiling()
+                    logger.info("      -> [WeeLLM] Enabled VAE Tiling (via pipeline) to prevent decoding VRAM spikes.")
         except Exception:
             pass
 

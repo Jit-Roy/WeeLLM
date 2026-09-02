@@ -72,7 +72,7 @@ HiDream-E1-Full/
 LTX-2.5/
 
 
-download.py
+download*.py
 test_flux2.py
 test_ideogram.py
 

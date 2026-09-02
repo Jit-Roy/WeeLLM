@@ -14,6 +14,7 @@ logger = logging.getLogger("weellm")
 IMG2IMG_MAPPING = {
     "LongCatImagePipeline": "LongCatImageEditPipeline",
     "StableDiffusionXLPipeline": "StableDiffusionXLImg2ImgPipeline",
+    "HiDreamImagePipeline": "HiDreamImageEditingPipeline",
 }
 
 class WeeImagePipeline(WeeBasePipeline):

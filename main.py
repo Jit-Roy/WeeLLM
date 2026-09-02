@@ -172,6 +172,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Tile size for VAE decoding to prevent VRAM spikes. 256=low VRAM but moire artifacts, 512=default, 1024=high VRAM.",
     )
 
+    # Video cache
+    parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Disable video inference cache (per-step latents and final-latents caching). Cache is enabled by default for video models.",
+    )
+    parser.add_argument(
+        "--cache_every", type=int, default=1,
+        metavar="N",
+        help="Save step-latent checkpoints every N denoising steps (default: 1 = every step).",
+    )
+    parser.add_argument(
+        "--fresh", action="store_true",
+        help="Delete the existing run cache before starting, forcing a full re-run even if a cache exists.",
+    )
     return parser
 
 
@@ -194,57 +208,35 @@ def main() -> int:
         print("\n[WeeLLM] Auto-routing to --no_prefetch mode because GGUF models require GPU dequantization.")
         args.no_prefetch = True
 
-    _model_lower = args.model.lower()
-    _is_minimax_default = "minimax" in _model_lower or "fl2va" in _model_lower or "h3" in _model_lower
+    import os
+    import json
+    index_path = os.path.join(args.model, "model_index.json")
+    class_name = ""
+    if os.path.exists(index_path):
+        with open(index_path, "r", encoding="utf-8") as f:
+            class_name = json.load(f).get("_class_name", "")
+            
+    VIDEO_CLASSES = [
+        "LTXVideoPipeline", "MiniMaxH3ModularPipeline", "WanPipeline", "CogVideoXPipeline"
+    ]
+    is_video = class_name in VIDEO_CLASSES
 
-    if _is_minimax_default:
+    _model_lower = args.model.lower()
+    if not is_video:
         if args.image:
             try:
                 from PIL import Image
-                with Image.open(args.image) as img:
-                    aspect = img.width / img.height
-                
-                canvases = [
-                    (544, 960), (576, 1024), (640, 1152), (704, 1280), (768, 1344), # 16:9
-                    (960, 544), (1152, 640), (1344, 768), # 9:16
-                    (544, 544), (768, 768), # 1:1
-                    (576, 768), (768, 1024), # 4:3
-                    (768, 576), (1024, 768), # 3:4
-                    (512, 1152), (672, 1536), # 21:9
-                ]
-                
-                fastest = {}
-                for h, w in canvases:
-                    r = w / h
-                    if r not in fastest or w * h < fastest[r][0] * fastest[r][1]:
-                        fastest[r] = (h, w)
-                
-                ratio = min(fastest, key=lambda r: abs(r - aspect))
-                target_h, target_w = fastest[ratio]
-                
-                if args.width is None: args.width = target_w
-                if args.height is None: args.height = target_h
+                with Image.open(args.image) as temp_img:
+                    if args.width is None:
+                        args.width = temp_img.width
+                    if args.height is None:
+                        args.height = temp_img.height
             except Exception:
-                if args.width is None: args.width = 960
-                if args.height is None: args.height = 544
+                if args.width is None: args.width = 1024
+                if args.height is None: args.height = 1024
         else:
-            if args.width is None: args.width = 960
-            if args.height is None: args.height = 544
-    elif args.image:
-        try:
-            from PIL import Image
-            with Image.open(args.image) as temp_img:
-                if args.width is None:
-                    args.width = temp_img.width
-                if args.height is None:
-                    args.height = temp_img.height
-        except Exception:
-            if args.width is None: args.width = 1024
+            if args.width  is None: args.width  = 1024
             if args.height is None: args.height = 1024
-    else:
-        if args.width  is None: args.width  = 1024
-        if args.height is None: args.height = 1024
-
     is_flux_fill = False
     try:
         from pathlib import Path
@@ -292,29 +284,6 @@ def main() -> int:
     logger.info("")
 
     # ── Load pipeline ────────────────────────────────────────────────────────
-    is_minimax = False
-    model_index_path = None
-    try:
-        from pathlib import Path
-        if Path(args.model).is_dir():
-            model_index_path = Path(args.model) / "model_index.json"
-        elif args.model.startswith("MiniMax"):
-            model_index_path = None
-    except:
-        pass
-    
-    if model_index_path and model_index_path.exists():
-        try:
-            import json
-            with open(model_index_path) as f:
-                index = json.load(f)
-            is_minimax = "MiniMaxH3" in index.get("_class_name", "")
-        except:
-            pass
-            
-    is_minimax = is_minimax or _is_minimax_default
-    _is_ltx = "ltx" in _model_lower
-    
     input_image = None
     if args.image:
         from PIL import Image, ImageOps
@@ -324,19 +293,6 @@ def main() -> int:
         except Exception as e:
             print(f"ERROR: Could not load input image: {e}", file=sys.stderr)
             return 1
-
-    if is_minimax:
-        from weellm.weevideopipeline import WeeVideoPipeline as PipelineClass
-        logger.info("  Mode:     Text-to-Video+Audio (MiniMax-H3)%s", " (With Start Image)" if input_image else "")
-    elif _is_ltx:
-        from weellm.weeltx2pipeline import WeeLTX2Pipeline as PipelineClass
-        logger.info("  Mode:     Text-to-Video (LTX-2.5)%s", " (With Start Image)" if input_image else "")
-    elif input_image:
-        from weellm import WeeImagePipeline as PipelineClass
-        logger.info("  Mode:     Image-to-Image / Edit (Input: %s)", args.image)
-    else:
-        from weellm import WeePipeline as PipelineClass
-        logger.info("  Mode:     Text-to-Image")
 
     last_image = None
     if getattr(args, "last_image", None):
@@ -359,6 +315,17 @@ def main() -> int:
         except Exception as e:
             print(f"ERROR: Could not load mask_image: {e}", file=sys.stderr)
             return 1
+        
+    if is_video:
+        from weellm.weevideopipeline import WeeVideoPipeline as PipelineClass
+        if input_image is not None:
+            logger.info("  Mode:     Text-to-Video (Video Model) (With Start Image)")
+    elif input_image is not None:
+        from weellm import WeeImagePipeline as PipelineClass
+        logger.info("  Mode:     Image-to-Image / Edit (Input: %s)", args.image)
+    else:
+        from weellm.weepipeline import WeePipeline as PipelineClass
+        logger.info("  Mode:     Text-to-Image")
 
     t_load = time.time()
     try:
@@ -432,6 +399,10 @@ def main() -> int:
     if args.negative_prompt:
         call_kwargs["negative_prompt"] = args.negative_prompt
 
+    if args.num_frames is not None:
+        call_kwargs["no_cache"] = args.no_cache
+        call_kwargs["cache_every"] = args.cache_every
+        call_kwargs["fresh"] = args.fresh
     out   = pipe(**call_kwargs)
     
     # Handle different output types (images, video+audio, etc)
@@ -472,31 +443,17 @@ def main() -> int:
         if output_path.suffix.lower() not in [".mp4", ".gif", ".avi", ".mov"]:
             output_path = output_path.with_suffix(".mp4")
             
-        if isinstance(videos, torch.Tensor):
-            # The MiniMax-H3 VAE output is ImageNet normalized.
-            # We must denormalize it to [0, 1] before saving to avoid massive clipping
-            # that causes visible 16x16 grid patches in the output.
-            mean = torch.tensor([0.485, 0.456, 0.406], device=videos.device, dtype=videos.dtype).view(-1, 1, 1)
-            std = torch.tensor([0.229, 0.224, 0.225], device=videos.device, dtype=videos.dtype).view(-1, 1, 1)
-            
-            # Identify the channel dimension to broadcast correctly
-            if videos.shape[0] == 3 and len(videos.shape) == 4:
-                # Shape is [C, T, H, W]
-                mean = mean.unsqueeze(1) # [C, 1, 1, 1]
-                std = std.unsqueeze(1)
-            elif len(videos.shape) == 4 and videos.shape[1] == 3:
-                # Shape is [T, C, H, W]
-                mean = mean.unsqueeze(0) # [1, C, 1, 1]
-                std = std.unsqueeze(0)
-            
-            # Apply denormalization
-            videos = (videos * std) + mean
-            videos = videos.clamp(0, 1)
+        if hasattr(out, "fps") and out.fps is not None:
+            fps = out.fps
+        elif getattr(args, "fps", None) is not None:
+            fps = args.fps
+        else:
+            fps = 24
             
         try:
             encode_video(
                 videos,
-                fps=24,  # MiniMax-H3 default FPS
+                fps=fps,
                 output_path=str(output_path),
                 audio=audio,
                 audio_sample_rate=sampling_rate,
