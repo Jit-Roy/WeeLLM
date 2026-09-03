@@ -65,8 +65,11 @@ _SDXL_BLOCKS = [
     
     # Output Blocks
     ("output_blocks.0.0", "up_blocks.0.resnets.0", 0, True),
+    ("output_blocks.0.1", "up_blocks.0.attentions.0", 10, False),
     ("output_blocks.1.0", "up_blocks.0.resnets.1", 0, True),
+    ("output_blocks.1.1", "up_blocks.0.attentions.1", 10, False),
     ("output_blocks.2.0", "up_blocks.0.resnets.2", 0, True),
+    ("output_blocks.2.1", "up_blocks.0.attentions.2", 10, False),
     ("output_blocks.3.0", "up_blocks.1.resnets.0", 0, True),
     ("output_blocks.3.1", "up_blocks.1.attentions.0", 2, False),
     ("output_blocks.4.0", "up_blocks.1.resnets.1", 0, True),
@@ -74,11 +77,8 @@ _SDXL_BLOCKS = [
     ("output_blocks.5.0", "up_blocks.1.resnets.2", 0, True),
     ("output_blocks.5.1", "up_blocks.1.attentions.2", 2, False),
     ("output_blocks.6.0", "up_blocks.2.resnets.0", 0, True),
-    ("output_blocks.6.1", "up_blocks.2.attentions.0", 10, False),
     ("output_blocks.7.0", "up_blocks.2.resnets.1", 0, True),
-    ("output_blocks.7.1", "up_blocks.2.attentions.1", 10, False),
     ("output_blocks.8.0", "up_blocks.2.resnets.2", 0, True),
-    ("output_blocks.8.1", "up_blocks.2.attentions.2", 10, False),
 ]
 
 _SDXL_RESNET_TEMPLATE = {
