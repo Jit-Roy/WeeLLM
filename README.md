@@ -312,3 +312,15 @@ image = pipe.generate(
 )
 image.save("flux_klein_gguf.png")
 ```
+
+---
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=Jit-Roy%2FWeeLLM&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Jit-Roy/WeeLLM&type=date&theme=dark&legend=top-left&sealed_token=TuDBj5rYLt1aHcQBy3cpkcR05xvo_j5LhHv2wILO8AJdNy2Uj6pmXOX4a9Wmw2zoY2Py1flJ0nlMtc-fjp_CPPkCKNc1LdNiyy7zoUJarOS2xCbQbd48NkZpd8HA8hpepYkMxmiPV0yGtDsC_PmWiKiMTOtFeoHZB7-ryg9sVk8dC-Uam2O69kAFs47K" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Jit-Roy/WeeLLM&type=date&legend=top-left&sealed_token=TuDBj5rYLt1aHcQBy3cpkcR05xvo_j5LhHv2wILO8AJdNy2Uj6pmXOX4a9Wmw2zoY2Py1flJ0nlMtc-fjp_CPPkCKNc1LdNiyy7zoUJarOS2xCbQbd48NkZpd8HA8hpepYkMxmiPV0yGtDsC_PmWiKiMTOtFeoHZB7-ryg9sVk8dC-Uam2O69kAFs47K" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Jit-Roy/WeeLLM&type=date&legend=top-left&sealed_token=TuDBj5rYLt1aHcQBy3cpkcR05xvo_j5LhHv2wILO8AJdNy2Uj6pmXOX4a9Wmw2zoY2Py1flJ0nlMtc-fjp_CPPkCKNc1LdNiyy7zoUJarOS2xCbQbd48NkZpd8HA8hpepYkMxmiPV0yGtDsC_PmWiKiMTOtFeoHZB7-ryg9sVk8dC-Uam2O69kAFs47K" />
+ </picture>
+</a>
