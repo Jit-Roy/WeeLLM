@@ -41,7 +41,14 @@ class SafetensorsBase:
     """
 
     def __init__(self, model_dir: Union[str, Path]):
-        self.model_dir = Path(model_dir)
+        path = Path(model_dir)
+        if path.is_file() and path.suffix == ".safetensors":
+            self.model_dir = path.parent
+            self._explicit_file = path.name
+        else:
+            self.model_dir = path
+            self._explicit_file = None
+            
         self.weight_map: Dict[str, str] = {}
         self._parsed_headers: Dict[str, dict] = {}
         self._data_bases: Dict[str, int] = {}
@@ -52,6 +59,16 @@ class SafetensorsBase:
 
     def _parse_index(self) -> None:
         """Populate ``self.weight_map`` from a sharded index or a single file."""
+        if self._explicit_file:
+            src_file = self._explicit_file
+            header, _ = self._read_header(self.model_dir / src_file)
+            self.weight_map = {
+                k: src_file
+                for k in header.keys()
+                if k != "__metadata__"
+            }
+            return
+
         index_path     = self.model_dir / "model.safetensors.index.json"
         alt_index_path = self.model_dir / "diffusion_pytorch_model.safetensors.index.json"
 
