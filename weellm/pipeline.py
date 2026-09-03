@@ -306,11 +306,11 @@ class WeeBasePipeline:
         logger.info("\n[4/4] Preparing Transformer / UNet ...")
         
         unet_dir = diffusers_kwargs.pop("unet_dir", None)
-        transformer_dir = diffusers_kwargs.pop("transformer_dir", unet_dir)
+        transformer_dir = diffusers_kwargs.pop("transformer_dir", None)
         
         transformer_key, transformer_streamer = cls._load_transformer(
             model_dir_path, index, device, effective_dtype, prefetch, cache_to_ram,
-            transformer_dir_override=transformer_dir
+            transformer_dir_override=unet_dir if "unet" in index else transformer_dir
         )
         tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
         tr_model = cls._patch_to(tr_model)

@@ -148,8 +148,8 @@ _COMFY_SDXL_BASE_MAP = {
     "model.diffusion_model.input_blocks.6.0.op.bias": "down_blocks.1.downsamplers.0.conv.bias",
     
     # Upsamplers
-    "model.diffusion_model.output_blocks.2.1.conv.weight": "up_blocks.0.upsamplers.0.conv.weight",
-    "model.diffusion_model.output_blocks.2.1.conv.bias": "up_blocks.0.upsamplers.0.conv.bias",
+    "model.diffusion_model.output_blocks.2.2.conv.weight": "up_blocks.0.upsamplers.0.conv.weight",
+    "model.diffusion_model.output_blocks.2.2.conv.bias": "up_blocks.0.upsamplers.0.conv.bias",
     "model.diffusion_model.output_blocks.5.2.conv.weight": "up_blocks.1.upsamplers.0.conv.weight",
     "model.diffusion_model.output_blocks.5.2.conv.bias": "up_blocks.1.upsamplers.0.conv.bias",
     "model.diffusion_model.output_blocks.8.2.conv.weight": "up_blocks.2.upsamplers.0.conv.weight",
