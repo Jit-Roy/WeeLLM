@@ -97,7 +97,8 @@ def resolve_model_path(model_id_or_path: str, skip_components: set = None) -> Pa
     for key, value in index_data.items():
         if isinstance(value, list) and len(value) == 2:
             if skip_components and key in skip_components:
-                logger.info("  Skipping download of '%s/*' (override path provided)", key)
+                logger.info("  Skipping safetensors download for '%s' (override provided), but keeping configs", key)
+                allow_patterns.append(f"{key}/*.json")
                 continue
             allow_patterns.append(f"{key}/*")
 
