@@ -42,9 +42,10 @@ class Ideogram4Transformer2DModelStreamer(BaseTransformerStreamer):
         return order
 
     def _get_resident_keys(self) -> List[str]:
+        expected_keys = set(self.model.state_dict().keys())
         return [
             k for k in self.seeker.weight_map
-            if not k.startswith("layers.") and not k.startswith("transformer_blocks.")
+            if k in expected_keys and not k.startswith("layers.") and not k.startswith("transformer_blocks.")
         ]
 
     def apply_state_dict(self, state_dict: Dict[str, torch.Tensor]) -> None:

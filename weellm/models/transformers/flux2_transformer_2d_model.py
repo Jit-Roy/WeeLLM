@@ -44,9 +44,10 @@ class Flux2Transformer2DModelStreamer(BaseTransformerStreamer):
         return order
 
     def _get_resident_keys(self) -> List[str]:
+        expected_keys = set(self.model.state_dict().keys())
         return [
             k for k in self.seeker.weight_map
-            if not any(k.startswith(p) for p in _STREAMING_PREFIXES)
+            if k in expected_keys and not any(k.startswith(p) for p in _STREAMING_PREFIXES)
         ]
 
     @classmethod
