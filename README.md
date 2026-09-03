@@ -297,6 +297,8 @@ pipe = WeePipeline.from_pretrained(
     "black-forest-labs/FLUX.2-klein-4B", 
     transformer_dir="unsloth/FLUX.2-klein-4B-GGUF/flux-2-klein-4b-Q4_K_M.gguf",
     text_encoder_dir="unsloth/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf",
+    # If using SD/SDXL models, use `unet_dir` instead of `transformer_dir`
+    # unet_dir="path/to/juggernaut-xl-v9-Q8_0.gguf",
     device="cuda", 
     torch_dtype=torch.bfloat16,
     vram_budget=4, 

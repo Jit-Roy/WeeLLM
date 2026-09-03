@@ -305,7 +305,8 @@ class WeeBasePipeline:
         # ── Step 4: Transformer / UNet ──────────────────────────────────
         logger.info("\n[4/4] Preparing Transformer / UNet ...")
         
-        transformer_dir = diffusers_kwargs.pop("transformer_dir", None)
+        unet_dir = diffusers_kwargs.pop("unet_dir", None)
+        transformer_dir = diffusers_kwargs.pop("transformer_dir", unet_dir)
         
         transformer_key, transformer_streamer = cls._load_transformer(
             model_dir_path, index, device, effective_dtype, prefetch, cache_to_ram,
