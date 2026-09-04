@@ -37,20 +37,35 @@ def _patch_forward_input_device(model: nn.Module) -> None:
     def patched_forward(self_obj, *args, **kwargs):
         try:
             model_device = next(self_obj.parameters()).device
+            model_dtype = next(self_obj.parameters()).dtype
         except StopIteration:
             model_device = torch.device("cpu")
+            model_dtype = torch.float32
 
         args = list(args)
         for i, value in enumerate(args[:4]):
-            if torch.is_tensor(value) and value.device != model_device:
-                args[i] = value.to(model_device)
+            if torch.is_tensor(value):
+                if value.device != model_device:
+                    value = value.to(model_device)
+                if torch.is_floating_point(value) and value.dtype != model_dtype:
+                    value = value.to(model_dtype)
+                args[i] = value
+                
         for key, value in list(kwargs.items()):
-            if torch.is_tensor(value) and value.device != model_device:
-                kwargs[key] = value.to(model_device)
+            if torch.is_tensor(value):
+                if value.device != model_device:
+                    value = value.to(model_device)
+                if torch.is_floating_point(value) and value.dtype != model_dtype:
+                    value = value.to(model_dtype)
+                kwargs[key] = value
             elif isinstance(value, dict):
                 for k, v in value.items():
-                    if torch.is_tensor(v) and v.device != model_device:
-                        value[k] = v.to(model_device)
+                    if torch.is_tensor(v):
+                        if v.device != model_device:
+                            v = v.to(model_device)
+                        if torch.is_floating_point(v) and v.dtype != model_dtype:
+                            v = v.to(model_dtype)
+                        value[k] = v
         return original_forward(*args, **kwargs)
 
     model.forward = types.MethodType(patched_forward, model)
