@@ -354,7 +354,6 @@ class WeeBasePipeline:
             raise ImportError(f"Could not find pipeline class {pipeline_class_name} in diffusers, local custom files, or external_pipelines.")
             
         pipeline        = pipeline_cls(**diffusers_kwargs)
-        pipeline._weellm_te_streamers = te_streamers
 
         # ── Post-build patches ───────────────────────────────────────────
         cls._patch_execution_device(pipeline, device, te_streamers)

@@ -77,7 +77,7 @@ class WeeImagePipeline(WeeBasePipeline):
             else:
                 logger.debug("  [WeeLLM] Ignoring unsupported kwarg '%s' for %s", k, self._pipeline.__class__.__name__)
                 
-        return super().__call__(*args, **filtered_kwargs)
+        return self._pipeline(*args, **filtered_kwargs)
 
     def generate(self, prompt: str, image: Image.Image, **kwargs):
         """
