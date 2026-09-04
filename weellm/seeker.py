@@ -90,34 +90,42 @@ def get_seeker(model_dir: Union[str, Path], cache_to_ram: bool = False):
         from weellm.gguf_seek import GGUFSeeker
         return GGUFSeeker(model_dir_path)
 
+    original_model_dir_str = str(model_dir).replace("\\", "/")
+    explicit_subfolder = None
+    if len(original_model_dir_str.split("/")) > 2 and not Path(original_model_dir_str).is_absolute():
+        explicit_subfolder = "/".join(original_model_dir_str.split("/")[2:])
+
     if not model_dir_path.exists():
-        repo_id_str = str(model_dir).replace("\\", "/")
-        is_hub_id   = repo_id_str.count("/") == 1 and not Path(repo_id_str).is_absolute()
+        parts = original_model_dir_str.split("/")
+        is_hub_id = len(parts) >= 2 and not Path(original_model_dir_str).is_absolute()
 
         if is_hub_id:
-            # Plain "namespace/repo" string — download the whole thing, or just the subfolder if it's a pipeline.
-            logger.info("Directory '%s' not found. Attempting to download from Hugging Face Hub...", model_dir)
+            actual_repo_id = f"{parts[0]}/{parts[1]}"
+
+            logger.info("Directory '%s' not found. Attempting to download from Hugging Face Hub (repo: %s)...", model_dir, actual_repo_id)
             from huggingface_hub import snapshot_download, HfApi
             try:
-                files = HfApi().list_repo_files(repo_id=repo_id_str)
+                files = HfApi().list_repo_files(repo_id=actual_repo_id)
                 is_pipeline = "model_index.json" in files
             except Exception:
                 is_pipeline = False
 
-            subfolder_override = getattr(_override_local, "subfolder", None)
-            if is_pipeline and subfolder_override:
+            # If user provided a subfolder in the string, use it. Otherwise, use the inferred one.
+            target_subfolder = explicit_subfolder or getattr(_override_local, "subfolder", None)
+            
+            if is_pipeline and target_subfolder:
                 allow_patterns = [
-                    f"{subfolder_override}/*.safetensors",
-                    f"{subfolder_override}/*.json",
-                    f"{subfolder_override}/*.safetensors.index.json",
+                    f"{target_subfolder}/*.safetensors",
+                    f"{target_subfolder}/*.json",
+                    f"{target_subfolder}/*.safetensors.index.json",
                     "model_index.json"
                 ]
-                logger.info("  Detected pipeline repo. Downloading ONLY subfolder '%s' ...", subfolder_override)
+                logger.info("  Detected pipeline repo. Downloading ONLY subfolder '%s' ...", target_subfolder)
             else:
                 allow_patterns = ["*.safetensors", "*.safetensors.index.json", "*.json"]
 
             model_dir = snapshot_download(
-                repo_id=repo_id_str,
+                repo_id=actual_repo_id,
                 allow_patterns=allow_patterns,
             )
         else:
@@ -151,9 +159,11 @@ def get_seeker(model_dir: Union[str, Path], cache_to_ram: bool = False):
         model_dir_path = Path(model_dir)
 
     # Automatically append subfolder if the directory is a full pipeline repo
-    subfolder_override = getattr(_override_local, "subfolder", None)
-    if subfolder_override and (model_dir_path / "model_index.json").exists():
-        model_dir_path = model_dir_path / subfolder_override
+    final_target_subfolder = explicit_subfolder or getattr(_override_local, "subfolder", None)
+    if final_target_subfolder and (model_dir_path / "model_index.json").exists():
+        # Prevent double-appending if model_dir_path already contains the subfolder
+        if not model_dir_path.name == final_target_subfolder:
+            model_dir_path = model_dir_path / final_target_subfolder
 
     if cache_to_ram:
         from weellm.ram_seek import SafetensorsRAMSeeker

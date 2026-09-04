@@ -100,7 +100,7 @@ WeeLLM dynamically streams transformer layers to the GPU for massive models. Ins
 
 ### Local Setup
 ```bash
-git clone https://github.com/freedomfighter1290/weellm.git
+git clone https://github.com/Jit-Roy/weellm.git
 cd weellm
 pip install -r requirements.txt
 ```
@@ -295,10 +295,10 @@ import torch
 
 pipe = WeePipeline.from_pretrained(
     "black-forest-labs/FLUX.2-klein-4B", 
-    transformer_dir="unsloth/FLUX.2-klein-4B-GGUF/flux-2-klein-4b-Q4_K_M.gguf",
-    text_encoder_dir="unsloth/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf",
-    # If using SD/SDXL models, use `unet_dir` instead of `transformer_dir`
-    # unet_dir="path/to/juggernaut-xl-v9-Q8_0.gguf",
+    transformer_path="unsloth/FLUX.2-klein-4B-GGUF/flux-2-klein-4b-Q4_K_M.gguf",
+    text_encoder_path="unsloth/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf",
+    # If using SD/SDXL models, use `unet_path` instead of `transformer_path`
+    # unet_path="path/to/juggernaut-xl-v9-Q8_0.gguf",
     device="cuda", 
     torch_dtype=torch.bfloat16,
     vram_budget=4, 
@@ -325,4 +325,4 @@ image.save("flux_klein_gguf.png")
    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Jit-Roy/WeeLLM&type=date&legend=top-left&sealed_token=TuDBj5rYLt1aHcQBy3cpkcR05xvo_j5LhHv2wILO8AJdNy2Uj6pmXOX4a9Wmw2zoY2Py1flJ0nlMtc-fjp_CPPkCKNc1LdNiyy7zoUJarOS2xCbQbd48NkZpd8HA8hpepYkMxmiPV0yGtDsC_PmWiKiMTOtFeoHZB7-ryg9sVk8dC-Uam2O69kAFs47K" />
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Jit-Roy/WeeLLM&type=date&legend=top-left&sealed_token=TuDBj5rYLt1aHcQBy3cpkcR05xvo_j5LhHv2wILO8AJdNy2Uj6pmXOX4a9Wmw2zoY2Py1flJ0nlMtc-fjp_CPPkCKNc1LdNiyy7zoUJarOS2xCbQbd48NkZpd8HA8hpepYkMxmiPV0yGtDsC_PmWiKiMTOtFeoHZB7-ryg9sVk8dC-Uam2O69kAFs47K" />
  </picture>
-</a>
+</a>

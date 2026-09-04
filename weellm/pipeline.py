@@ -234,9 +234,9 @@ class WeeBasePipeline:
         # These components will NOT have their safetensors downloaded from HF — only
         # their config/tokenizer sub-files are still needed from the main repo.
         skip_components = {
-            k[:-4]  # strip "_dir" suffix → component folder name (e.g. "transformer")
+            k[:-5]  # strip "_path" suffix → component folder name (e.g. "transformer")
             for k, v in kwargs.items()
-            if k.endswith("_dir") and v is not None
+            if k.endswith("_path") and v is not None
         }
 
         model_dir_str  = str(resolve_model_path(str(model_dir), skip_components=skip_components or None))
@@ -291,7 +291,8 @@ class WeeBasePipeline:
                     logger.warning("Directory for %s does not exist, skipping.", vae_key)
                     continue
                 try:
-                    lazy_vae = cls._load_vae(model_dir_path, device, vae_dtype, cache_to_ram, subfolder=vae_key)
+                    vae_path_override = diffusers_kwargs.pop(f"{vae_key}_path", None)
+                    lazy_vae = cls._load_vae(model_dir_path, device, vae_dtype, cache_to_ram, subfolder=vae_key, vae_path_override=vae_path_override)
                     diffusers_kwargs[vae_key] = lazy_vae.model
                 except Exception as e:
                     logger.warning("Failed to load %s: %s", vae_key, e)
@@ -305,12 +306,12 @@ class WeeBasePipeline:
         # ── Step 4: Transformer / UNet ──────────────────────────────────
         logger.info("\n[4/4] Preparing Transformer / UNet ...")
         
-        unet_dir = diffusers_kwargs.pop("unet_dir", None)
-        transformer_dir = diffusers_kwargs.pop("transformer_dir", None)
+        unet_path = diffusers_kwargs.pop("unet_path", None)
+        transformer_path = diffusers_kwargs.pop("transformer_path", None)
         
         transformer_key, transformer_streamer = cls._load_transformer(
             model_dir_path, index, device, effective_dtype, prefetch, cache_to_ram,
-            transformer_dir_override=unet_dir if "unet" in index else transformer_dir
+            transformer_path_override=unet_path if "unet" in index else transformer_path
         )
         tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
         tr_model = cls._patch_to(tr_model)
@@ -472,14 +473,17 @@ class WeeBasePipeline:
             out["scheduler"] = scheduler_cls.from_pretrained(str(model_dir), subfolder="scheduler")
 
     @staticmethod
-    def _load_vae(model_dir: Path, device: str, torch_dtype: torch.dtype, cache_to_ram: bool, subfolder: str = "vae"):
+    def _load_vae(model_dir: Path, device: str, torch_dtype: torch.dtype, cache_to_ram: bool, subfolder: str = "vae", vae_path_override: Optional[Union[str, Path]] = None):
         from weellm.models.vaes.lazy_vae import LazyVAEStreamer
-        return LazyVAEStreamer.from_pretrained(
-            model_dir / subfolder,
-            device=device,
-            dtype=torch_dtype,
-            cache_to_ram=cache_to_ram,
-        )
+        from weellm.seeker import override_weights_path
+        
+        with override_weights_path(vae_path_override, subfolder=subfolder):
+            return LazyVAEStreamer.from_pretrained(
+                model_dir / subfolder,
+                device=device,
+                dtype=torch_dtype,
+                cache_to_ram=cache_to_ram,
+            )
 
     @staticmethod
     def _load_text_encoders(
@@ -495,7 +499,7 @@ class WeeBasePipeline:
         te_streamers = {}
 
         for key in ["text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4"]:
-            override_path = out.pop(f"{key}_dir", None)
+            override_path = out.pop(f"{key}_path", None)
             
             if key not in index:
                 continue
@@ -607,7 +611,7 @@ class WeeBasePipeline:
         torch_dtype: torch.dtype,
         prefetch: bool,
         cache_to_ram: bool,
-        transformer_dir_override: Optional[Union[str, Path]] = None,
+        transformer_path_override: Optional[Union[str, Path]] = None,
     ):
         transformer_key = "transformer" if "transformer" in index else "unet"
         transformer_class_name = index[transformer_key][1]
@@ -621,7 +625,7 @@ class WeeBasePipeline:
 
         from .seeker import override_weights_path
 
-        with override_weights_path(transformer_dir_override, subfolder=transformer_key):
+        with override_weights_path(transformer_path_override, subfolder=transformer_key):
             if transformer_key == "unet":
                 tr_path = str(model_dir)
                 streamer = transformer_cls_streamer.from_pretrained(

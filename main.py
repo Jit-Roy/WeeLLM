@@ -336,15 +336,15 @@ def main() -> int:
             kwargs["ram_budget_gb"] = args.ram_budget
 
         if args.transformer is not None:
-            kwargs["transformer_dir"] = args.transformer
+            kwargs["transformer_path"] = args.transformer
         if args.text_encoder is not None:
-            kwargs["text_encoder_dir"] = args.text_encoder
+            kwargs["text_encoder_path"] = args.text_encoder
         if args.text_encoder_2 is not None:
-            kwargs["text_encoder_2_dir"] = args.text_encoder_2
+            kwargs["text_encoder_2_path"] = args.text_encoder_2
         if args.text_encoder_3 is not None:
-            kwargs["text_encoder_3_dir"] = args.text_encoder_3
+            kwargs["text_encoder_3_path"] = args.text_encoder_3
         if args.text_encoder_4 is not None:
-            kwargs["text_encoder_4_dir"] = args.text_encoder_4
+            kwargs["text_encoder_4_path"] = args.text_encoder_4
 
         pipe = PipelineClass.from_pretrained(
             model_dir=args.model,
