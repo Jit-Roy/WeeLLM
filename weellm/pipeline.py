@@ -151,32 +151,13 @@ class WeeBasePipeline:
         try:
             return self._pipeline(*args, **kwargs)
         except torch.cuda.OutOfMemoryError:
-            if not torch.cuda.is_available():
-                raise
-
             transformer = getattr(self._pipeline, "transformer", None)
             if transformer is None:
                 transformer = getattr(self._pipeline, "unet", None)
             streamer = getattr(transformer, "_weellm_streamer", None)
-            if streamer is None or not hasattr(streamer, "release_cached_blocks"):
-                raise
-
-            logger.warning(
-                "[WeeLLM] CUDA OOM during generation; clearing streamed VRAM cache and retrying once."
-            )
-            streamer.release_cached_blocks()
-            
-            if getattr(transformer, "_weellm_te_evicted", False):
-                logger.warning("[WeeLLM] Restoring Text Encoders from disk/RAM for retry...")
-                for te_key, te_streamer in getattr(self._pipeline, "_weellm_te_streamers", {}).items():
-                    te_mod = getattr(self._pipeline, te_key, None)
-                    if te_mod is not None:
-                        resident_keys = te_streamer._get_resident_keys()
-                        resident_sd = te_streamer.seeker.get_tensors(resident_keys, device=te_streamer.device, dtype=te_streamer.dtype)
-                        te_streamer.apply_state_dict(resident_sd)
-                transformer._weellm_te_evicted = False
-
-            return self._pipeline(*args, **kwargs)
+            if streamer is not None and hasattr(streamer, "release_cached_blocks"):
+                streamer.release_cached_blocks()
+            raise
 
     def __getattr__(self, name: str):
         """Delegate attribute access to the inner diffusers pipeline."""

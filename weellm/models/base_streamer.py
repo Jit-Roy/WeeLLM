@@ -538,14 +538,19 @@ class BaseTransformerStreamer(ABC):
                 if global_vram_budget_gb is not None:
                     total_vram = global_vram_budget_gb * 1024**3
                     non_pytorch_vram = 0
+                    fragmentation_margin = 0
                 else:
                     free_vram, total_vram = torch.cuda.mem_get_info(self.device)
                     non_pytorch_vram = max(
                         0,
                         total_vram - free_vram - torch.cuda.memory_reserved(self.device),
                     )
+                    # When hitting the physical limits of the GPU, PyTorch requires a buffer 
+                    # to allocate new segments because of memory fragmentation.
+                    fragmentation_margin = 1024**3  # 1 GB
+
                 allocator_slack = max(0, current_reserved - current_allocated)
-                runtime_headroom = non_pytorch_vram + allocator_slack
+                runtime_headroom = non_pytorch_vram + allocator_slack + fragmentation_margin
                 self._cache_budget_bytes = max(
                     0, total_vram - max_reserved - runtime_headroom
                 )
