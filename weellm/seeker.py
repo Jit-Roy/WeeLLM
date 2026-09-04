@@ -70,31 +70,55 @@ def get_seeker(model_dir: Union[str, Path], cache_to_ram: bool = False):
         from weellm.gguf_seek import GGUFSeeker
         return GGUFSeeker(model_dir_path)
         
+    # ── Single File Direct Hub Download ──────────────────────────────────────
     model_dir_str = str(model_dir).replace("\\", "/")
-    if model_dir_str.lower().endswith(".gguf") and not model_dir_path.exists():
+    
+    # If it looks like a HuggingFace direct file path: "org/repo/path/to/file.ext"
+    # and it doesn't exist locally as a relative path.
+    if not model_dir_path.exists() and not model_dir_path.is_absolute():
         parts = model_dir_str.split("/")
-        if len(parts) >= 3 and not Path(model_dir_str).is_absolute():
+        if len(parts) >= 3 and "." in parts[-1]:
             repo_id = f"{parts[0]}/{parts[1]}"
             filename = "/".join(parts[2:])
-            logger.info("  [WeeLLM] GGUF file '%s' not found locally. Downloading from Hugging Face Hub (repo: %s)...", model_dir_str, repo_id)
+            logger.info("  [WeeLLM] Hub file '%s' not found locally. Downloading from repo: %s...", model_dir_str, repo_id)
             from huggingface_hub import hf_hub_download
             downloaded_path = hf_hub_download(repo_id=repo_id, filename=filename)
-            from weellm.gguf_seek import GGUFSeeker
-            return GGUFSeeker(Path(downloaded_path))
-        else:
-            raise FileNotFoundError(f"GGUF file not found: {model_dir}")
+            model_dir_path = Path(downloaded_path)
+            
+    # ── GGUF Initialization ──────────────────────────────────────────────────
+    if model_dir_path.is_file() and model_dir_path.suffix.lower() == ".gguf":
+        from weellm.gguf_seek import GGUFSeeker
+        return GGUFSeeker(model_dir_path)
 
     if not model_dir_path.exists():
         repo_id_str = str(model_dir).replace("\\", "/")
         is_hub_id   = repo_id_str.count("/") == 1 and not Path(repo_id_str).is_absolute()
 
         if is_hub_id:
-            # Plain "namespace/repo" string — download the whole thing.
+            # Plain "namespace/repo" string — download the whole thing, or just the subfolder if it's a pipeline.
             logger.info("Directory '%s' not found. Attempting to download from Hugging Face Hub...", model_dir)
-            from huggingface_hub import snapshot_download
+            from huggingface_hub import snapshot_download, HfApi
+            try:
+                files = HfApi().list_repo_files(repo_id=repo_id_str)
+                is_pipeline = "model_index.json" in files
+            except Exception:
+                is_pipeline = False
+
+            subfolder_override = getattr(_override_local, "subfolder", None)
+            if is_pipeline and subfolder_override:
+                allow_patterns = [
+                    f"{subfolder_override}/*.safetensors",
+                    f"{subfolder_override}/*.json",
+                    f"{subfolder_override}/*.safetensors.index.json",
+                    "model_index.json"
+                ]
+                logger.info("  Detected pipeline repo. Downloading ONLY subfolder '%s' ...", subfolder_override)
+            else:
+                allow_patterns = ["*.safetensors", "*.safetensors.index.json", "*.json"]
+
             model_dir = snapshot_download(
                 repo_id=repo_id_str,
-                allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.json"],
+                allow_patterns=allow_patterns,
             )
         else:
             # Absolute local path — try to recover a missing HF cache subfolder.
