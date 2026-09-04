@@ -33,18 +33,22 @@ from contextlib import contextmanager
 _override_local = threading.local()
 
 @contextmanager
-def override_weights_path(path: Union[str, Path, None]):
+def override_weights_path(path: Union[str, Path, None], subfolder: str = None):
     """
     Temporarily overrides the path used by get_seeker() within the current thread.
     Useful for routing weights loading to a GGUF file without changing the directory
     path used for loading config.json.
     """
-    old = getattr(_override_local, "weights_path", None)
+    old_path = getattr(_override_local, "weights_path", None)
+    old_sub  = getattr(_override_local, "subfolder", None)
+    
     _override_local.weights_path = path
+    _override_local.subfolder = subfolder
     try:
         yield
     finally:
-        _override_local.weights_path = old
+        _override_local.weights_path = old_path
+        _override_local.subfolder = old_sub
 
 def get_seeker(model_dir: Union[str, Path], cache_to_ram: bool = False):
     """
@@ -121,6 +125,11 @@ def get_seeker(model_dir: Union[str, Path], cache_to_ram: bool = False):
                     f"Local directory not found and path is not a valid Hub repo_id: '{model_dir}'"
                 )
         model_dir_path = Path(model_dir)
+
+    # Automatically append subfolder if the directory is a full pipeline repo
+    subfolder_override = getattr(_override_local, "subfolder", None)
+    if subfolder_override and (model_dir_path / "model_index.json").exists():
+        model_dir_path = model_dir_path / subfolder_override
 
     if cache_to_ram:
         from weellm.ram_seek import SafetensorsRAMSeeker

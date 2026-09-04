@@ -551,7 +551,7 @@ class WeeBasePipeline:
 
             from .seeker import override_weights_path
             
-            with override_weights_path(override_path):
+            with override_weights_path(override_path, subfolder=key):
                 if "Qwen" in hf_cls_name or "Mistral" in hf_cls_name or "Llama" in hf_cls_name:
                     if hasattr(te_cls, "from_pretrained"):
                         te_kwargs = {
@@ -621,7 +621,7 @@ class WeeBasePipeline:
 
         from .seeker import override_weights_path
 
-        with override_weights_path(transformer_dir_override):
+        with override_weights_path(transformer_dir_override, subfolder=transformer_key):
             if transformer_key == "unet":
                 tr_path = str(model_dir)
                 streamer = transformer_cls_streamer.from_pretrained(
