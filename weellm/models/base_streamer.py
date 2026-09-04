@@ -187,9 +187,12 @@ class BaseTransformerStreamer(ABC):
 
         try:
             import psutil
+            import os
             global_ram_budget_gb = getattr(self.__class__, "_global_ram_budget_gb", None)
             if global_ram_budget_gb is not None:
-                available = global_ram_budget_gb * 1024**3
+                current_rss = psutil.Process(os.getpid()).memory_info().rss
+                budget_bytes = global_ram_budget_gb * 1024**3
+                available = max(0, budget_bytes - current_rss)
             else:
                 available = psutil.virtual_memory().available
             
