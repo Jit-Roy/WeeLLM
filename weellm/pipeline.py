@@ -165,6 +165,17 @@ class WeeBasePipeline:
                 "[WeeLLM] CUDA OOM during generation; clearing streamed VRAM cache and retrying once."
             )
             streamer.release_cached_blocks()
+            
+            if getattr(transformer, "_weellm_te_evicted", False):
+                logger.warning("[WeeLLM] Restoring Text Encoders from disk/RAM for retry...")
+                for te_key, te_streamer in getattr(self._pipeline, "_weellm_te_streamers", {}).items():
+                    te_mod = getattr(self._pipeline, te_key, None)
+                    if te_mod is not None:
+                        resident_keys = te_streamer._get_resident_keys()
+                        resident_sd = te_streamer.seeker.get_tensors(resident_keys, device=te_streamer.device, dtype=te_streamer.dtype)
+                        te_streamer.apply_state_dict(resident_sd)
+                transformer._weellm_te_evicted = False
+
             return self._pipeline(*args, **kwargs)
 
     def __getattr__(self, name: str):
@@ -362,7 +373,7 @@ class WeeBasePipeline:
             raise ImportError(f"Could not find pipeline class {pipeline_class_name} in diffusers, local custom files, or external_pipelines.")
             
         pipeline        = pipeline_cls(**diffusers_kwargs)
-
+        pipeline._weellm_te_streamers = te_streamers
 
         # ── Post-build patches ───────────────────────────────────────────
         cls._patch_execution_device(pipeline, device, te_streamers)
