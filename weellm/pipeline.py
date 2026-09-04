@@ -909,9 +909,16 @@ class WeeBasePipeline:
         if hasattr(pipeline, "_encode_vae_image"):
             orig_encode_vae = pipeline._encode_vae_image
             def safe_encode_vae(self_obj, *args, **kwargs):
+                img_tensor = args[0] if len(args) > 0 else kwargs.get("image", None)
+                
+                # Fix for diffusers pipeline_flux2_klein device mismatch bug
+                # where it forgets to cast vae.bn.running_var to the image device
+                if img_tensor is not None and torch.is_tensor(img_tensor):
+                    if hasattr(self_obj, "vae") and hasattr(self_obj.vae, "bn"):
+                        self_obj.vae.bn.to(device=img_tensor.device)
+
                 result = orig_encode_vae(*args, **kwargs)
                 
-                img_tensor = args[0] if len(args) > 0 else kwargs.get("image", None)
                 if img_tensor is not None and torch.is_tensor(img_tensor) and img_tensor.is_floating_point():
                     if torch.is_tensor(result) and result.dtype != img_tensor.dtype:
                         result = result.to(img_tensor.dtype)

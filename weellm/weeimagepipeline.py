@@ -17,6 +17,8 @@ IMG2IMG_MAPPING = {
     "StableDiffusion3Pipeline": "StableDiffusion3Img2ImgPipeline",
     "LongCatImagePipeline": "LongCatImageEditPipeline",
     "HiDreamImagePipeline": "HiDreamImageEditingPipeline",
+    "FluxPipeline": "FluxImg2ImgPipeline",
+    "Flux2KleinPipeline": "Flux2KleinPipeline", 
 }
 
 class WeeImagePipeline(WeeBasePipeline):
