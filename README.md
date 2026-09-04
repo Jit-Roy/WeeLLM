@@ -49,6 +49,8 @@ WeeLLM dynamically streams transformer layers to the GPU for massive models. Ins
 - SDXL
 - SD 1.5
 - SD 2.0
+- SD 2.1
+- SD 3 Medium
 - SD 3.5 Medium
 - SD 3.5 Large
 - Flux.1 Dev
@@ -73,14 +75,14 @@ WeeLLM dynamically streams transformer layers to the GPU for massive models. Ins
 
 ## Image Edit Models
 
-- LongCat Image Edit
 - Sdxl Img To Img
+- Flux.1 Kontext 
+- Flux.1 Fill Dev
 - Flux.2 Klein 4B
 - Flux.2 Klein 9B
-- Flux.1 Fill Dev
+- LongCat Image Edit
 - Qwen Image Edit
 - HiDream E1 Full
-- Flux.1 Kontext 
 
 ## Video Generation Models
 
