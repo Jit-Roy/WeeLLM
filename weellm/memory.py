@@ -58,6 +58,19 @@ def place_tensors(
     """
     for name, tensor in state_dict.items():
         try:
+            # Handle Conv2d (1x1) <-> Linear shape mismatches for Diffusers architectures
+            try:
+                obj = model
+                for attr in name.split("."):
+                    obj = getattr(obj, attr)
+                if obj.shape != tensor.shape:
+                    if len(tensor.shape) == 4 and len(obj.shape) == 2 and tensor.shape[2:] == (1, 1):
+                        tensor = tensor.squeeze(-1).squeeze(-1)
+                    elif len(tensor.shape) == 2 and len(obj.shape) == 4 and obj.shape[2:] == (1, 1):
+                        tensor = tensor.unsqueeze(-1).unsqueeze(-1)
+            except Exception:
+                pass
+
             if tensor.is_floating_point():
                 set_module_tensor_to_device(model, name, device, value=tensor, dtype=dtype)
             else:
