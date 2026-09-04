@@ -12,8 +12,10 @@ from weellm.pipeline import WeeBasePipeline
 logger = logging.getLogger("weellm")
 
 IMG2IMG_MAPPING = {
-    "LongCatImagePipeline": "LongCatImageEditPipeline",
+    "StableDiffusionPipeline": "StableDiffusionImg2ImgPipeline",
     "StableDiffusionXLPipeline": "StableDiffusionXLImg2ImgPipeline",
+    "StableDiffusion3Pipeline": "StableDiffusion3Img2ImgPipeline",
+    "LongCatImagePipeline": "LongCatImageEditPipeline",
     "HiDreamImagePipeline": "HiDreamImageEditingPipeline",
 }
 
