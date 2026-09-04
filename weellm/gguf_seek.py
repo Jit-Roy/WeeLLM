@@ -555,9 +555,8 @@ class GGUFSeeker:
         import math
         total = 0
         for key in keys:
-            orig_name = self._name_map.get(key, key)
-            if orig_name not in self._tensor_meta: continue
-            _, shape, _, slice_info, _ = self._tensor_meta[orig_name]
+            if key not in self._tensor_meta: continue
+            _, shape, _, slice_info, _ = self._tensor_meta[key]
             n_elements = math.prod(shape) if shape else 1
             if slice_info is not None:
                 n_elements = n_elements // slice_info[1]
