@@ -58,7 +58,7 @@ def place_tensors(
     """
     for name, tensor in state_dict.items():
         if ".attn.to_qkv_mlp_proj." in name:
-            base_name = name.replace(".attn.to_qkv_mlp_proj", "")
+            base_name = name.split(".attn.to_qkv_mlp_proj.")[0]
             is_weight = name.endswith(".weight")
             suffix = ".weight" if is_weight else ".bias"
             dim = tensor.shape[1] if is_weight else tensor.shape[0] // 7
