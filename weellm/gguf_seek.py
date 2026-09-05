@@ -442,6 +442,35 @@ def _build_remap_fn(gguf_keys: List[str], arch: str = "unknown"):
                 return [(name.replace("x_embedder.", "all_x_embedder.2-1."), None)]
             if name.startswith("final_layer."):
                 return [(name.replace("final_layer.", "all_final_layer.2-1."), None)]
+            
+            if ".attention." in name:
+                if name.endswith(".attention.qkv.weight"):
+                    base = name.replace(".attention.qkv.weight", ".attention")
+                    return [
+                        (f"{base}.to_q.weight", (0, 3)),
+                        (f"{base}.to_k.weight", (1, 3)),
+                        (f"{base}.to_v.weight", (2, 3)),
+                    ]
+                if name.endswith(".attention.qkv.bias"):
+                    base = name.replace(".attention.qkv.bias", ".attention")
+                    return [
+                        (f"{base}.to_q.bias", (0, 3)),
+                        (f"{base}.to_k.bias", (1, 3)),
+                        (f"{base}.to_v.bias", (2, 3)),
+                    ]
+                if name.endswith(".attention.out.weight"):
+                    return [(name.replace(".attention.out.", ".attention.to_out.0."), None)]
+                if name.endswith(".attention.out.bias"):
+                    return [(name.replace(".attention.out.", ".attention.to_out.0."), None)]
+                if name.endswith(".attention.q_norm.weight"):
+                    return [(name.replace(".attention.q_norm.", ".attention.norm_q."), None)]
+                if name.endswith(".attention.q_norm.bias"):
+                    return [(name.replace(".attention.q_norm.", ".attention.norm_q."), None)]
+                if name.endswith(".attention.k_norm.weight"):
+                    return [(name.replace(".attention.k_norm.", ".attention.norm_k."), None)]
+                if name.endswith(".attention.k_norm.bias"):
+                    return [(name.replace(".attention.k_norm.", ".attention.norm_k."), None)]
+                    
             return [(name, None)]
         logger.info("[GGUFSeeker] Z-Image key naming detected — remapping to Diffusers convention.")
         return _remap
