@@ -230,13 +230,25 @@ _COMFY_FLUX_KEY_MAP = {
         ("transformer_blocks.{i}.attn.to_k.weight", 1, 3),
         ("transformer_blocks.{i}.attn.to_v.weight", 2, 3),
     ],
+    "double_blocks.{i}.img_attn.qkv.bias": [
+        ("transformer_blocks.{i}.attn.to_q.bias", 0, 3),
+        ("transformer_blocks.{i}.attn.to_k.bias", 1, 3),
+        ("transformer_blocks.{i}.attn.to_v.bias", 2, 3),
+    ],
     "double_blocks.{i}.txt_attn.qkv.weight": [
         ("transformer_blocks.{i}.attn.add_q_proj.weight", 0, 3),
         ("transformer_blocks.{i}.attn.add_k_proj.weight", 1, 3),
         ("transformer_blocks.{i}.attn.add_v_proj.weight", 2, 3),
     ],
+    "double_blocks.{i}.txt_attn.qkv.bias": [
+        ("transformer_blocks.{i}.attn.add_q_proj.bias", 0, 3),
+        ("transformer_blocks.{i}.attn.add_k_proj.bias", 1, 3),
+        ("transformer_blocks.{i}.attn.add_v_proj.bias", 2, 3),
+    ],
     "double_blocks.{i}.img_attn.proj.weight": "transformer_blocks.{i}.attn.to_out.0.weight",
+    "double_blocks.{i}.img_attn.proj.bias": "transformer_blocks.{i}.attn.to_out.0.bias",
     "double_blocks.{i}.txt_attn.proj.weight": "transformer_blocks.{i}.attn.to_add_out.weight",
+    "double_blocks.{i}.txt_attn.proj.bias": "transformer_blocks.{i}.attn.to_add_out.bias",
     "double_blocks.{i}.img_mlp.0.weight": "transformer_blocks.{i}.ff.linear_in.weight",
     "double_blocks.{i}.img_mlp.0.bias": "transformer_blocks.{i}.ff.linear_in.bias",
     "double_blocks.{i}.img_mlp.2.weight": "transformer_blocks.{i}.ff.linear_out.weight",
@@ -258,7 +270,9 @@ _COMFY_FLUX_KEY_MAP = {
 
     # Single blocks
     "single_blocks.{i}.linear1.weight": "single_transformer_blocks.{i}.attn.to_qkv_mlp_proj.weight",
+    "single_blocks.{i}.linear1.bias": "single_transformer_blocks.{i}.attn.to_qkv_mlp_proj.bias",
     "single_blocks.{i}.linear2.weight": "single_transformer_blocks.{i}.attn.to_out.weight",
+    "single_blocks.{i}.linear2.bias": "single_transformer_blocks.{i}.attn.to_out.bias",
     "single_blocks.{i}.modulation.lin.weight": "single_transformer_blocks.{i}.norm.linear.weight",
     "single_blocks.{i}.modulation.lin.bias": "single_transformer_blocks.{i}.norm.linear.bias",
     "single_blocks.{i}.norm.key_norm.scale": "single_transformer_blocks.{i}.attn.norm_k.weight",
