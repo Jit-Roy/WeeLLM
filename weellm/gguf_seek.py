@@ -591,6 +591,13 @@ class GGUFSeeker:
                 # Split along dim 0
                 chunk_size = t.shape[0] // total_splits
                 t = t[split_idx * chunk_size : (split_idx + 1) * chunk_size, ...]
+                
+            # --- Z-Image specific fix for patch embedder ---
+            if orig_name == "x_embedder.weight" and t.dim() == 2 and t.size(1) == 64:
+                # GGUF was exported from Conv2d layout (out, 16, 2, 2)
+                # Diffusers Linear expects (out, 2, 2, 16)
+                out_ch = t.size(0)
+                t = t.view(out_ch, 16, 2, 2).permute(0, 2, 3, 1).reshape(out_ch, 64)
 
             # Need to clone if sliced, otherwise it keeps the whole tensor in memory!
             if slice_info is not None:
