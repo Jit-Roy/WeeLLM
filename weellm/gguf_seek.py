@@ -412,7 +412,7 @@ def _build_remap_fn(gguf_keys: List[str], arch: str = "unknown"):
         logger.info("[GGUFSeeker] SDXL ComfyUI key naming detected — remapping to Diffusers convention (condensed).")
         return _remap
 
-    # Check if ComfyUI format
+    # Check if FLUX ComfyUI format
     elif any(k.startswith("double_blocks.") for k in gguf_keys):
         max_i = 0
         for k in gguf_keys:
@@ -433,6 +433,17 @@ def _build_remap_fn(gguf_keys: List[str], arch: str = "unknown"):
         def _remap(name: str):
             return remap.get(name, [(name, None)])
         logger.info("[GGUFSeeker] ComfyUI key naming detected — remapping to Diffusers convention.")
+        return _remap
+
+    # Check if Z-Image format
+    elif any(k.startswith("context_refiner.") for k in gguf_keys) or any(k.startswith("noise_refiner.") for k in gguf_keys):
+        def _remap(name: str):
+            if name.startswith("x_embedder."):
+                return [(name.replace("x_embedder.", "all_x_embedder.2-1."), None)]
+            if name.startswith("final_layer."):
+                return [(name.replace("final_layer.", "all_final_layer.2-1."), None)]
+            return [(name, None)]
+        logger.info("[GGUFSeeker] Z-Image key naming detected — remapping to Diffusers convention.")
         return _remap
 
     else:
