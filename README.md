@@ -75,7 +75,12 @@ WeeLLM dynamically streams transformer layers to the GPU for massive models. Ins
 
 ## Image Edit Models
 
-- Sdxl Img To Img
+- SDXL Img2Img
+- SD 1.5 Img2Img
+- SD 2.1 Img2Img
+- SD 3 Medium Img2Img
+- SD 3.5 Medium Img2Img
+- SD 3.5 Large Img2Img
 - Flux.1 Kontext 
 - Flux.1 Fill Dev
 - Flux.2 Klein 4B

@@ -57,6 +57,21 @@ def place_tensors(
         with the model's attribute names.
     """
     for name, tensor in state_dict.items():
+        # Diffusers FLUX FeedForward fallback (linear_in -> net.0.proj, linear_out -> net.2)
+        alt_name = None
+        if ".linear_in." in name:
+            alt_name = name.replace(".linear_in.", ".net.0.proj.")
+        elif ".linear_out." in name:
+            alt_name = name.replace(".linear_out.", ".net.2.")
+            
+        if alt_name:
+            try:
+                obj = model
+                for attr in name.split(".")[:-1]:
+                    obj = getattr(obj, attr)
+            except AttributeError:
+                name = alt_name
+
         try:
             # Handle Conv2d (1x1) <-> Linear shape mismatches for Diffusers architectures
             try:
