@@ -271,8 +271,8 @@ _COMFY_FLUX_KEY_MAP = {
     # Single blocks
     "single_blocks.{i}.linear1.weight": "single_transformer_blocks.{i}.attn.to_qkv_mlp_proj.weight",
     "single_blocks.{i}.linear1.bias": "single_transformer_blocks.{i}.attn.to_qkv_mlp_proj.bias",
-    "single_blocks.{i}.linear2.weight": "single_transformer_blocks.{i}.proj_out.weight",
-    "single_blocks.{i}.linear2.bias": "single_transformer_blocks.{i}.proj_out.bias",
+    "single_blocks.{i}.linear2.weight": "single_transformer_blocks.{i}.attn.to_out.weight",
+    "single_blocks.{i}.linear2.bias": "single_transformer_blocks.{i}.attn.to_out.bias",
     "single_blocks.{i}.modulation.lin.weight": "single_transformer_blocks.{i}.norm.linear.weight",
     "single_blocks.{i}.modulation.lin.bias": "single_transformer_blocks.{i}.norm.linear.bias",
     "single_blocks.{i}.norm.key_norm.scale": "single_transformer_blocks.{i}.attn.norm_k.weight",

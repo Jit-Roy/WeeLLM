@@ -59,26 +59,39 @@ def place_tensors(
     for name, tensor in state_dict.items():
         if ".attn.to_qkv_mlp_proj." in name:
             base_name = name.split(".attn.to_qkv_mlp_proj.")[0]
-            is_weight = name.endswith(".weight")
-            suffix = ".weight" if is_weight else ".bias"
-            dim = tensor.shape[1] if is_weight else tensor.shape[0] // 7
             
-            q = tensor[:dim, ...]
-            k = tensor[dim:2*dim, ...]
-            v = tensor[2*dim:3*dim, ...]
-            mlp = tensor[3*dim:, ...]
-            
-            for part_name, part_tensor in [
-                (base_name + ".attn.to_q" + suffix, q),
-                (base_name + ".attn.to_k" + suffix, k),
-                (base_name + ".attn.to_v" + suffix, v),
-                (base_name + ".proj_mlp" + suffix, mlp)
-            ]:
-                if part_tensor.is_floating_point():
-                    set_module_tensor_to_device(model, part_name, device, value=part_tensor, dtype=dtype)
-                else:
-                    set_module_tensor_to_device(model, part_name, device, value=part_tensor)
-            continue
+            # Check if the target actually has to_qkv_mlp_proj. If it does, we don't split! (e.g. FLUX.2-klein)
+            needs_split = True
+            try:
+                obj = model
+                for attr in (base_name + ".attn").split("."):
+                    obj = getattr(obj, attr)
+                if hasattr(obj, "to_qkv_mlp_proj"):
+                    needs_split = False
+            except AttributeError:
+                pass
+                
+            if needs_split:
+                is_weight = name.endswith(".weight")
+                suffix = ".weight" if is_weight else ".bias"
+                dim = tensor.shape[1] if is_weight else tensor.shape[0] // 7
+                
+                q = tensor[:dim, ...]
+                k = tensor[dim:2*dim, ...]
+                v = tensor[2*dim:3*dim, ...]
+                mlp = tensor[3*dim:, ...]
+                
+                for part_name, part_tensor in [
+                    (base_name + ".attn.to_q" + suffix, q),
+                    (base_name + ".attn.to_k" + suffix, k),
+                    (base_name + ".attn.to_v" + suffix, v),
+                    (base_name + ".proj_mlp" + suffix, mlp)
+                ]:
+                    if part_tensor.is_floating_point():
+                        set_module_tensor_to_device(model, part_name, device, value=part_tensor, dtype=dtype)
+                    else:
+                        set_module_tensor_to_device(model, part_name, device, value=part_tensor)
+                continue
             
 
         # Diffusers FLUX FeedForward fallback (linear_in -> net.0.proj, linear_out -> net.2)
@@ -87,6 +100,8 @@ def place_tensors(
             alt_name = name.replace(".linear_in.", ".net.0.proj.")
         elif ".linear_out." in name:
             alt_name = name.replace(".linear_out.", ".net.2.")
+        elif ".attn.to_out." in name:
+            alt_name = name.replace(".attn.to_out.", ".proj_out.")
             
         if alt_name:
             try:
