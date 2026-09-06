@@ -695,6 +695,10 @@ class GGUFSeeker:
             if slice_info is not None:
                 t = t.clone()
 
+            # Krea2 scale_shift_table requires 2D shape [6, dim] but is flattened to 1D in GGUF
+            if key.endswith("scale_shift_table") and t.dim() == 1:
+                t = t.reshape(6, -1)
+
             # Apply swap_scale_shift for tensors whose output halves are stored
             # in [scale | shift] order in the original BFL/GGUF format but must
             # be [shift | scale] for the diffusers model (norm_out.linear, etc.).
