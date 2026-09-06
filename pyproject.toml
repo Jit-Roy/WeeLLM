@@ -24,15 +24,15 @@ classifiers = [
 dependencies = [
     "torch>=2.1.0",
     "torchvision",
-    "diffusers>=0.37.0",
+    "diffusers @ git+https://github.com/huggingface/diffusers.git@665f578278365ea4a3318cb8c9b66ce6c01204b9",
     "transformers>=4.50.0",
     "accelerate>=0.30.0",
     "safetensors>=0.4.0",
+    "numpy>=1.24.0",
+    "huggingface_hub>=0.20.0",
     "Pillow>=10.0.0",
     "tqdm>=4.65.0",
     "psutil>=5.9.0",
-    "numpy>=1.24.0",
-    "huggingface_hub>=0.20.0",
     "gguf>=0.13.0",
 ]
 
