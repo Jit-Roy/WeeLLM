@@ -500,6 +500,7 @@ class GGUFSeeker:
         self._tensor_meta: Dict[str, Tuple] = {}
         raw_names = [t.name for t in self._reader.tensors]
         
+        self.is_flux_format = any(k.startswith("double_blocks.") for k in raw_names)
         arch = self._get_arch()
         remap = _build_remap_fn(raw_names, arch)
 
@@ -599,7 +600,7 @@ class GGUFSeeker:
             # Apply swap_scale_shift for tensors whose output halves are stored
             # in [scale | shift] order in the original BFL/GGUF format but must
             # be [shift | scale] for the diffusers model (norm_out.linear, etc.).
-            if False and orig_name in _SWAP_SCALE_SHIFT_GGUF_KEYS:
+            if self.is_flux_format and orig_name in _SWAP_SCALE_SHIFT_GGUF_KEYS:
                 half = t.shape[0] // 2
                 t = torch.cat([t[half:], t[:half]], dim=0).contiguous()
 
