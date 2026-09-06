@@ -10,7 +10,7 @@
 
 # Layer-streaming inference for large diffusion models — Under 4 GB VRAM, no quantization
 
-WeeLLM dynamically streams transformer layers to the GPU for massive models. Instead of forcing the entire model into VRAM, it intelligently pins as many blocks as your hardware allows, and seamlessly streams the rest layer-by-layer in the background — enabling massive models to run smoothly on budgets as low as 4GB VRAM.
+WeeLLM dynamically streams text encoder and transformer layers to the GPU for massive models. Instead of forcing the entire model into VRAM, it intelligently pins as many blocks as your hardware allows, and seamlessly streams the rest layer-by-layer in the background — enabling massive models to run smoothly on budgets as low as 4GB VRAM.
 
 ---
 
