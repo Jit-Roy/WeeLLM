@@ -8,8 +8,7 @@ torch>=2.1.0
 torchvision
 
 # Diffusers + transformers
-diffusers @ git+https://github.com/huggingface/diffusers.git@665f578278365ea4a3318cb8c9b66ce6c01204b9
-# diffusers>=0.37.0
+diffusers>=0.40.0
 transformers>=4.50.0
 accelerate>=0.30.0
 
