@@ -988,3 +988,22 @@ class WeeBasePipeline:
                 return res
 
             pipeline.vae.decode = types.MethodType(defrag_vae_decode, pipeline.vae)
+
+        # VRAM defrag: evict TE before lazy VAE encode (critical for Img2Img/Edit)
+        if hasattr(pipeline, "vae") and hasattr(pipeline.vae, "encode"):
+            original_vae_encode_vram = pipeline.vae.encode
+
+            def defrag_vae_encode(self_obj, *args, **kwargs):
+                report_memory("Before VAE Encode (Before GC)")
+                gc.collect()
+                if cuda_available:
+                    torch.cuda.empty_cache()
+                
+                # Force TE eviction BEFORE VAE encode
+                if tr_module is not None:
+                    _evict_te_before_unet(tr_module, None)
+                
+                res = original_vae_encode_vram(*args, **kwargs)
+                return res
+            
+            pipeline.vae.encode = types.MethodType(defrag_vae_encode, pipeline.vae)
