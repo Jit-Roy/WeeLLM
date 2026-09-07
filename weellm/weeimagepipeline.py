@@ -49,28 +49,7 @@ class WeeImagePipeline(WeeBasePipeline):
         sig = inspect.signature(self._pipeline.__call__)
         supported_kwargs = set(sig.parameters.keys())
         
-        # Auto-fix image dimensions (diffusers pipelines often require multiples of 64
-        # and tend to squish images to default 1024x1024 if width/height are omitted)
-        if "image" in kwargs and kwargs["image"] is not None:
-            img = kwargs["image"]
-            if isinstance(img, Image.Image):
-                w, h = img.size
-                
-                # Flux Fill supports multiples of 16, others strictly require 64
-                divisor = 16 if self._pipeline.__class__.__name__ == "FluxFillPipeline" else 64
-                new_w = max(divisor, (w // divisor) * divisor)
-                new_h = max(divisor, (h // divisor) * divisor)
-                
-                if w != new_w or h != new_h:
-                    logger.info("  [WeeLLM] Auto-resizing input image from %dx%d to %dx%d (must be multiple of %d)", w, h, new_w, new_h, divisor)
-                    img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-                    kwargs["image"] = img
-                
-                # Force pipeline to respect image dimensions instead of falling back to default squares
-                if "height" not in kwargs and "height" in supported_kwargs:
-                    kwargs["height"] = new_h
-                if "width" not in kwargs and "width" in supported_kwargs:
-                    kwargs["width"] = new_w
+        # (Image dimension auto-fixing and _auto_resize disabling are now safely handled by WeeBasePipeline.__call__)
 
         filtered_kwargs = {}
         for k, v in kwargs.items():
@@ -79,7 +58,7 @@ class WeeImagePipeline(WeeBasePipeline):
             else:
                 logger.debug("  [WeeLLM] Ignoring unsupported kwarg '%s' for %s", k, self._pipeline.__class__.__name__)
                 
-        return self._pipeline(*args, **filtered_kwargs)
+        return super().__call__(*args, **filtered_kwargs)
 
     def generate(self, prompt: str, image: Image.Image, **kwargs):
         """

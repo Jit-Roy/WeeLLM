@@ -143,10 +143,42 @@ class WeeBasePipeline:
             kwargs["use_pe"] = False
             
         import inspect
-        if "enable_prompt_rewrite" in inspect.signature(self._pipeline.__call__).parameters:
+        sig = inspect.signature(self._pipeline.__call__)
+        if "enable_prompt_rewrite" in sig.parameters:
             if kwargs.get("enable_prompt_rewrite", True):
                 logger.info("[WeeLLM] Disabling 'enable_prompt_rewrite' to prevent slow autoregressive generation.")
                 kwargs["enable_prompt_rewrite"] = False
+
+        if "image" in kwargs and kwargs["image"] is not None:
+            import PIL.Image
+            img = kwargs["image"]
+            if isinstance(img, list):
+                img = img[0]
+            if isinstance(img, PIL.Image.Image):
+                w, h = img.size
+                divisor = 16 if "Flux" in self._pipeline.__class__.__name__ else 64
+                new_w = max(divisor, (w // divisor) * divisor)
+                new_h = max(divisor, (h // divisor) * divisor)
+                
+                if w != new_w or h != new_h:
+                    logger.info("[WeeLLM] Auto-resizing input image from %dx%d to %dx%d (must be multiple of %d)", w, h, new_w, new_h, divisor)
+                    img = img.resize((new_w, new_h), PIL.Image.Resampling.LANCZOS)
+                    if isinstance(kwargs["image"], list):
+                        kwargs["image"][0] = img
+                    else:
+                        kwargs["image"] = img
+                
+                if "height" not in kwargs and "height" in sig.parameters:
+                    logger.debug(f"[WeeLLM] Auto-setting height={new_h} from input image.")
+                    kwargs["height"] = new_h
+                if "width" not in kwargs and "width" in sig.parameters:
+                    logger.debug(f"[WeeLLM] Auto-setting width={new_w} from input image.")
+                    kwargs["width"] = new_w
+                
+        if "_auto_resize" in sig.parameters:
+            if kwargs.get("_auto_resize", True):
+                logger.info("[WeeLLM] Disabling '_auto_resize' to prevent catastrophic sequence length OOMs on 4GB GPUs.")
+                kwargs["_auto_resize"] = False
                 
         try:
             return self._pipeline(*args, **kwargs)
