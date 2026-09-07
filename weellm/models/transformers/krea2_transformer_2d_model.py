@@ -312,6 +312,11 @@ def _apply_krea2_runtime_patches() -> None:
         if model_dtype is not None and model_dtype != torch.float32:
             hidden_states = hidden_states.to(dtype=model_dtype)
             encoder_hidden_states = encoder_hidden_states.to(dtype=model_dtype)
+            
+        hidden_states = hidden_states.clone()
+        if encoder_hidden_states is not None:
+            encoder_hidden_states = encoder_hidden_states.clone()
+            
         return orig_transformer_forward(self, hidden_states, encoder_hidden_states, *args, **kwargs)
 
     Krea2Transformer2DModel.forward = patched_transformer_forward
