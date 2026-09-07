@@ -3,9 +3,16 @@ WeeLLM — Layer-streaming inference for large diffusion models.
 
 Public API
 ----------
-WeePipeline
-    Universal pipeline builder. Use :meth:`WeePipeline.from_pretrained` to
-    create a native diffusers pipeline with WeeLLM streamers injected.
+WeeTextToImagePipeline
+    Pipeline for text-to-image generation.
+    Use :meth:`WeeTextToImagePipeline.from_pretrained` to create a native
+    diffusers pipeline with WeeLLM streamers injected.
+
+WeeImageToImagePipeline
+    Pipeline for image-to-image editing.
+
+WeeVideoPipeline
+    Pipeline for video generation.
 
 Model streamers (for advanced / direct use):
     LazyVAEStreamer
@@ -21,8 +28,12 @@ import logging
 
 __version__ = "0.1.0"
 __all__ = [
-    # Core pipeline
+    # Core pipelines
     "WeeBasePipeline",
+    "WeeTextToImagePipeline",
+    "WeeImageToImagePipeline",
+    "WeeVideoPipeline",
+    # Backward-compat aliases
     "WeePipeline",
     "WeeImagePipeline",
     # VAE
@@ -46,9 +57,10 @@ __all__ = [
 # Applications that want output should configure their own handlers.
 logging.getLogger("weellm").addHandler(logging.NullHandler())
 
-from .pipeline import WeeBasePipeline  # noqa: E402
-from .weepipeline import WeePipeline  # noqa: E402
-from .weeimagepipeline import WeeImagePipeline  # noqa: E402
+from .weebasepipeline import WeeBasePipeline  # noqa: E402
+from .weetexttoimagepipeline import WeeTextToImagePipeline, WeePipeline  # noqa: E402
+from .weeimagetoimagepipeline import WeeImageToImagePipeline, WeeImagePipeline  # noqa: E402
+from .weevideopipeline import WeeVideoPipeline  # noqa: E402
 
 # VAE
 from .models.vaes.lazy_vae import LazyVAEStreamer  # noqa: E402

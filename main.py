@@ -317,14 +317,14 @@ def main() -> int:
             return 1
         
     if is_video:
-        from weellm.weevideopipeline import WeeVideoPipeline as PipelineClass
+        from weellm import WeeVideoPipeline as PipelineClass
         if input_image is not None:
             logger.info("  Mode:     Text-to-Video (Video Model) (With Start Image)")
     elif input_image is not None:
-        from weellm import WeeImagePipeline as PipelineClass
+        from weellm import WeeImageToImagePipeline as PipelineClass
         logger.info("  Mode:     Image-to-Image / Edit (Input: %s)", args.image)
     else:
-        from weellm.weepipeline import WeePipeline as PipelineClass
+        from weellm import WeeTextToImagePipeline as PipelineClass
         logger.info("  Mode:     Text-to-Image")
 
     t_load = time.time()

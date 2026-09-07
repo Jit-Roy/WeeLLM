@@ -11,7 +11,7 @@ import inspect
 import logging
 import importlib
 
-from weellm.pipeline import WeeBasePipeline
+from weellm.weebasepipeline import WeeBasePipeline
 
 logger = logging.getLogger("weellm")
 

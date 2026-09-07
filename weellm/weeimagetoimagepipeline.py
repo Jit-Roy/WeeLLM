@@ -1,5 +1,5 @@
 """
-weeimagepipeline.py -- WeePipeline for Image-to-Image and Image Editing.
+weeimagetoimagepipeline.py -- WeeImageToImagePipeline for Image-to-Image and Image Editing.
 """
 
 from typing import Optional
@@ -7,7 +7,7 @@ import torch
 import logging
 from PIL import Image
 
-from weellm.pipeline import WeeBasePipeline
+from weellm.weebasepipeline import WeeBasePipeline
 
 logger = logging.getLogger("weellm")
 
@@ -21,9 +21,9 @@ IMG2IMG_MAPPING = {
     "Flux2KleinPipeline": "Flux2KleinPipeline", 
 }
 
-class WeeImagePipeline(WeeBasePipeline):
+class WeeImageToImagePipeline(WeeBasePipeline):
     """
-    Image-to-Image WeePipeline.
+    Image-to-Image WeeImageToImagePipeline.
     """
     
     @classmethod
@@ -94,3 +94,7 @@ class WeeImagePipeline(WeeBasePipeline):
         if hasattr(out, "images"):
             return out.images[0]
         return out[0][0]
+
+
+# Backward-compat alias so any code still importing WeeImagePipeline doesn't break.
+WeeImagePipeline = WeeImageToImagePipeline

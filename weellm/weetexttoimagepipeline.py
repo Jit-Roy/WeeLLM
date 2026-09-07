@@ -1,18 +1,18 @@
 """
-weepipeline.py -- WeePipeline for Text-to-Image generation.
+weetexttoimagepipeline.py -- WeeTextToImagePipeline for Text-to-Image generation.
 """
 
 from typing import Optional
 import torch
 import logging
 
-from weellm.pipeline import WeeBasePipeline
+from weellm.weebasepipeline import WeeBasePipeline
 
 logger = logging.getLogger("weellm")
 
-class WeePipeline(WeeBasePipeline):
+class WeeTextToImagePipeline(WeeBasePipeline):
     """
-    Text-to-Image WeePipeline.
+    Text-to-Image WeeTextToImagePipeline.
     """
     
     @classmethod
@@ -53,3 +53,7 @@ class WeePipeline(WeeBasePipeline):
         if hasattr(out, "images"):
             return out.images[0]
         return out[0][0]
+
+
+# Backward-compat alias so any code still importing WeePipeline doesn't break.
+WeePipeline = WeeTextToImagePipeline
