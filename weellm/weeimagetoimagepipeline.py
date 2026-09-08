@@ -45,6 +45,12 @@ class WeeImageToImagePipeline(WeeBasePipeline):
         Forward calls to the underlying diffusers pipeline while filtering
         out unsupported kwargs using introspection.
         """
+        if kwargs.get("image") is None:
+            raise ValueError(
+                "[WeeLLM] WeeImageToImagePipeline requires an `image` argument. "
+                "Use WeeTextToImagePipeline for text-only generation."
+            )
+
         import inspect
         sig = inspect.signature(self._pipeline.__call__)
         supported_kwargs = set(sig.parameters.keys())

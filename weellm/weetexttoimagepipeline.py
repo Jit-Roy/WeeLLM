@@ -14,7 +14,14 @@ class WeeTextToImagePipeline(WeeBasePipeline):
     """
     Text-to-Image WeeTextToImagePipeline.
     """
-    
+    def __call__(self, *args, **kwargs):
+        if kwargs.get("image") is not None:
+            raise ValueError(
+                "[WeeLLM] You passed an `image` to WeeTextToImagePipeline, which is a text-to-image pipeline. "
+                "Use WeeImageToImagePipeline for image-to-image or image editing tasks."
+            )
+        return super().__call__(*args, **kwargs)
+
     @classmethod
     def _get_diffusers_pipeline_class(cls, index: dict) -> str:
         pipeline_class_name = index.get("_class_name")
