@@ -19,6 +19,7 @@ IMG2IMG_MAPPING = {
     "HiDreamImagePipeline": "HiDreamImageEditingPipeline",
     "FluxPipeline": "FluxImg2ImgPipeline",
     "Flux2KleinPipeline": "Flux2KleinPipeline", 
+    "FluxFillPipeline": "FluxFillPipeline",
 }
 
 class WeeImageToImagePipeline(WeeBasePipeline):
@@ -34,8 +35,12 @@ class WeeImageToImagePipeline(WeeBasePipeline):
             
         if base_class_name in IMG2IMG_MAPPING:
             mapped_class = IMG2IMG_MAPPING[base_class_name]
-            logger.info("  [WeeLLM] Mapping base pipeline '%s' to native image pipeline '%s'", base_class_name, mapped_class)
+            if mapped_class != base_class_name:
+                logger.info("  [WeeLLM] Mapping base pipeline '%s' to native image pipeline '%s'", base_class_name, mapped_class)
             return mapped_class
+            
+        if "Img2Img" in base_class_name or "Fill" in base_class_name or "Inpaint" in base_class_name:
+            return base_class_name
             
         logger.warning("  [WeeLLM] No specific Img2Img mapping found for '%s', using base pipeline.", base_class_name)
         return base_class_name
