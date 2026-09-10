@@ -23,6 +23,7 @@ from weellm.gguf_keymaps.sdxl   import SDXLKeyMap
 from weellm.gguf_keymaps.sd15   import SD15KeyMap
 from weellm.gguf_keymaps.krea2  import Krea2KeyMap
 from weellm.gguf_keymaps.zimage import ZImageKeyMap
+from weellm.gguf_keymaps.minimax_h3 import MiniMaxH3KeyMap
 
 logger = logging.getLogger("weellm")
 
@@ -35,6 +36,7 @@ _REGISTRY = [
     SD15KeyMap,     # model.diffusion_model.* (no SDXL markers)
     Krea2KeyMap,    # txtfusion.* or blocks.0.attn.qknorm.*
     ZImageKeyMap,   # context_refiner.* / noise_refiner.*
+    MiniMaxH3KeyMap, # blocks.* (MiniMax H3 checkpoint convention)
 ]
 
 
@@ -74,4 +76,5 @@ __all__ = [
     "SD15KeyMap",
     "Krea2KeyMap",
     "ZImageKeyMap",
+    "MiniMaxH3KeyMap",
 ]

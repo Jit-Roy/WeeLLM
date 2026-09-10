@@ -76,8 +76,27 @@ def _remap_ckpt_key(ckpt_key: str) -> str:
 class MiniMaxH3DiTModelStreamer(BaseTransformerStreamer):
     """
     Wraps MiniMaxH3DiTModel for memory-efficient streaming.
-    Streams directly from original Hugging Face safetensors shards via live seek.
+    Streams directly from original Hugging Face safetensors shards via live seek,
+    OR from a GGUF quantized file (pass gguf_path to from_pretrained).
+
+    Safetensors mode:
+      - seeker.weight_map uses original MiniMax checkpoint keys (e.g. 'blocks.0.*')
+      - _get_layer_keys() translates diffusers shard name -> checkpoint prefix
+      - apply_state_dict() remaps checkpoint -> diffusers + splits fused QKV
+
+    GGUF mode:
+      - GGUFSeeker applies the MiniMaxH3KeyMap during __init__
+      - seeker.weight_map already uses diffusers key names (e.g. 'transformer_blocks.0.*')
+      - _get_layer_keys() uses diffusers prefix directly (no translation needed)
+      - apply_state_dict() is a no-op remap since keys are already diffusers-named,
+        but still handles the fused QKV split (encoded as slice_info in GGUFSeeker)
     """
+
+    @property
+    def _is_gguf(self) -> bool:
+        """True when the backing seeker is a GGUFSeeker."""
+        from weellm.gguf_seek import GGUFSeeker
+        return isinstance(self.seeker, GGUFSeeker)
 
     def _get_shard_order(self) -> List[Tuple[str, nn.Module]]:
         """Returns list of (diffusers_prefix, block_module) for streaming blocks."""
@@ -88,32 +107,46 @@ class MiniMaxH3DiTModelStreamer(BaseTransformerStreamer):
         return order
 
     def _get_resident_ckpt_keys(self) -> List[str]:
-        """Returns checkpoint keys (original MiniMax names) for non-streaming tensors."""
+        """Returns seeker weight-map keys for non-streaming (resident) tensors.
+
+        In safetensors mode: filters checkpoint keys (those not starting with 'blocks.')
+        In GGUF mode: filters diffusers keys (those not starting with 'transformer_blocks.')
+        """
+        if self._is_gguf:
+            # GGUFSeeker weight_map is already in diffusers naming
+            return [
+                k for k in self.seeker.weight_map
+                if not k.startswith("transformer_blocks.")
+            ]
         return [
             k for k in self.seeker.weight_map
             if not k.startswith("blocks.")  # 'blocks.' is the ckpt prefix for transformer_blocks
         ]
 
     def _get_resident_keys(self) -> List[str]:
-        """Alias expected by base class — uses ckpt keys."""
+        """Alias expected by base class."""
         return self._get_resident_ckpt_keys()
 
     def _ckpt_shard_name(self, diffusers_shard_name: str) -> str:
-        """Translate a diffusers shard name → checkpoint shard name for seeker lookups.
-
-        The seeker's weight_map uses original MiniMax checkpoint keys (e.g. 'blocks.0'),
-        but _get_shard_order() returns diffusers names ('transformer_blocks.0').
-        This reversal is needed in _get_layer_keys so the streaming pre-hook can
-        find the right tensors in the seeker.
-        """
-        # Reverse the blocks.→transformer_blocks. mapping
+        """Translate a diffusers shard name -> checkpoint shard name for safetensors seeker."""
         if diffusers_shard_name.startswith("transformer_blocks."):
             idx = diffusers_shard_name[len("transformer_blocks."):]
             return f"blocks.{idx}"
         return diffusers_shard_name
 
     def _get_layer_keys(self, shard_name: str) -> List[str]:
-        """Return seeker weight-map keys for this shard (using checkpoint naming)."""
+        """Return seeker weight-map keys for this shard.
+
+        In safetensors mode: translates diffusers shard name -> checkpoint prefix.
+        In GGUF mode: GGUFSeeker weight_map already uses diffusers naming, so
+                      we search directly by diffusers prefix.
+        """
+        if self._is_gguf:
+            # shard_name is already a diffusers prefix (e.g. 'transformer_blocks.0')
+            return [
+                k for k in self.seeker.weight_map
+                if k.startswith(shard_name + ".")
+            ]
         ckpt_name = self._ckpt_shard_name(shard_name)
         return [
             k for k in self.seeker.weight_map
@@ -121,52 +154,60 @@ class MiniMaxH3DiTModelStreamer(BaseTransformerStreamer):
         ]
 
     def apply_state_dict(self, state_dict: Dict[str, torch.Tensor], skip_errors: bool = False) -> None:
-        """Remap checkpoint keys → diffusers names, then split fused qkv → to_q/k/v before placement."""
+        """Remap keys -> diffusers names, then apply tensor transforms before placement.
+
+        In safetensors mode: applies _remap_ckpt_key + all sub-key renames + QKV split.
+        In GGUF mode: keys are already diffusers-named (GGUFSeeker applied keymap).
+                      Only the mlp.fc1 gate/value swap needs to happen here.
+        """
         from weellm.memory import place_tensors
 
+        is_gguf = self._is_gguf
         remapped: Dict[str, torch.Tensor] = {}
         for ck, tensor in state_dict.items():
-            dk = _remap_ckpt_key(ck)  # prefix remap (blocks.X → transformer_blocks.X etc.)
+            # GGUF: keys already remapped; safetensors: apply checkpoint -> diffusers prefix remap
+            dk = ck if is_gguf else _remap_ckpt_key(ck)
 
-            # Split fused qkv_proj weight/bias into separate to_q / to_k / to_v
-            if dk.endswith(".attn.qkv_proj.weight"):
-                prefix = dk[: -len("qkv_proj.weight")]
-                # Raw weights are interleaved; we must reorder them to [q_all, k_all, v_all]
-                num_heads = self.model.config.num_attention_heads
-                head_dim = self.model.config.attention_head_dim
-                tensor = reorder_interleaved_qkv(tensor, num_heads, head_dim)
-                dim = tensor.shape[0] // 3
-                remapped[prefix + "to_q.weight"] = tensor[:dim].contiguous()
-                remapped[prefix + "to_k.weight"] = tensor[dim : 2 * dim].contiguous()
-                remapped[prefix + "to_v.weight"] = tensor[2 * dim :].contiguous()
-            elif dk.endswith(".attn.qkv_proj.bias"):
-                prefix = dk[: -len("qkv_proj.bias")]
-                dim = tensor.shape[0] // 3
-                remapped[prefix + "to_q.bias"] = tensor[:dim].contiguous()
-                remapped[prefix + "to_k.bias"] = tensor[dim : 2 * dim].contiguous()
-                remapped[prefix + "to_v.bias"] = tensor[2 * dim :].contiguous()
-            # Rename out_proj → to_out.0
-            elif ".attn.out_proj." in dk:
-                dk = dk.replace(".attn.out_proj.", ".attn.to_out.0.")
-                remapped[dk] = tensor
-            # Rename norm keys: q_norm/k_norm → norm_q/norm_k
-            elif ".attn.q_norm." in dk:
-                dk = dk.replace(".attn.q_norm.", ".attn.norm_q.")
-                remapped[dk] = tensor
-            elif ".attn.k_norm." in dk:
-                dk = dk.replace(".attn.k_norm.", ".attn.norm_k.")
-                remapped[dk] = tensor
-            # Rename mlp: fc1→ff.net.0.proj, fc2→ff.net.2
-            elif ".mlp.fc1." in dk:
-                gate, value = tensor.chunk(2, dim=0)
-                remapped[dk.replace(".mlp.fc1.", ".ff.net.0.proj.")] = torch.cat([value, gate], dim=0).contiguous()
-            elif ".mlp.fc2." in dk:
-                dk = dk.replace(".mlp.fc2.", ".ff.net.2.")
-                remapped[dk] = tensor
+            if not is_gguf:
+                # Split fused qkv_proj -> to_q/k/v (safetensors only; GGUF uses slice_info)
+                if dk.endswith(".attn.qkv_proj.weight"):
+                    prefix = dk[: -len("qkv_proj.weight")]
+                    num_heads = self.model.config.num_attention_heads
+                    head_dim = self.model.config.attention_head_dim
+                    tensor = reorder_interleaved_qkv(tensor, num_heads, head_dim)
+                    dim = tensor.shape[0] // 3
+                    remapped[prefix + "to_q.weight"] = tensor[:dim].contiguous()
+                    remapped[prefix + "to_k.weight"] = tensor[dim : 2 * dim].contiguous()
+                    remapped[prefix + "to_v.weight"] = tensor[2 * dim :].contiguous()
+                    continue
+                elif dk.endswith(".attn.qkv_proj.bias"):
+                    prefix = dk[: -len("qkv_proj.bias")]
+                    dim = tensor.shape[0] // 3
+                    remapped[prefix + "to_q.bias"] = tensor[:dim].contiguous()
+                    remapped[prefix + "to_k.bias"] = tensor[dim : 2 * dim].contiguous()
+                    remapped[prefix + "to_v.bias"] = tensor[2 * dim :].contiguous()
+                    continue
+                elif ".attn.out_proj." in dk:
+                    dk = dk.replace(".attn.out_proj.", ".attn.to_out.0.")
+                elif ".attn.q_norm." in dk:
+                    dk = dk.replace(".attn.q_norm.", ".attn.norm_q.")
+                elif ".attn.k_norm." in dk:
+                    dk = dk.replace(".attn.k_norm.", ".attn.norm_k.")
+                elif ".mlp.fc1." in dk:
+                    gate, value = tensor.chunk(2, dim=0)
+                    remapped[dk.replace(".mlp.fc1.", ".ff.net.0.proj.")] = torch.cat([value, gate], dim=0).contiguous()
+                    continue
+                elif ".mlp.fc2." in dk:
+                    dk = dk.replace(".mlp.fc2.", ".ff.net.2.")
             else:
-                remapped[dk] = tensor
+                # GGUF: MiniMaxH3KeyMap renamed fc1->ff.net.0.proj; still need gate/value swap
+                if ".ff.net.0.proj." in dk and tensor.dim() >= 1 and tensor.shape[0] > 1:
+                    gate, value = tensor.chunk(2, dim=0)
+                    remapped[dk] = torch.cat([value, gate], dim=0).contiguous()
+                    continue
 
-        from weellm.memory import place_tensors
+            remapped[dk] = tensor
+
         place_tensors(self.model, remapped, self.device, self.dtype, skip_errors=True)
 
     def _pre_hook(self, module: nn.Module, args):
@@ -189,12 +230,21 @@ class MiniMaxH3DiTModelStreamer(BaseTransformerStreamer):
         prefetch: bool = True,
         prefetch_device: Optional[str] = None,
         cache_to_ram: bool = False,
+        gguf_path: Optional[str] = None,
     ) -> "MiniMaxH3DiTModelStreamer":
         transformer_dir = Path(transformer_dir)
 
         logger.info("Step 1/3 -- Initializing LiveSeeker on MiniMax-H3 transformer weights ...")
-        seeker = get_seeker(transformer_dir, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d tensors across HF shards.", len(seeker.weight_map))
+        if gguf_path is not None:
+            from weellm.seeker import override_weights_path
+            ctx = override_weights_path(gguf_path)
+        else:
+            from contextlib import nullcontext
+            ctx = nullcontext()
+
+        with ctx:
+            seeker = get_seeker(transformer_dir, cache_to_ram=cache_to_ram)
+        logger.info("  Found %d tensors in seeker weight_map.", len(seeker.weight_map))
 
         # Step 2: Instantiate the model skeleton on meta device using from_config.
         # diffusers uses its own internal attribute names (proj_in, transformer_blocks, etc.)
@@ -213,37 +263,42 @@ class MiniMaxH3DiTModelStreamer(BaseTransformerStreamer):
         resident_ckpt_keys = streamer._get_resident_ckpt_keys()
 
         if resident_ckpt_keys:
-            # Load tensors using checkpoint key names, then apply prefix remapping
-            # to translate to diffusers attribute names. Keys that still don't match
-            # (e.g. fused qkv_proj vs split to_q/to_k/to_v) are skipped gracefully.
             raw_sd = seeker.get_tensors(resident_ckpt_keys, device=device, dtype=dtype)
-            remapped_sd = {_remap_ckpt_key(k): v for k, v in raw_sd.items()}
-            # Handle diffusers token_refiner which splits qkv_proj, renames norms, and renames mlp
-            new_remapped_sd = {}
-            for k, v in remapped_sd.items():
-                if "token_refiner" in k and "qkv_proj.weight" in k:
-                    prefix = k.replace("qkv_proj.weight", "")
-                    num_heads = model.config.num_attention_heads
-                    head_dim = model.config.attention_head_dim
-                    v = reorder_interleaved_qkv(v, num_heads, head_dim)
-                    dim = v.shape[0] // 3
-                    new_remapped_sd[prefix + "to_q.weight"] = v[:dim]
-                    new_remapped_sd[prefix + "to_k.weight"] = v[dim:2*dim]
-                    new_remapped_sd[prefix + "to_v.weight"] = v[2*dim:]
-                elif "token_refiner" in k and "q_norm" in k:
-                    new_remapped_sd[k.replace("q_norm", "norm_q")] = v
-                elif "token_refiner" in k and "k_norm" in k:
-                    new_remapped_sd[k.replace("k_norm", "norm_k")] = v
-                elif "token_refiner" in k and "out_proj" in k:
-                    new_remapped_sd[k.replace("out_proj", "to_out.0")] = v
-                elif "token_refiner" in k and "mlp.fc1" in k:
-                    gate, value = v.chunk(2, dim=0)
-                    new_remapped_sd[k.replace("mlp.fc1", "ff.net.0.proj")] = torch.cat([value, gate], dim=0).contiguous()
-                elif "token_refiner" in k and "mlp.fc2" in k:
-                    new_remapped_sd[k.replace("mlp.fc2", "ff.net.2")] = v
-                else:
-                    new_remapped_sd[k] = v
-            remapped_sd = new_remapped_sd
+
+            from weellm.gguf_seek import GGUFSeeker
+            if isinstance(seeker, GGUFSeeker):
+                # GGUF: keys in raw_sd are already in diffusers naming (GGUFSeeker applied keymap)
+                # apply_state_dict will only apply the fc1 gate/value swap.
+                remapped_sd = raw_sd
+            else:
+                # Safetensors: apply prefix remap + sub-key renames
+                remapped_sd = {_remap_ckpt_key(k): v for k, v in raw_sd.items()}
+                # Handle diffusers token_refiner which splits qkv_proj, renames norms, and renames mlp
+                new_remapped_sd = {}
+                for k, v in remapped_sd.items():
+                    if "token_refiner" in k and "qkv_proj.weight" in k:
+                        prefix = k.replace("qkv_proj.weight", "")
+                        num_heads = model.config.num_attention_heads
+                        head_dim = model.config.attention_head_dim
+                        v = reorder_interleaved_qkv(v, num_heads, head_dim)
+                        dim = v.shape[0] // 3
+                        new_remapped_sd[prefix + "to_q.weight"] = v[:dim]
+                        new_remapped_sd[prefix + "to_k.weight"] = v[dim:2*dim]
+                        new_remapped_sd[prefix + "to_v.weight"] = v[2*dim:]
+                    elif "token_refiner" in k and "q_norm" in k:
+                        new_remapped_sd[k.replace("q_norm", "norm_q")] = v
+                    elif "token_refiner" in k and "k_norm" in k:
+                        new_remapped_sd[k.replace("k_norm", "norm_k")] = v
+                    elif "token_refiner" in k and "out_proj" in k:
+                        new_remapped_sd[k.replace("out_proj", "to_out.0")] = v
+                    elif "token_refiner" in k and "mlp.fc1" in k:
+                        gate, value = v.chunk(2, dim=0)
+                        new_remapped_sd[k.replace("mlp.fc1", "ff.net.0.proj")] = torch.cat([value, gate], dim=0).contiguous()
+                    elif "token_refiner" in k and "mlp.fc2" in k:
+                        new_remapped_sd[k.replace("mlp.fc2", "ff.net.2")] = v
+                    else:
+                        new_remapped_sd[k] = v
+                remapped_sd = new_remapped_sd
 
             model_keys = {n for n, _ in model.named_parameters()}
             skipped = [k for k in remapped_sd if k not in model_keys]
