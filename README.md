@@ -183,10 +183,10 @@ python main.py \
 ### Text to Image
 
 ```python
-from weellm import WeePipeline
+from weellm import WeeTextToImagePipeline
 import torch
 
-pipe = WeePipeline.from_pretrained(
+pipe = WeeTextToImagePipeline.from_pretrained(
     "Tongyi-MAI/Z-Image-Turbo", 
     device="cuda", 
     torch_dtype=torch.bfloat16,
@@ -209,11 +209,11 @@ image.save("output.png")
 ### Text + Image to Image (Image-to-Image)
 
 ```python
-from weellm import WeePipeline
+from weellm import WeeImageToImagePipeline
 from PIL import Image
 import torch
 
-pipe = WeePipeline.from_pretrained(
+pipe = WeeImageToImagePipeline.from_pretrained(
     "black-forest-labs/FLUX.1-dev", 
     device="cuda", 
     torch_dtype=torch.bfloat16,
@@ -238,11 +238,11 @@ image.save("output_i2i.png")
 ### Text to Video
 
 ```python
-from weellm import WeePipeline
+from weellm import WeeVideoPipeline
 from weellm.utils import export_to_video
 import torch
 
-pipe = WeePipeline.from_pretrained(
+pipe = WeeVideoPipeline.from_pretrained(
     "Lightricks/LTX-Video", 
     device="cuda", 
     torch_dtype=torch.bfloat16,
@@ -265,12 +265,12 @@ export_to_video(video_frames, "output_video.mp4", fps=24)
 ### Text + Image to Video
 
 ```python
-from weellm import WeePipeline
+from weellm import WeeVideoPipeline
 from weellm.utils import export_to_video
 from PIL import Image
 import torch
 
-pipe = WeePipeline.from_pretrained(
+pipe = WeeVideoPipeline.from_pretrained(
     "Lightricks/LTX-Video", 
     device="cuda", 
     torch_dtype=torch.bfloat16,
@@ -297,10 +297,10 @@ export_to_video(video_frames, "output_i2v.mp4", fps=24)
 You can use quantized `.gguf` weights for the transformer or text encoders to save disk space and RAM. The weights will be streamed and dequantized on the fly.
 
 ```python
-from weellm import WeePipeline
+from weellm import WeeTextToImagePipeline
 import torch
 
-pipe = WeePipeline.from_pretrained(
+pipe = WeeTextToImagePipeline.from_pretrained(
     "black-forest-labs/FLUX.2-klein-4B", 
     transformer_path="unsloth/FLUX.2-klein-4B-GGUF/flux-2-klein-4b-Q4_K_M.gguf",
     text_encoder_path="unsloth/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf",
