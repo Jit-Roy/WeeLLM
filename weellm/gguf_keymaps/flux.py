@@ -5,6 +5,15 @@ Detected by: keys starting with "double_blocks."
 """
 from typing import Any, Dict, List
 
+# Tensors in Flux GGUF format whose two output-half rows must be
+# swapped before use with Diffusers.  The BFL→Diffusers conversion script
+# applies swap_scale_shift() so Diffusers expects [shift | scale] order while
+# the original GGUF stores [scale | shift].
+_SWAP_SCALE_SHIFT_GGUF_KEYS: frozenset = frozenset({
+    "final_layer.adaLN_modulation.1.weight",
+    "final_layer.adaLN_modulation.1.bias",
+})
+
 _FLUX_KEY_MAP = {
     # ── Double blocks ────────────────────────────────────────────────────────
     "double_blocks.{i}.img_attn.qkv.weight": [
@@ -115,3 +124,13 @@ class FluxKeyMap:
                 else:
                     remap[src] = [(tmpl_dst.replace("{i}", str(i)), None)]
         return remap
+
+    @staticmethod
+    def postprocess_tensor(diffusers_key: str, tensor: Any, orig_name: str) -> Any:
+        import torch
+        # Flux GGUF stores norm_out weights in [scale | shift] order;
+        # Diffusers expects [shift | scale].
+        if orig_name in _SWAP_SCALE_SHIFT_GGUF_KEYS:
+            half = tensor.shape[0] // 2
+            return torch.cat([tensor[half:], tensor[:half]], dim=0).contiguous()
+        return tensor

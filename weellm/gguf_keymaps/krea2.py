@@ -111,3 +111,11 @@ class Krea2KeyMap:
                         (tmpl_dst.replace("{i}", str(i)), None)
                     ]
         return remap
+
+    @staticmethod
+    def postprocess_tensor(diffusers_key: str, tensor: Any, orig_name: str) -> Any:
+        import torch
+        # Krea2 scale_shift_table is stored flat in GGUF but must be [6, dim]
+        if diffusers_key.endswith("scale_shift_table") and tensor.dim() == 1:
+            return tensor.reshape(6, -1)
+        return tensor

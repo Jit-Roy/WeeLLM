@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from weellm.models.base_streamer import BaseTransformerStreamer
+from weellm.models.transformers.base_transformer_streamer import BaseTransformerStreamer
 from weellm.seeker import get_seeker
 from weellm.utils import default_dtype, clean_memory, report_memory
 
@@ -76,7 +76,7 @@ class LTX2DiTModelStreamer(BaseTransformerStreamer):
     def _pre_hook(self, module: nn.Module, args):
         args = super()._pre_hook(module, args)
         
-        from weellm.models.base_streamer import _SHARD_NAME_ATTR
+        from weellm.models.transformers.base_transformer_streamer import _SHARD_NAME_ATTR
         shard_name: str = getattr(module, _SHARD_NAME_ATTR)
         
         if hasattr(self, "lora_loader") and self.lora_loader is not None:

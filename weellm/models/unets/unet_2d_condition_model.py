@@ -21,7 +21,7 @@ from weellm.utils import default_dtype
 from accelerate.utils.modeling import set_module_tensor_to_device
 from diffusers import UNet2DConditionModel
 
-from weellm.models.base_streamer import BaseTransformerStreamer
+from weellm.models.transformers.base_transformer_streamer import BaseTransformerStreamer
 from weellm.seeker import get_seeker
 from weellm.utils import clean_memory, report_memory
 

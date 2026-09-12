@@ -23,6 +23,8 @@ from weellm.gguf_keymaps.sdxl   import SDXLKeyMap
 from weellm.gguf_keymaps.sd15   import SD15KeyMap
 from weellm.gguf_keymaps.krea2  import Krea2KeyMap
 from weellm.gguf_keymaps.zimage import ZImageKeyMap
+from weellm.gguf_keymaps.minimax_h3 import MiniMaxH3KeyMap
+from weellm.gguf_keymaps.qwen3vl import Qwen3VLKeyMap
 
 logger = logging.getLogger("weellm")
 
@@ -35,20 +37,22 @@ _REGISTRY = [
     SD15KeyMap,     # model.diffusion_model.* (no SDXL markers)
     Krea2KeyMap,    # txtfusion.* or blocks.0.attn.qknorm.*
     ZImageKeyMap,   # context_refiner.* / noise_refiner.*
+    Qwen3VLKeyMap,  # visual.blocks.* + model.layers.* (unsloth Qwen3VL TE GGUF)
+    MiniMaxH3KeyMap,# blocks.* (MiniMax H3 checkpoint convention)
 ]
 
 
-def build_remap_fn(gguf_keys: List[str], arch: str = "unknown") -> Callable[[str], List]:
+def build_remap_fn(gguf_keys: List[str], arch: str = "unknown") -> tuple[Callable[[str], List], Any]:
     """
-    Detect the GGUF naming convention from the key list and return a callable::
+    Detect the GGUF naming convention from the key list and return a tuple::
 
-        remap_fn(gguf_key) -> [(diffusers_key, slice_info), ...]
+        (remap_fn, keymap_cls)
 
+    ``remap_fn(gguf_key) -> [(diffusers_key, slice_info), ...]``
     ``slice_info`` is either ``None`` (no splitting needed) or
     ``(split_index, total_splits)`` for fused QKV tensors.
 
-    If no registered map matches, a pass-through function is returned so
-    unknown architectures degrade gracefully.
+    If no registered map matches, a pass-through function and None is returned.
     """
     for keymap_cls in _REGISTRY:
         if keymap_cls.detect(gguf_keys, arch):
@@ -58,11 +62,11 @@ def build_remap_fn(gguf_keys: List[str], arch: str = "unknown") -> Callable[[str
             def _remap(name: str, _d=remap_dict) -> List:
                 return _d.get(name, [(name, None)])
 
-            return _remap
+            return _remap, keymap_cls
 
     # No match — pass every key through unchanged
     logger.debug("[GGUFSeeker] No key-map matched (arch=%s) — using pass-through.", arch)
-    return lambda name: [(name, None)]
+    return lambda name: [(name, None)], None
 
 
 __all__ = [
@@ -74,4 +78,6 @@ __all__ = [
     "SD15KeyMap",
     "Krea2KeyMap",
     "ZImageKeyMap",
+    "Qwen3VLKeyMap",
+    "MiniMaxH3KeyMap",
 ]

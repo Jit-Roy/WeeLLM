@@ -5,7 +5,7 @@ from accelerate import init_empty_weights
 from accelerate.utils import set_module_tensor_to_device
 from transformers import Gemma2Model, Gemma2Config, Gemma3Config
 from transformers.models.gemma3.modeling_gemma3 import Gemma3TextModel
-from weellm.models.base_streamer import BaseTransformerStreamer
+from weellm.models.transformers.base_transformer_streamer import BaseTransformerStreamer
 from weellm.seeker import get_seeker
 import logging
 

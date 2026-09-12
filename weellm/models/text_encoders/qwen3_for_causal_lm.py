@@ -21,7 +21,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 from weellm.utils import default_dtype, clean_memory
 from weellm.memory import place_tensors, pin_module_to_cpu
-from weellm.models.text_encoders.base_te_streamer import BaseLazyDecoderStreamer
+from weellm.models.text_encoders.base_text_encoder_streamer import BaseLazyDecoderStreamer
 
 
 class Qwen3ForCausalLMStreamer(BaseLazyDecoderStreamer):
