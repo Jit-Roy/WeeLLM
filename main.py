@@ -269,7 +269,7 @@ def main() -> int:
     logger.info("  Prompt:   %s", args.prompt)
     if args.negative_prompt:
         logger.info("  Neg:      %s", args.negative_prompt)
-    logger.info("  Size:     %d x %d px", args.width, args.height)
+    logger.info("  Size:     %s x %s px", args.width, args.height)
     logger.info(
         "  Steps:    %d  |  Guidance: %s  |  Seed: %s",
         args.steps, args.guidance_scale, args.seed,

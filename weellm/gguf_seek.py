@@ -13,14 +13,6 @@ from weellm.gguf_keymaps import build_remap_fn
 
 logger = logging.getLogger("weellm")
 
-# Tensors in Flux GGUF format whose two output-half rows must be
-# swapped before use with Diffusers.  The BFL→Diffusers conversion script
-# applies swap_scale_shift() so Diffusers expects [shift | scale] order while
-# the original GGUF stores [scale | shift].
-_SWAP_SCALE_SHIFT_GGUF_KEYS: frozenset = frozenset({
-    "final_layer.adaLN_modulation.1.weight",
-    "final_layer.adaLN_modulation.1.bias",
-})
 
 
 class GGUFSeeker:
@@ -45,7 +37,7 @@ class GGUFSeeker:
         
         self.is_flux_format = any(k.startswith("double_blocks.") for k in raw_names)
         arch = self._get_arch()
-        remap = build_remap_fn(raw_names, arch)
+        remap, self.keymap_cls = build_remap_fn(raw_names, arch)
 
         for tensor in self._reader.tensors:
             orig_shape = self._get_orig_shape(tensor.name)
@@ -64,6 +56,11 @@ class GGUFSeeker:
 
         self.weight_map: Dict[str, str] = {k: self.gguf_path.name for k in self._tensor_meta}
         logger.info("[GGUFSeeker] Loaded %d tensors (arch=%s)", len(self._tensor_meta), arch)
+
+    def patch_model(self, model: torch.nn.Module, config, device: str, dtype: torch.dtype) -> None:
+        """Allow the detected keymap to perform any GGUF-specific structural patches or tensor injections."""
+        if getattr(self, "keymap_cls", None) and hasattr(self.keymap_cls, "patch_model_before_stream"):
+            self.keymap_cls.patch_model_before_stream(model, config, device, dtype, seeker=self)
 
     def _get_arch(self) -> str:
         try:
@@ -150,15 +147,8 @@ class GGUFSeeker:
                 t = t[split_idx * chunk_size : (split_idx + 1) * chunk_size, ...]
                 t = t.clone()  # release reference to the full cached tensor
 
-            # Krea2 scale_shift_table is stored flat in GGUF but must be [6, dim]
-            if key.endswith("scale_shift_table") and t.dim() == 1:
-                t = t.reshape(6, -1)
-
-            # Flux GGUF stores norm_out weights in [scale | shift] order;
-            # Diffusers expects [shift | scale].
-            if self.is_flux_format and orig_name in _SWAP_SCALE_SHIFT_GGUF_KEYS:
-                half = t.shape[0] // 2
-                t = torch.cat([t[half:], t[:half]], dim=0).contiguous()
+            if getattr(self, "keymap_cls", None) and hasattr(self.keymap_cls, "postprocess_tensor"):
+                t = self.keymap_cls.postprocess_tensor(key, t, orig_name)
 
             result[key] = t.to(device=device)
 

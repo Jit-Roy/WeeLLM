@@ -41,6 +41,7 @@ venv.bak/
 # -----------------------------------------------------------------------------
 .ipynb_checkpoints/
 *.ipynb
+backup
 
 # -----------------------------------------------------------------------------
 # Model weights & shards  (large binary files — store elsewhere)
