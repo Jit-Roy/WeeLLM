@@ -18,6 +18,13 @@ logger = logging.getLogger("weellm")
 class WeeVideoPipeline(WeeBasePipeline):
     
     @classmethod
+    def _get_diffusers_pipeline_class(cls, index: dict) -> str:
+        pipeline_class_name = index.get("_class_name")
+        if not pipeline_class_name:
+            raise ValueError("No _class_name found in model_index.json")
+        return pipeline_class_name
+
+    @classmethod
     def from_pretrained(cls, model_dir: str, **kwargs):
         index_path = os.path.join(model_dir, "model_index.json")
         class_name = ""
@@ -111,6 +118,102 @@ class WeeVideoPipeline(WeeBasePipeline):
         # Intercept encode_prompt
         _underlying = getattr(self, "_pipeline", self)
         _ep_hit = _video_cache.wrap_pipeline_encode_prompt(_underlying, device=str(self.device))
+        # Fallback for ModularPipeline which has no encode_prompt but uses blocks
+        if not _ep_hit and hasattr(_underlying, "_blocks") and hasattr(_underlying._blocks, "sub_blocks"):
+            # Check if cache hit BEFORE running blocks
+            cached = _video_cache.load_embeds()
+            if cached is not None:
+                _ep_hit = True
+                for block_name, block in _underlying._blocks.sub_blocks.items():
+                    if "TextEncoderStep" in block.__class__.__name__:
+                        class CacheHitWrapper:
+                            def __init__(self, block, cached_data):
+                                self.block = block
+                                self.cached_data = cached_data
+                            def __getattr__(self, attr):
+                                return getattr(self.block, attr)
+                            def __call__(self, pipe, state):
+                                logger.info("[VideoCache] Skipping ModularPipeline TextEncoder block (Cache HIT)")
+                                block_state = self.block.get_block_state(state) if hasattr(self.block, "get_block_state") else getattr(state, getattr(self.block, "model_name", "unknown"), None)
+                                if block_state is not None:
+                                    device = getattr(pipe, "_execution_device", getattr(pipe, "device", "cuda"))
+                                    embed_tensor = self.cached_data["embeds"].to(device)
+                                    tag_tensor = self.cached_data.get("tags", torch.full((embed_tensor.shape[1],), getattr(pipe, "text_tag", 0), dtype=torch.long)).cpu()
+                                    block_state.prompt_embeds = embed_tensor
+                                    block_state.text_token_tags = tag_tensor
+                                    if hasattr(state, "set"):
+                                        state.set("prompt_embeds", embed_tensor)
+                                        state.set("text_token_tags", tag_tensor)
+                                return pipe, state
+                        _underlying._blocks.sub_blocks[block_name] = CacheHitWrapper(block, cached)
+                        break
+            else:
+                for block_name, block in _underlying._blocks.sub_blocks.items():
+                    if "TextEncoderStep" in block.__class__.__name__:
+                        class CacheMissWrapper:
+                            def __init__(self, block, cache):
+                                self.block = block
+                                self.cache = cache
+                            def __getattr__(self, attr):
+                                return getattr(self.block, attr)
+                            def __call__(self, pipe, state):
+                                pipe, state = self.block(pipe, state)
+                                embeds = None
+                                tags = None
+                                if hasattr(state, "values") and isinstance(state.values, dict):
+                                    embeds = state.values.get("prompt_embeds")
+                                    tags = state.values.get("text_token_tags")
+                                    
+                                if embeds is not None:
+                                    self.cache.save_embeds({
+                                        "embeds": embeds,
+                                        "tags": tags
+                                    })
+                                return pipe, state
+                        _underlying._blocks.sub_blocks[block_name] = CacheMissWrapper(block, _video_cache)
+                        break
+
+        # ModularPipeline ignores callback_on_step_end, so we recursively hook loop_step on any Loop block
+        if hasattr(_underlying, "_blocks") and hasattr(_underlying._blocks, "sub_blocks"):
+            def _patch_denoise_loops(blocks_dict):
+                for block in blocks_dict.values():
+                    if hasattr(block, "loop_step") and not getattr(block, "_weellm_patched_loop", False):
+                        original_loop = getattr(block, "loop_step")
+                        def _hooked_loop(self_block, pipe, state, i, t, orig=original_loop):
+                            import os
+                            resume_idx = int(os.environ.get("WEELLM_RESUME_STEP", "0"))
+                            if i < resume_idx:
+                                print(f"\n!!! Fast-Forwarding: Skipping Step {i} !!!")
+                                if i == resume_idx - 1:
+                                    resume_path = os.environ.get("WEELLM_RESUME_PATH", "")
+                                    if resume_path and os.path.exists(resume_path):
+                                        print(f"!!! Injecting Latents from {resume_path} !!!\n")
+                                        import torch
+                                        cached = torch.load(resume_path, map_location="cpu")
+                                        if isinstance(cached, torch.Tensor):
+                                            state.latents = cached.to(state.latents.device)
+                                            state.noise_pred = torch.zeros_like(state.latents)
+                                        elif isinstance(cached, dict) and "latents" in cached:
+                                            state.latents = cached["latents"].to(state.latents.device)
+                                            state.noise_pred = torch.zeros_like(state.latents)
+                                            if "audio_latents" in cached and hasattr(state, "audio_latents"):
+                                                state.audio_latents = cached["audio_latents"].to(getattr(state, "audio_latents").device)
+                                        if hasattr(state, "audio_latents"):
+                                            state.audio_noise_pred = torch.zeros_like(state.audio_latents)
+                                return pipe, state
+                            
+                            pipe, state = orig(pipe, state, i=i, t=t)
+                            callback = _video_cache.get_step_callback()
+                            if callback is not None:
+                                latents = getattr(state, "latents", None)
+                                cb_kwargs = {"latents": latents}
+                                callback(pipe, i, t, cb_kwargs)
+                            return pipe, state
+                        block.loop_step = _hooked_loop.__get__(block, block.__class__)
+                        block._weellm_patched_loop = True
+                    elif hasattr(block, "sub_blocks"):
+                        _patch_denoise_loops(block.sub_blocks)
+            _patch_denoise_loops(_underlying._blocks.sub_blocks)
         
         if _ep_hit:
             logger.info("[VideoCache] Text encoder output restored from cache — skipped entirely.")
@@ -179,6 +282,12 @@ class WeeVideoPipeline(WeeBasePipeline):
                 return super().__call__(**kwargs)
 
         kwargs["callback_on_step_end"] = _video_cache.get_step_callback()
+        
+        # ModularPipelines don't support callback_on_step_end or _video_cache natively
+        if hasattr(_underlying, "_blocks"):
+            kwargs.pop("_video_cache", None)
+            kwargs.pop("callback_on_step_end", None)
+            
         out = super().__call__(**kwargs)
         
         try:

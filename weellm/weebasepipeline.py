@@ -295,7 +295,7 @@ class WeeBasePipeline:
         if ram_budget_gb is None:
             ram_budget_gb = ram_budget
         
-        from weellm.models.base_streamer import BaseTransformerStreamer
+        from weellm.models.transformers.base_transformer_streamer import BaseTransformerStreamer
         BaseTransformerStreamer._global_vram_budget_gb = vram_budget_gb
         BaseTransformerStreamer._global_ram_budget_gb = ram_budget_gb
 
@@ -497,12 +497,29 @@ class WeeBasePipeline:
 
     @staticmethod
     def _load_vae(model_dir: Path, device: str, torch_dtype: torch.dtype, cache_to_ram: bool, subfolder: str = "vae", vae_path_override: Optional[Union[str, Path]] = None):
-        from weellm.models.vaes.lazy_vae import LazyVAEStreamer
+        import json
         from weellm.seeker import override_weights_path
         
+        vae_dir = model_dir / subfolder
+        config_path = vae_dir / "config.json"
+        
+        class_name = "AutoencoderKL"
+        if config_path.exists():
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg_dict = json.load(f)
+                    class_name = cfg_dict.get("_class_name", "AutoencoderKL")
+            except Exception as e:
+                logger.warning("Could not read VAE config.json: %s. Defaulting to AutoencoderKL.", e)
+                
+        if class_name == "AutoencoderKLMiniMaxH3":
+            from weellm.models.vaes.autoencoder_kl_minimax_h3 import AutoencoderKLMiniMaxH3Streamer as VaeStreamer
+        else:
+            from weellm.models.vaes.autoencoder_kl import AutoencoderKL as VaeStreamer
+
         with override_weights_path(vae_path_override, subfolder=subfolder):
-            return LazyVAEStreamer.from_pretrained(
-                model_dir / subfolder,
+            return VaeStreamer.from_pretrained(
+                vae_dir,
                 device=device,
                 dtype=torch_dtype,
                 cache_to_ram=cache_to_ram,
