@@ -41,6 +41,7 @@ _TE_MAP = {
     "Qwen3ForCausalLM":                       "weellm.models.text_encoders.qwen3_for_causal_lm",
     "Qwen3Model":                             "weellm.models.text_encoders.qwen3_for_causal_lm",
     "Qwen2_5_VLForConditionalGeneration":     "weellm.models.text_encoders.qwen2_5_vl_for_conditional_generation",
+    "Qwen3VLForConditionalGeneration":        "weellm.models.text_encoders.qwen3_vl_for_conditional_generation",
     "Qwen3VLModel":                           "weellm.models.text_encoders.qwen3_vl_model",
     "MiniMaxH3Qwen3VLHFEncoder":              "weellm.models.text_encoders.minimax_h3_qwen3_vl_hf_encoder",
     "Mistral3ForConditionalGeneration":       "weellm.models.text_encoders.mistral3_for_conditional_generation",
@@ -84,7 +85,7 @@ _TR_MAP = {
     "ErnieImageTransformer2DModel":        "weellm.models.transformers.ernie_image_transformer_2d_model",
     "LongCatImageTransformer2DModel":      "weellm.models.transformers.longcat_transformer_2d_model",
     "Krea2Transformer2DModel":             "weellm.models.transformers.krea2_transformer_2d_model",
-    "MiniMaxH3DiTModel":                   "weellm.models.transformers.minimax_h3_dit_model",
+    "MiniMaxH3Transformer3DModel":         "weellm.models.transformers.minimax_h3_transformer_3d_model",
     "LTX2VideoTransformer3DModel":         "weellm.models.transformers.ltx2_dit_model",
 }
 
@@ -385,7 +386,12 @@ class WeeBasePipeline:
         if pipeline_cls is None:
             raise ImportError(f"Could not find pipeline class {pipeline_class_name} in diffusers, local custom files, or external_pipelines.")
             
-        pipeline        = pipeline_cls(**diffusers_kwargs)
+        pipeline = pipeline_cls(**diffusers_kwargs)
+        if hasattr(pipeline, "register_components"):
+            # Modular pipelines ignore kwargs in __init__, so we must register them explicitly
+            pipeline.register_components(**diffusers_kwargs)
+        
+        pipeline.model_dir = str(model_dir)
 
         # ── Post-build patches ───────────────────────────────────────────
         cls._patch_execution_device(pipeline, device, te_streamers)
@@ -766,13 +772,16 @@ class WeeBasePipeline:
             return value
 
         def _move_scheduler(scheduler_obj, target_device):
+            if scheduler_obj is None:
+                return
             for attr_name, attr_value in list(vars(scheduler_obj).items()):
                 if attr_name == "config":
                     continue
                 if _contains_tensor(attr_value):
                     setattr(scheduler_obj, attr_name, _move_value(attr_value, target_device))
 
-        _move_scheduler(pipeline.scheduler, device)
+        if getattr(pipeline, "scheduler", None) is not None:
+            _move_scheduler(pipeline.scheduler, device)
 
         if hasattr(pipeline.scheduler, "set_timesteps"):
             original_set_timesteps = pipeline.scheduler.set_timesteps

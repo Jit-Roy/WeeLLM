@@ -51,7 +51,7 @@ __all__ = [
     "LTX2ConnectorsStreamer",
     "LTX2DiTModelStreamer",
     "LTX2GemmaStreamer",
-    "MiniMaxH3DiTModelStreamer",
+    "MiniMaxH3Transformer3DModelStreamer",
     # Text Encoders
     "ChatGLMModelStreamer",
     "CLIPTextModelStreamer",
@@ -100,7 +100,7 @@ from .models.transformers.longcat_transformer_2d_model import LongCatImageTransf
 from .models.transformers.ltx2_connectors import LTX2ConnectorsStreamer  # noqa: E402
 from .models.transformers.ltx2_dit_model import LTX2DiTModelStreamer  # noqa: E402
 from .models.transformers.ltx2_gemma_streamer import LTX2GemmaStreamer  # noqa: E402
-from .models.transformers.minimax_h3_transformer_3d_model import MiniMaxH3DiTModelStreamer  # noqa: E402
+from .models.transformers.minimax_h3_transformer_3d_model import MiniMaxH3Transformer3DModelStreamer  # noqa: E402
 
 # Text Encoders
 from .models.text_encoders.chatglm_model import ChatGLMModelStreamer  # noqa: E402

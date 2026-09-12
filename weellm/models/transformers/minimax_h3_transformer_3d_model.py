@@ -73,9 +73,9 @@ def _remap_ckpt_key(ckpt_key: str) -> str:
     return ckpt_key
 
 
-class MiniMaxH3DiTModelStreamer(BaseTransformerStreamer):
+class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
     """
-    Wraps MiniMaxH3DiTModel for memory-efficient streaming.
+    Wraps MiniMaxH3Transformer3DModel for memory-efficient streaming.
     Streams directly from original Hugging Face safetensors shards via live seek.
     """
 
@@ -87,11 +87,18 @@ class MiniMaxH3DiTModelStreamer(BaseTransformerStreamer):
                 order.append((f"transformer_blocks.{i}", block))
         return order
 
+    def _get_streaming_prefix(self) -> str:
+        # Check if the GGUF uses diffusers naming or original naming
+        if any(k.startswith("transformer_blocks.") for k in self.seeker.weight_map):
+            return "transformer_blocks."
+        return "blocks."
+
     def _get_resident_ckpt_keys(self) -> List[str]:
-        """Returns checkpoint keys (original MiniMax names) for non-streaming tensors."""
+        """Returns checkpoint keys for non-streaming tensors."""
+        prefix = self._get_streaming_prefix()
         return [
             k for k in self.seeker.weight_map
-            if not k.startswith("blocks.")  # 'blocks.' is the ckpt prefix for transformer_blocks
+            if not k.startswith(prefix)
         ]
 
     def _get_resident_keys(self) -> List[str]:
@@ -106,6 +113,10 @@ class MiniMaxH3DiTModelStreamer(BaseTransformerStreamer):
         This reversal is needed in _get_layer_keys so the streaming pre-hook can
         find the right tensors in the seeker.
         """
+        prefix = self._get_streaming_prefix()
+        if prefix == "transformer_blocks.":
+            return diffusers_shard_name
+
         # Reverse the blocks.→transformer_blocks. mapping
         if diffusers_shard_name.startswith("transformer_blocks."):
             idx = diffusers_shard_name[len("transformer_blocks."):]
@@ -189,7 +200,7 @@ class MiniMaxH3DiTModelStreamer(BaseTransformerStreamer):
         prefetch: bool = True,
         prefetch_device: Optional[str] = None,
         cache_to_ram: bool = False,
-    ) -> "MiniMaxH3DiTModelStreamer":
+    ) -> "MiniMaxH3Transformer3DModelStreamer":
         transformer_dir = Path(transformer_dir)
 
         logger.info("Step 1/3 -- Initializing LiveSeeker on MiniMax-H3 transformer weights ...")
@@ -216,7 +227,8 @@ class MiniMaxH3DiTModelStreamer(BaseTransformerStreamer):
             # Load tensors using checkpoint key names, then apply prefix remapping
             # to translate to diffusers attribute names. Keys that still don't match
             # (e.g. fused qkv_proj vs split to_q/to_k/to_v) are skipped gracefully.
-            raw_sd = seeker.get_tensors(resident_ckpt_keys, device=device, dtype=dtype)
+            # We load to CPU first to prevent massive VRAM spikes when constructing the dict.
+            raw_sd = seeker.get_tensors(resident_ckpt_keys, device="cpu", dtype=dtype)
             remapped_sd = {_remap_ckpt_key(k): v for k, v in raw_sd.items()}
             # Handle diffusers token_refiner which splits qkv_proj, renames norms, and renames mlp
             new_remapped_sd = {}
@@ -258,5 +270,5 @@ class MiniMaxH3DiTModelStreamer(BaseTransformerStreamer):
 
         block_count = len(streamer._get_shard_order())
         logger.info("Installed %d blocks for streaming.", block_count)
-        logger.info("MiniMaxH3DiTModelStreamer ready. Mode: Live Seek from original shards")
+        logger.info("MiniMaxH3Transformer3DModelStreamer ready. Mode: Live Seek from original shards")
         return streamer
