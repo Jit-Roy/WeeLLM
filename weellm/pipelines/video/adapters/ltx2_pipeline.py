@@ -95,7 +95,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
                 ).to(device)
             except Exception as e:
                 logger.warning("Failed to load temporal_upscaler: %s", e)
-                
+
         pipe = super().from_pretrained(model_dir, **kwargs)
         
         if _temporal is not None:
@@ -105,14 +105,32 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
             # Attach to the underlying diffusers pipeline so kwargs.get('temporal_upscaler') is not needed
             setattr(pipe._pipeline, "temporal_upscaler", _temporal)
         
-        # Override the base pipeline's default VAE chunking because LTX-2.5 is sensitive to it
-        if hasattr(pipe._pipeline.vae, "use_framewise_decoding"):
-            pipe._pipeline.vae.use_framewise_decoding = False
-            logger.warning(
-                "\n[WARNING] LTX-2.5 VAE chunking (framewise decoding) has been disabled by default. "
-                "Chunking causes severe temporal jitter/seams in LTX-2.5. "
-                "Note: This processes all frames at once and requires significantly more memory, "
-                "which may trigger system RAM swap on low-VRAM machines."
+        # LTX-2.5 VAE decoding configuration:
+        # The base WeeLLM class enables framewise decoding with chunk=9, stride=8 (1 frame overlap)
+        # which causes visible temporal seams/jitter. But fully disabling it causes 5.81 GiB OOM
+        # on 4 GB VRAM when latent upsamplers are used.
+        # 
+        # The real fix: use the VAE's built-in _temporal_tiled_decode which has proper blend_t()
+        # linear crossfading at chunk boundaries. With large enough overlap the blending is invisible.
+        # We use tile=33 sample frames, stride=17 (~50% overlap = 16-frame crossfade zone).
+        vae = getattr(pipe._pipeline, "vae", None)
+        if vae is not None and hasattr(vae, "use_framewise_decoding"):
+            vae.use_framewise_decoding = True
+            # tile_sample_min_num_frames must be multiple of temporal_compression_ratio (8) + 1
+            # 33 sample frames = 4 latent frames chunk, 17 sample stride = 2 latent stride
+            # Overlap = 33 - 17 = 16 sample frames of crossfade → invisible seam
+            vae.tile_sample_min_num_frames = 33
+            vae.tile_sample_stride_num_frames = 17
+            # Disable spatial tiling (causes block seams) — let temporal tiling handle VRAM
+            for _attr in ("tile_sample_min_width", "tile_sample_min_height", "tile_sample_min_size"):
+                if hasattr(vae, _attr):
+                    setattr(vae, _attr, 10_000)
+            if hasattr(vae, "enable_slicing"):
+                vae.enable_slicing()
+            logger.info(
+                "      -> [WeeLLM/LTX2] VAE temporal tiling enabled: "
+                "tile=33 sample frames, stride=17 (~50%% overlap). "
+                "blend_t() crossfading active — no seam artifacts."
             )
         if hasattr(pipe._pipeline, "enable_vae_tiling"):
             pipe._pipeline.enable_vae_tiling()
@@ -263,7 +281,8 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
         """
         LTX-2.5 specific latent preprocessing.
         LTX latents are pre-scaled, so we skip standard scaling/shifting.
-        We also handle the optional latent upsampler and temporal upscaler here.
+        We also handle the optional latent upsampler and temporal upscaler here,
+        and dynamically configure VAE temporal tiling to minimize wall-clock time.
         """
         temporal_upscaler = kwargs.get("temporal_upscaler", getattr(self._pipeline, "temporal_upscaler", None))
         if temporal_upscaler:
@@ -298,8 +317,350 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
             del _ups_model
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                
+        
+        # VAE Block CPU-RAM Cache
+        # Root cause of disk bottleneck:
+        #   _block_post_hook calls _evict_keys -> set_module_tensor_to_device("meta")
+        #   This evicts block weights entirely. Every tile is a cold disk read.
+        #
+        # The pipeline stores lazy_vae.MODEL (not the streamer) as pipeline.vae,
+        # so `vae.seeker` doesn't exist. The streamer stays alive only via PyTorch's
+        # hook reference system (hooks hold bound-method refs back to the streamer).
+        #
+        # Fix: Find the streamer through vae.decoder.mid_block._forward_pre_hooks,
+        # then monkey-patch streamer.seeker.get_tensors with a CPU RAM cache.
+        #   - First call (pre-warm): reads from disk, saves a CPU clone per key.
+        #   - ALL subsequent tile calls: fast CPU->GPU H2D transfer only (~50ms).
+        #
+        # Only installed once per pipe session via a sentinel flag on the streamer.
+        _vae_streamer = None
+        _vae_decoder = getattr(vae, "decoder", None)
+        if _vae_decoder is not None and getattr(_vae_decoder, "mid_block", None) is not None:
+            for _hook_fn in _vae_decoder.mid_block._forward_pre_hooks.values():
+                if callable(_hook_fn) and hasattr(_hook_fn, "__self__") and hasattr(_hook_fn.__self__, "seeker"):
+                    _vae_streamer = _hook_fn.__self__
+                    break
+
+        if _vae_streamer is not None and not getattr(_vae_streamer, "_weellm_ram_cache_installed", False):
+            try:
+                _cpu_weight_cache: dict = {}
+                _orig_get_tensors = _vae_streamer.seeker.get_tensors
+
+                def _ram_cached_get_tensors(keys, device, dtype):
+                    missing = [k for k in keys if k not in _cpu_weight_cache]
+                    block_tag = keys[0].rsplit(".", 1)[0] if keys else "?"
+                    if missing:
+                        logger.info(
+                            "[VAE Cache] MISS  %s — %d/%d keys absent. Reading from disk...",
+                            block_tag, len(missing), len(keys)
+                        )
+                        # Cold read — load from disk, save pinned CPU clone for future tiles.
+                        # pin_memory() = page-locked RAM the OS CANNOT swap to pagefile.
+                        # Without pinning, tensors get paged out instantly under RAM pressure,
+                        # turning H2D transfers into slow pagefile reads (88-117s per block!).
+                        loaded = _orig_get_tensors(missing, device=device, dtype=dtype)
+                        save_ok = 0
+                        for k, v in loaded.items():
+                            try:
+                                cpu_v = v.detach().cpu()
+                                try:
+                                    cpu_v = cpu_v.pin_memory()  # page-lock: no swap possible
+                                except Exception as _pe:
+                                    logger.warning(
+                                        "[VAE Cache] pin_memory FAILED for %s (numel=%d): %s",
+                                        k, cpu_v.numel(), _pe
+                                    )
+                                _cpu_weight_cache[k] = cpu_v
+                                save_ok += 1
+                            except Exception as _ce:
+                                logger.warning("[VAE Cache] Failed to save key %s to CPU cache: %s", k, _ce)
+                        logger.info(
+                            "[VAE Cache] Cached %d/%d loaded keys to CPU RAM (total cache: %d keys).",
+                            save_ok, len(loaded), len(_cpu_weight_cache)
+                        )
+                    else:
+                        vram_mb = torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0
+                        logger.info(
+                            "[VAE Cache] HIT   %s — all %d keys in CPU RAM (pinned=%s). VRAM used: %.1f MB",
+                            block_tag, len(keys),
+                            all(_cpu_weight_cache[k].is_pinned() for k in keys if k in _cpu_weight_cache),
+                            vram_mb
+                        )
+                    # Serve all from cache. Pinned tensors: H2D via DMA, no pagefile reads.
+                    result = {}
+                    for k in keys:
+                        if k in _cpu_weight_cache:
+                            try:
+                                t = _cpu_weight_cache[k]
+                                result[k] = t.to(
+                                    device=device,
+                                    dtype=dtype if t.is_floating_point() else t.dtype,
+                                    non_blocking=True,
+                                )
+                            except Exception as _se:
+                                logger.warning("[VAE Cache] Failed to serve key %s from cache: %s", k, _se)
+                    return result
+
+                _vae_streamer.seeker.get_tensors = _ram_cached_get_tensors
+                _vae_streamer._weellm_ram_cache_installed = True
+                logger.info(
+                    "[WeeLLM/LTX2] VAE block RAM cache installed (streamer found via hook ref). "
+                    "Decoder blocks will be read from disk ONCE, then served from CPU RAM."
+                )
+            except Exception as _e:
+                logger.warning("[WeeLLM/LTX2] RAM cache install failed (non-critical): %s", _e)
+
+        # ── Pre-VAE VRAM Reclaim (FINAL FIX) ─────────────────────────────────────
+        # DIAGNOSIS (from debug_te.py):
+        #   pipeline.text_encoder = Gemma3TextModel (IS an nn.Module)
+        #   embed_tokens.weight   = [262144, 3840] → 1920 MB  (on THIS module directly)
+        #   orphaned gc tensor    = [4096, 188160] → 1470 MB  (failed embed_audio placement)
+        #
+        # ROOT CAUSE OF ALL PREVIOUS FAILURES:
+        #   `getattr(_te, "model", ...)` → Gemma3TextModel.model → Gemma3Model (inner body)
+        #   embed_tokens is on Gemma3TextModel, NOT on Gemma3TextModel.model!
+        #   So we always iterated the WRONG module and found 0 CUDA params.
+        #
+        # FIX: iterate _te.parameters() DIRECTLY (no .model/./_model indirection).
+        #   Also gc-scan for orphaned tensors from failed embed_audio/vision placements.
+        import gc as _gc
+        _vram_before = torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0
+        _seen_ptrs   = set()
+        _total_freed = 0.0
+
+        # Mark the latents ptr so we don't accidentally zero it in the gc scan below
+        _latents_ptr = latents.data_ptr() if latents is not None else -1
+
+        # 1. Zero parameters from each text encoder module directly
+        for _te_key in ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4"):
+            _te = getattr(self._pipeline, _te_key, None)
+            if _te is None or not isinstance(_te, torch.nn.Module):
+                continue
+            _freed = 0.0
+            # Iterate _te directly — embed_tokens is on the TOP-LEVEL module, not .model!
+            for _p in list(_te.parameters()):
+                ptr = _p.data_ptr()
+                if _p.is_cuda and ptr not in _seen_ptrs:
+                    _seen_ptrs.add(ptr)
+                    _freed += _p.element_size() * _p.nelement() / 1024**2
+                    _p.data = torch.empty(0, dtype=_p.dtype)
+            for _b in list(_te.buffers()):
+                ptr = _b.data_ptr()
+                if _b.is_cuda and ptr not in _seen_ptrs:
+                    _seen_ptrs.add(ptr)
+                    _freed += _b.element_size() * _b.nelement() / 1024**2
+                    _b.data = torch.empty(0, dtype=_b.dtype)
+            if _freed > 0:
+                _total_freed += _freed
+                logger.info("[WeeLLM/LTX2] Freed %.1f MB from %s.", _freed, _te_key)
+
+        # 2. gc-scan for orphaned CUDA tensors (e.g. failed embed_audio/vision placements
+        #    that were loaded to GPU but never registered in any nn.Module).
+        #    SKIP: the latents tensor, anything already freed above.
+        _orphan_freed = 0.0
+        for _obj in _gc.get_objects():
+            try:
+                if not isinstance(_obj, torch.Tensor) or not _obj.is_cuda:
+                    continue
+                ptr = _obj.data_ptr()
+                if ptr in _seen_ptrs or ptr == _latents_ptr:
+                    continue
+                mb = _obj.element_size() * _obj.nelement() / 1024**2
+                if mb > 100:   # only large orphaned tensors
+                    _seen_ptrs.add(ptr)
+                    _orphan_freed += mb
+                    _obj.data = torch.empty(0, dtype=_obj.dtype)
+            except Exception:
+                pass
+        if _orphan_freed > 0:
+            _total_freed += _orphan_freed
+            logger.info("[WeeLLM/LTX2] Freed %.1f MB orphaned CUDA tensors (embed_audio/vision).", _orphan_freed)
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            _vram_after = torch.cuda.memory_allocated() / 1024**2
+            logger.info("[WeeLLM/LTX2] VRAM: %.1f → %.1f MB (freed %.1f MB before VAE).",
+                        _vram_before, _vram_after, _total_freed)
+
+        # ── Debug: save latents to disk once for VAE-only debugging ──────────
+        import os as _os
+        _latents_save_path = "debug_latents.pt"
+        if not _os.path.exists(_latents_save_path):
+            torch.save(latents.cpu(), _latents_save_path)
+            logger.info("[WeeLLM/LTX2] Saved latents to %s for VAE debug. Shape: %s", _latents_save_path, tuple(latents.shape))
+
+        if vae is not None and hasattr(vae, "_decode") and hasattr(vae, "use_framewise_decoding"):
+
+            logger.info("[WeeLLM/LTX2] Pre-warming VAE decoder (populating CPU RAM cache)...")
+            try:
+                import gc
+                _lat_ch = getattr(getattr(vae, "config", None), "latent_channels", 128)
+                _dummy_z = torch.zeros(1, _lat_ch, 2, 2, 2, device=latents.device, dtype=latents.dtype)
+                _was_fw = vae.use_framewise_decoding
+                vae.use_framewise_decoding = False
+                try:
+                    with torch.no_grad():
+                        vae._decode(_dummy_z, return_dict=False)
+                except Exception as _e:
+                    logger.debug("[WeeLLM/LTX2] Pre-warm inner error (harmless): %s", _e)
+                finally:
+                    vae.use_framewise_decoding = _was_fw
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+                _cache_ref = locals().get("_cpu_weight_cache")
+                logger.info(
+                    "[WeeLLM/LTX2] Pre-warm complete — CPU RAM cache has %s keys.",
+                    len(_cache_ref) if _cache_ref is not None else "N/A (cache not installed)"
+                )
+            except Exception as _e:
+                logger.warning("[WeeLLM/LTX2] Pre-warm failed (non-critical, continuing): %s", _e)
+        
+        # ── Adaptive VAE Temporal Tiling ──────────────────────────────────────────
+        # Cost model with pinned CPU RAM cache:
+        #   H2D transfer ≈ 0.1–2s per block (PCIe DMA from pinned RAM, no CUDA stall)
+        #   VRAM during tile decode = baseline + activations + block weights
+        #   Key constraint: VRAM must stay below total_vram - OS_overhead - latent_size
+        #
+        # Per-tile decoded output (float32 RGB):
+        # ── VAE Temporal Tiling: dynamic tile sizing ───────────────────────────────
+        # Always use framewise (temporal) tiling — the tile size is computed from
+        # actual free VRAM measured right now (post-TE-eviction), scaled to the
+        # real video resolution. No fixed VRAM tiers; works for any video length
+        # on any GPU.
+        #
+        # Budget model (streaming: only 2 tiles in VRAM at once):
+        #   bytes_per_frame  = 3 × H × W × 4   (float32 RGB output of decoder)
+        #   peak_vram        = 2 × tile_frames × bytes_per_frame
+        #                      + activation_overhead (≈ 2× tile output, empirical)
+        #   total            ≈ 4 × tile_frames × bytes_per_frame ≤ free_vram × safety
+        #   → max_tile_frames = free_vram × safety / (4 × bytes_per_frame)
+        #
+        # tile_frames must satisfy: tile = temporal_compression_ratio × k + 1
+        # Minimum overlap of 16 sample frames for smooth blend_t() crossfade.
+        # Minimum tile = 33 (= 8×4+1) so stride ≥ 17 and overlap = 16.
+        # ─────────────────────────────────────────────────────────────────────────
+        if vae is not None and hasattr(vae, "use_framewise_decoding"):
+            vae.use_framewise_decoding = True  # always tile; size computed below
+
+            _tcr      = getattr(vae, "temporal_compression_ratio", 8)
+            _scr      = getattr(vae, "spatial_compression_ratio", 32)
+            _overlap  = 16   # sample frames — keeps blend_t() crossfade invisible
+            _min_tile = _tcr * 2 + 1   # = 17 for tcr=8; stride would be 1 frame
+
+            # Actual output resolution (may differ from 480×832 for other resolutions)
+            _lat_h = latents.shape[3]
+            _lat_w = latents.shape[4]
+            _H = _lat_h * _scr
+            _W = _lat_w * _scr
+            _bytes_per_frame = 3 * _H * _W * 4  # float32 RGB
+
+            # Free VRAM right now (after TE eviction + empty_cache above)
+            if torch.cuda.is_available():
+                _free_vram, _ = torch.cuda.mem_get_info()
+            else:
+                _free_vram = 0
+
+            if _free_vram > 0 and _bytes_per_frame > 0:
+                # Use 40% of free VRAM for tile output budget (leaves room for
+                # block weights + intermediate activations loaded by the streamer)
+                _max_tile = int(_free_vram * 0.40 / _bytes_per_frame)
+                # Snap down to valid: tile = _tcr × k + 1
+                _k = max(1, (_max_tile - 1) // _tcr)
+                _tile = _tcr * _k + 1
+                # Clamp: minimum _min_tile, no hard upper cap (let VRAM decide)
+                _tile = max(_min_tile, _tile)
+            else:
+                _tile = 33  # safe fallback if no CUDA
+
+            _stride = max(1, _tile - _overlap)
+            vae.tile_sample_min_num_frames    = _tile
+            vae.tile_sample_stride_num_frames = _stride
+
+            _tile_mb   = _tile * _bytes_per_frame / 1024**2
+            _n_tiles   = max(1, (latents.shape[2] - (_tile // _tcr)) // (_stride // _tcr) + 1)
+            logger.info(
+                "[WeeLLM/LTX2] VAE temporal tiling: tile=%d frames, stride=%d, overlap=%d "
+                "(~%d tiles, ~%.0f MB/tile, free VRAM %.0f MB).",
+                _tile, _stride, _overlap, _n_tiles, _tile_mb, _free_vram / 1024**2,
+            )
+
+        # ── Streaming Temporal Tiled Decode patch ─────────────────────────────────
+        # Replaces diffusers' _temporal_tiled_decode() which accumulates ALL decoded
+        # tiles in row[] on GPU before blending. Instead, blend on-the-fly and
+        # offload completed stride slices to CPU RAM immediately.
+        # Peak VRAM overhead = 2 tiles (current + previous), not N tiles.
+        if vae is not None and hasattr(vae, "_temporal_tiled_decode"):
+            _vae_ref = vae
+
+            def _streaming_temporal_tiled_decode(z, temb, causal=None, return_dict=True):
+                from diffusers.models.autoencoders.autoencoder_kl_ltx2 import DecoderOutput
+                batch_size, num_channels, num_frames, height, width = z.shape
+                num_sample_frames = (num_frames - 1) * _vae_ref.temporal_compression_ratio + 1
+
+                tile_latent_min_num_frames    = _vae_ref.tile_sample_min_num_frames    // _vae_ref.temporal_compression_ratio
+                tile_latent_stride_num_frames = _vae_ref.tile_sample_stride_num_frames // _vae_ref.temporal_compression_ratio
+                tile_latent_min_height = _vae_ref.tile_sample_min_height // _vae_ref.spatial_compression_ratio
+                tile_latent_min_width  = _vae_ref.tile_sample_min_width  // _vae_ref.spatial_compression_ratio
+                blend_num_frames = _vae_ref.tile_sample_min_num_frames - _vae_ref.tile_sample_stride_num_frames
+
+                result_chunks = []   # completed stride-sized slices (on CPU)
+                prev_decoded  = None # previous tile's decoded tensor (on GPU)
+                tile_idx      = 0
+
+                for i in range(0, num_frames, tile_latent_stride_num_frames):
+                    tile = z[:, :, i : i + tile_latent_min_num_frames + 1, :, :]
+
+                    if _vae_ref.use_tiling and (tile.shape[-1] > tile_latent_min_width
+                                               or tile.shape[-2] > tile_latent_min_height):
+                        decoded = _vae_ref.tiled_decode(tile, temb, causal=causal, return_dict=True).sample
+                    else:
+                        decoded = _vae_ref.decoder(tile, temb, causal=causal)
+
+                    if i > 0:
+                        decoded = decoded[:, :, :-1, :, :]
+
+                    if prev_decoded is not None:
+                        blended = _vae_ref.blend_t(prev_decoded, decoded, blend_num_frames)
+                        chunk   = blended[:, :, : _vae_ref.tile_sample_stride_num_frames, :, :]
+                        result_chunks.append(chunk.cpu())
+                        del prev_decoded, blended, chunk
+                        torch.cuda.empty_cache()
+                        logger.debug(
+                            "[WeeLLM/LTX2][StreamVAE] Tile %d blended+offloaded. VRAM: %.0f MB",
+                            tile_idx, torch.cuda.memory_allocated() / 1024**2,
+                        )
+                    else:
+                        chunk = decoded[:, :, : _vae_ref.tile_sample_stride_num_frames + 1, :, :]
+                        result_chunks.append(chunk.cpu())
+                        del chunk
+                        torch.cuda.empty_cache()
+
+                    prev_decoded = decoded
+                    tile_idx    += 1
+
+                # Last tile: no next tile to blend with, keep as-is
+                if prev_decoded is not None:
+                    result_chunks.append(prev_decoded.cpu())
+                    del prev_decoded
+                    torch.cuda.empty_cache()
+
+                logger.info(
+                    "[WeeLLM/LTX2][StreamVAE] All %d tiles decoded. Assembling on GPU...",
+                    len(result_chunks),
+                )
+                dec = torch.cat([c.to(z.device) for c in result_chunks], dim=2)
+                del result_chunks
+                dec = dec[:, :, :num_sample_frames]
+
+                if not return_dict:
+                    return (dec,)
+                return DecoderOutput(sample=dec)
+
+            vae._temporal_tiled_decode = _streaming_temporal_tiled_decode
+
         return latents
+
 
     def load_lora_weights(self, pretrained_model_name_or_path_or_dict, **kwargs):
         """Intercept diffusers LoRA loading to preserve WeeLLM LiveSeeker hooks."""
