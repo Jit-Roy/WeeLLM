@@ -185,10 +185,71 @@ class WeeVideoPipeline(WeeBasePipeline):
         seed = kwargs.pop("seed", generator.initial_seed() if generator is not None else 42)
         
         prompt = kwargs.get("prompt", "")
-        height = kwargs.get("height", 544)
-        width = kwargs.get("width", 960)
         num_frames = kwargs.get("num_frames", 121)
         steps = kwargs.get("num_inference_steps", 6)
+
+        # ── Smart height/width resolution ─────────────────────────────────────
+        # Priority:
+        #   1. User explicitly passed both → use as-is, ignore everything else.
+        #   2. Image-to-video (kwargs["image"] set by WeeLTX2Pipeline router):
+        #        - Missing dim(s) are filled from the first frame's actual size.
+        #   3. Text-to-video (no image): default to 544×960.
+        # In all cases the resolved values are written back into kwargs so the
+        # underlying diffusers pipeline and the cache both see the same dims.
+        _user_h = kwargs.get("height")
+        _user_w = kwargs.get("width")
+        _first_frame = kwargs.get("image")   # set by WeeLTX2Pipeline for I2V
+
+        if _user_h is not None and _user_w is not None:
+            # Both provided by the user — respect exactly, don't look at image dims.
+            height, width = _user_h, _user_w
+        else:
+            if _first_frame is not None:
+                # I2V mode: derive missing dim(s) from the supplied first frame.
+                _fh, _fw = None, None
+                try:
+                    from PIL import Image as _PILImage
+                    if isinstance(_first_frame, _PILImage.Image):
+                        _fw, _fh = _first_frame.size   # PIL.size → (width, height)
+                    elif isinstance(_first_frame, torch.Tensor):
+                        _t = _first_frame
+                        if _t.dim() == 4:
+                            _t = _t[0]          # unbatch [B,C,H,W] → [C,H,W]
+                        if _t.dim() == 3:
+                            if _t.shape[0] in (1, 3, 4):   # CHW layout
+                                _fh, _fw = int(_t.shape[1]), int(_t.shape[2])
+                            else:                            # HWC layout
+                                _fh, _fw = int(_t.shape[0]), int(_t.shape[1])
+                    else:
+                        import numpy as _np
+                        _arr = _np.asarray(_first_frame)
+                        _fh, _fw = int(_arr.shape[0]), int(_arr.shape[1])
+                except Exception as _dim_err:
+                    logger.warning(
+                        "[WeeLLM] Could not extract dims from first frame (%s) — "
+                        "falling back to 544×960.", _dim_err
+                    )
+
+                height = _user_h if _user_h is not None else (_fh if _fh else 544)
+                width  = _user_w if _user_w is not None else (_fw if _fw else 960)
+                logger.info(
+                    "[WeeLLM] I2V mode — resolved dims: height=%d, width=%d "
+                    "(source: %s)",
+                    height, width,
+                    "user" if (_user_h is not None or _user_w is not None) else "first-frame",
+                )
+            else:
+                # T2V mode: sensible default.
+                height = _user_h if _user_h is not None else 544
+                width  = _user_w if _user_w is not None else 960
+                logger.info(
+                    "[WeeLLM] T2V mode — resolved dims: height=%d, width=%d",
+                    height, width,
+                )
+
+        # Write resolved dims back so both the cache key and diffusers see them.
+        kwargs["height"] = height
+        kwargs["width"]  = width
 
         if no_cache:
             return super().__call__(**kwargs)
