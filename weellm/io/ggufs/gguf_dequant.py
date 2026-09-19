@@ -25,10 +25,14 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 # Quant types that can be used directly as torch tensors without dequantization.
+# This includes both native float formats and raw integer storage types.
 TORCH_COMPATIBLE_QTYPES = frozenset({
     None,
     gguf.GGMLQuantizationType.F32,
     gguf.GGMLQuantizationType.F16,
+    gguf.GGMLQuantizationType.I8,
+    gguf.GGMLQuantizationType.I16,
+    gguf.GGMLQuantizationType.I32,
 })
 
 
@@ -327,6 +331,20 @@ def dequantize_tensor(
         result   = dequant_fn(blocks, block_size, type_size, dtype)
         return result.reshape(shape).to(dtype)
 
+    # Integer storage types (I8 / I16 / I32 / I64) — not quantized, just cast.
+    # These appear in Gemma4 GGUFs for layer_scalar, pos_embedding, etc.
+    _INT_TYPE_MAP = {
+        gguf.GGMLQuantizationType.I8:  torch.int8,
+        gguf.GGMLQuantizationType.I16: torch.int16,
+        gguf.GGMLQuantizationType.I32: torch.int32,
+    }
+    if qtype in _INT_TYPE_MAP:
+        return raw_data.view(_INT_TYPE_MAP[qtype]).reshape(shape).to(dtype)
+
+    # I64 — PyTorch has no native int64→float view shortcut; go via float64.
+    if hasattr(gguf.GGMLQuantizationType, "I64") and qtype == gguf.GGMLQuantizationType.I64:
+        return raw_data.view(torch.int64).reshape(shape).to(torch.float64).to(dtype)
+
     # Final fallback — use gguf's own numpy-based path (slow but universal)
     import warnings
     import numpy as np
@@ -336,5 +354,13 @@ def dequantize_tensor(
         RuntimeWarning,
         stacklevel=2,
     )
-    np_arr = gguf.quants.dequantize(raw_data.cpu().numpy(), qtype)
-    return torch.from_numpy(np_arr).reshape(shape).to(dtype)
+    try:
+        np_arr = gguf.quants.dequantize(raw_data.cpu().numpy(), qtype)
+        return torch.from_numpy(np_arr).reshape(shape).to(dtype)
+    except NotImplementedError:
+        raise NotImplementedError(
+            f"WeeLLM: Cannot dequantize GGUF tensor with qtype '{qtype}' (id={int(qtype)}). "
+            f"Shape={shape}. Neither the fast PyTorch path, the gguf numpy path, "
+            f"nor the integer passthrough handles this type. "
+            f"Please open an issue or add a handler to gguf_dequant.py."
+        )
