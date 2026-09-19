@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from weellm.io.ggufs.keymaps.text_encoders.t5     import T5KeyMap
 from weellm.io.ggufs.keymaps.text_encoders.llama  import LlamaKeyMap
+from weellm.io.ggufs.keymaps.text_encoders.gemma4  import Gemma4KeyMap
 from weellm.io.ggufs.keymaps.transformers.flux   import FluxKeyMap
 from weellm.io.ggufs.keymaps.transformers.flux2  import Flux2KeyMap
 from weellm.io.ggufs.keymaps.text_encoders.glm    import GLMKeyMap
@@ -36,6 +37,7 @@ logger = logging.getLogger("weellm")
 _REGISTRY = [
     T5KeyMap,       # enc.blk.*  — must come before llama (no overlap, but explicit ordering)
     GLMKeyMap,      # GLM text encoder: token_embd + blk.* + ffn_gate
+    Gemma4KeyMap,   # multi_modal_projector.* + *.layer_scalar (already diffusers naming)
     LlamaKeyMap,    # blk.*
     Flux2KeyMap,    # Flux.2 Klein: 8 double + 24 single blocks
     FluxKeyMap,     # double_blocks.*
@@ -81,6 +83,7 @@ __all__ = [
     "build_remap_fn",
     "T5KeyMap",
     "LlamaKeyMap",
+    "Gemma4KeyMap",
     "GLMKeyMap",
     "FluxKeyMap",
     "Flux2KeyMap",
