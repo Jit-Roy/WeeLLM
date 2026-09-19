@@ -235,61 +235,46 @@ image = pipe.generate(
 image.save("output_i2i.png")
 ```
 
-### Text to Video
+### Text & Image to Video 
 
 ```python
 from weellm import WeeVideoPipeline
-from weellm.utils import export_to_video
-import torch
-
-pipe = WeeVideoPipeline.from_pretrained(
-    "Lightricks/LTX-Video", 
-    device="cuda", 
-    torch_dtype=torch.bfloat16,
-    vram_budget=4, 
-    ram_budget=4
-)
-
-video_frames = pipe.generate(
-    prompt="A drone flying over a snowy mountain peak at sunrise.",
-    negative_prompt="worst quality, inconsistent motion",
-    height=512,
-    width=704,
-    num_inference_steps=40,
-    guidance_scale=3.0,
-    seed=42,
-)
-export_to_video(video_frames, "output_video.mp4", fps=24)
-```
-
-### Text + Image to Video
-
-```python
-from weellm import WeeVideoPipeline
-from weellm.utils import export_to_video
+from diffusers.pipelines.ltx2.utils import DISTILLED_SIGMA_VALUES
 from PIL import Image
 import torch
 
 pipe = WeeVideoPipeline.from_pretrained(
-    "Lightricks/LTX-Video", 
-    device="cuda", 
-    torch_dtype=torch.bfloat16,
-    vram_budget=4, 
-    ram_budget=4
+    r"Lightricks/LTX-2.5-Diffusers",
+    device="cuda",
+    torch_dtype=torch.float16,  
+    text_encoder_path="elix3r/gemma4-12b-with-proj-ltx-2.5-GGUF/gemma4-12b-with-proj-ltx-2.5-Q5_K_M.gguf",
+    transformer_path="Abiray/LTX-2.5-Distilled-GGUF/LTX-2.5-Distilled-Q4_K_M.gguf"
 )
 
-start_image = Image.open("start_frame.jpg").convert("RGB")
-video_frames = pipe.generate(
-    prompt="The camera pans slowly across the room.",
-    negative_prompt="worst quality, inconsistent motion",
-    image=start_image,
-    height=512,
-    width=704,
-    num_inference_steps=40,
-    guidance_scale=3.0,
+first_frame = Image.open(r"first_frame.png").convert("RGB")
+last_frame = Image.open(r"last_frame.png").convert("RGB")
+
+video_frames = pipe(
+    prompt=(
+        'The person naturally stands up from the seated position and calmly looks toward the mountains.'
+        'Smooth, realistic human movement, natural posture, stable camera, no sudden movements.'
+    ),
+    first_frame=first_frame,
+    last_frame=last_frame,
+    num_frames=121, 
+    frame_rate=24.0,
+    sigmas=DISTILLED_SIGMA_VALUES,
+    guidance_scale=1.0,
     seed=42,
+    audio_guidance_scale=1.0,
+    stg_scale=0.0,
+    audio_stg_scale=0.0,
+    modality_scale=1.0,
+    audio_modality_scale=1.0,
 )
-export_to_video(video_frames, "output_i2v.mp4", fps=24)
+
+output_path = "video.mp4"
+video_frames.save(output_path, fps=24)
 ```
 
 ### Using GGUF Models
