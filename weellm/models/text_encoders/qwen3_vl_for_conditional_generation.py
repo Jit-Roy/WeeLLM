@@ -143,6 +143,15 @@ class Qwen3VLForConditionalGenerationStreamer:
                         self._model, f"model.language_model.rotary_emb.{buf_name}",
                         self.device, value=buf.float()
                     )
+                    
+        if hasattr(self._model, "model") and hasattr(self._model.model, "visual") and hasattr(self._model.model.visual, "rotary_pos_emb"):
+            rotary = self._model.model.visual.rotary_pos_emb
+            for buf_name, buf in list(rotary.named_buffers()):
+                if buf.device.type != self.device:
+                    set_module_tensor_to_device(
+                        self._model, f"model.visual.rotary_pos_emb.{buf_name}",
+                        self.device, value=buf.float()
+                    )
 
         self._init_missing_tensors()
         clean_memory(self.device)

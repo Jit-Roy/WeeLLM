@@ -186,6 +186,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--fresh", action="store_true",
         help="Delete the existing run cache before starting, forcing a full re-run even if a cache exists.",
     )
+    
+    # Advanced Streamer Settings
+    parser.add_argument(
+        "--disable_kv_cache", action="store_true",
+        help="Disable KV caching for DiT cross-attention to drastically reduce VRAM usage on large multimodal prompts.",
+    )
     return parser
 
 
@@ -288,8 +294,16 @@ def main() -> int:
     if args.image:
         from PIL import Image, ImageOps
         try:
-            input_image = ImageOps.exif_transpose(Image.open(args.image)).convert("RGB")
-            input_image = input_image.resize((args.width, args.height), Image.LANCZOS)
+            if "," in args.image:
+                paths = [p.strip() for p in args.image.split(",") if p.strip()]
+                input_image = []
+                for p in paths:
+                    img = ImageOps.exif_transpose(Image.open(p)).convert("RGB")
+                    img = img.resize((args.width, args.height), Image.LANCZOS)
+                    input_image.append(img)
+            else:
+                input_image = ImageOps.exif_transpose(Image.open(args.image)).convert("RGB")
+                input_image = input_image.resize((args.width, args.height), Image.LANCZOS)
         except Exception as e:
             print(f"ERROR: Could not load input image: {e}", file=sys.stderr)
             return 1
@@ -403,6 +417,24 @@ def main() -> int:
         call_kwargs["no_cache"] = args.no_cache
         call_kwargs["cache_every"] = args.cache_every
         call_kwargs["fresh"] = args.fresh
+        
+    import inspect
+    sig = inspect.signature(pipe.__call__)
+    has_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    expected_kwargs = set(sig.parameters.keys())
+    
+    # Handle specific renames/mappings
+    if "true_cfg_scale" in expected_kwargs and "guidance_scale" in call_kwargs:
+        call_kwargs["true_cfg_scale"] = call_kwargs.pop("guidance_scale")
+        
+    # Strip any incompatible arguments if the pipeline doesn't have a catch-all **kwargs
+    if not has_kwargs:
+        call_kwargs = {k: v for k, v in call_kwargs.items() if k in expected_kwargs}
+        
+    if args.disable_kv_cache:
+        if "use_kv_cache" in expected_kwargs or has_kwargs:
+            call_kwargs["use_kv_cache"] = False
+        
     out   = pipe(**call_kwargs)
     
     # Handle different output types (images, video+audio, etc)
