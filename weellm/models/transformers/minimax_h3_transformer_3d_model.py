@@ -73,6 +73,60 @@ def _remap_ckpt_key(ckpt_key: str) -> str:
     return ckpt_key
 
 
+class AdalNTableEmbedder(nn.Module):
+    """Replaces time_embedder in pruned GGUF checkpoints.
+
+    The pruned MiniMax-H3 GGUF replaces the heavy time_embedder MLP
+    (256→5376→2688) with a compact lookup table of shape [1025, 8].
+    During inference, the timestep t is mapped to a table index and
+    linearly interpolated to produce an 8-dim embedding, which is then
+    fed directly into each block's adaln_proj.linear (which has
+    in_features=8 instead of 2688 in the pruned model).
+
+    IMPORTANT — diffusers calling convention:
+        diffusers' MiniMaxH3Transformer3DModel.forward pre-computes a
+        sinusoidal embedding from the raw timestep and then calls
+        ``temb = self.time_embedder(temb_sin)``.
+        So our forward() receives the sinusoidal embedding, NOT raw t.
+        We therefore intercept the raw timestep one level up via a
+        model-level forward_pre_hook (installed in from_pretrained) and
+        store it in ``self._raw_t``.
+
+    Reference: ComfyUI comfy/ldm/minimax/model.py
+    """
+
+    def __init__(self, table: torch.Tensor):
+        super().__init__()
+        # Keep table in float32 — using float16 causes NaN at early timesteps
+        self.register_buffer("table", table.float(), persistent=True)
+        # Set by the parent model's forward_pre_hook before each call
+        self._raw_t: Optional[torch.Tensor] = None
+
+    def forward(self, temb_sin: torch.Tensor) -> torch.Tensor:
+        """temb_sin is the pre-computed sinusoidal embedding passed by diffusers.
+        We ignore it and use ``self._raw_t`` (the original integer timestep
+        in 0..1000) set by the model's forward_pre_hook."""
+        if self._raw_t is None:
+            raise RuntimeError(
+                "AdalNTableEmbedder._raw_t is None — the model's "
+                "forward_pre_hook may not have fired yet."
+            )
+        t = self._raw_t  # [M] in 0..1000  (diffusers scheduler convention)
+        # VERIFIED via debug log: diffusers passes t ∈ [0, 1] directly.
+        # This IS ComfyUI's internal t = 1 - sigma (not sigma, not sigma*1000).
+        #   t=0.0 → noise (σ=1) → table[0]
+        #   t=1.0 → clean (σ=0) → table[1024]
+        # Matches ComfyUI source: pos = t.clamp(0,1) * (table.shape[0] - 1)
+        t_norm = t.float().clamp(0.0, 1.0) * 1024.0  # [0..1024]
+        # Index arithmetic on CPU (table buffer is on CPU)
+        t_lo = t_norm.long().clamp(0, 1023).cpu()
+        t_hi = (t_lo + 1).clamp(0, 1024)
+        frac = (t_norm.cpu() - t_lo.float()).unsqueeze(-1)  # [M, 1]
+        # torch.lerp between adjacent table entries (ComfyUI verified mechanism)
+        basis = torch.lerp(self.table[t_lo], self.table[t_hi], frac)  # [M, 8]
+        return basis.to(t.device)
+
+
 class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
     """
     Wraps MiniMaxH3Transformer3DModel for memory-efficient streaming.
@@ -156,26 +210,31 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
                 remapped[prefix + "to_q.bias"] = tensor[:dim].contiguous()
                 remapped[prefix + "to_k.bias"] = tensor[dim : 2 * dim].contiguous()
                 remapped[prefix + "to_v.bias"] = tensor[2 * dim :].contiguous()
-            # Rename out_proj → to_out.0
-            elif ".attn.out_proj." in dk:
+                continue
+            
+            if ".attn.out_proj." in dk:
                 dk = dk.replace(".attn.out_proj.", ".attn.to_out.0.")
-                remapped[dk] = tensor
-            # Rename norm keys: q_norm/k_norm → norm_q/norm_k
             elif ".attn.q_norm." in dk:
                 dk = dk.replace(".attn.q_norm.", ".attn.norm_q.")
-                remapped[dk] = tensor
             elif ".attn.k_norm." in dk:
                 dk = dk.replace(".attn.k_norm.", ".attn.norm_k.")
-                remapped[dk] = tensor
-            # Rename mlp: fc1→ff.net.0.proj, fc2→ff.net.2
             elif ".mlp.fc1." in dk:
-                gate, value = tensor.chunk(2, dim=0)
-                remapped[dk.replace(".mlp.fc1.", ".ff.net.0.proj.")] = torch.cat([value, gate], dim=0).contiguous()
+                t_cpu = tensor.cpu()
+                gate, value = t_cpu.chunk(2, dim=0)
+                remapped[dk.replace(".mlp.fc1.", ".ff.net.0.proj.")] = torch.cat([value, gate], dim=0).cpu()
+                continue
             elif ".mlp.fc2." in dk:
                 dk = dk.replace(".mlp.fc2.", ".ff.net.2.")
-                remapped[dk] = tensor
             else:
-                remapped[dk] = tensor
+                # GGUF: MiniMaxH3KeyMap renamed fc1->ff.net.0.proj; still need gate/value swap
+                if ".ff.net.0.proj." in dk and tensor.dim() >= 1 and tensor.shape[0] > 1:
+                    # Swap on CPU to avoid VRAM fragmentation OOM (294 MiB torch.cat peak)
+                    t_cpu = tensor.cpu()
+                    gate, value = t_cpu.chunk(2, dim=0)
+                    remapped[dk] = torch.cat([value, gate], dim=0).cpu()
+                    continue
+
+            remapped[dk] = tensor
 
         from weellm.io.memory import place_tensors
         place_tensors(self.model, remapped, self.device, self.dtype, skip_errors=True)
@@ -219,9 +278,122 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
             model = MiniMaxH3Transformer3DModel.from_config(cfg)
         model.eval()
 
+        # ── Detect pruned GGUF (adaln_t_table present) ────────────────────────
+        # In the pruned checkpoint, time_embedder is replaced by an 8-dim lookup
+        # table, and every block's adaln_proj.linear has in_features=8 (not 2688).
+        # We need to reinitialize those layers BEFORE loading GGUF weights so the
+        # shapes match.
+        _is_pruned = "adaln_t_table" in seeker.weight_map
+        if _is_pruned:
+            logger.info("  Detected pruned GGUF (adaln_t_table present) — "
+                        "reinitialising adaln_proj.linear in_features: 2688 → 8 on all blocks ...")
+            # Reinitialise adaln_proj.linear to accept 8-dim input (matching the table output dim)
+            # Must be done on CPU (not meta) so GGUF weights can be loaded in.
+            for blk in model.transformer_blocks:
+                old_lin = blk.adaln_proj.linear
+                new_lin = nn.Linear(
+                    in_features=8,
+                    out_features=old_lin.out_features,
+                    bias=old_lin.bias is not None,
+                    device="cpu",
+                    dtype=dtype,
+                )
+                blk.adaln_proj.linear = new_lin
+            logger.info("  adaln_proj.linear reinitialised on %d blocks.", len(model.transformer_blocks))
+
+            # norm_out.linear also uses temb in the same AdaLN pattern (from
+            # final_layer.adaln_proj.linear in the GGUF) — patch it too.
+            if hasattr(model, "norm_out") and hasattr(model.norm_out, "linear"):
+                old_norm_lin = model.norm_out.linear
+                model.norm_out.linear = nn.Linear(
+                    in_features=8,
+                    out_features=old_norm_lin.out_features,
+                    bias=old_norm_lin.bias is not None,
+                    device="cpu",
+                    dtype=dtype,
+                )
+                logger.info("  norm_out.linear reinitialised to in_features=8.")
+
+            # ── Patch adaln_proj and norm_out to skip SiLU ────────────────────
+            # Diffusers hardcodes nn.functional.silu() before every adaln linear.
+            # ComfyUI uses apply_silu=False for pruned GGUFs — the linear weights
+            # were trained to receive the raw 8-dim table output directly.
+            # We monkey-patch .forward on every module that applies the spurious SiLU.
+
+            def _make_adaln_no_silu(lin, hidden_size):
+                """Return a forward closure that skips SiLU before adaln_proj.linear."""
+                def _fwd(temb: torch.Tensor):
+                    out = lin(temb.to(lin.weight.dtype))
+                    out = out.view(-1, 6 * hidden_size)
+                    return out.chunk(6, dim=-1)
+                return _fwd
+
+            for _blk in model.transformer_blocks:
+                _blk.adaln_proj.forward = _make_adaln_no_silu(
+                    _blk.adaln_proj.linear, _blk.adaln_proj.hidden_size
+                )
+
+            if hasattr(model, "norm_out") and hasattr(model.norm_out, "linear"):
+                _no_lin  = model.norm_out.linear
+                _no_norm = model.norm_out.norm
+
+                def _norm_out_no_silu(
+                    hidden_states: torch.Tensor,
+                    temb: torch.Tensor,
+                    timestep_indices: torch.Tensor,
+                    _lin=_no_lin,
+                    _norm=_no_norm,
+                ) -> torch.Tensor:
+                    shift, scale = _lin(temb.to(_lin.weight.dtype)).chunk(2, dim=-1)
+                    hs = _norm(hidden_states)
+                    return (
+                        hs * (1.0 + scale.index_select(0, timestep_indices))
+                        + shift.index_select(0, timestep_indices)
+                    )
+
+                model.norm_out.forward = _norm_out_no_silu
+
+            logger.info(
+                "  Patched adaln_proj (×%d) and norm_out to skip SiLU "
+                "(pruned GGUF: apply_silu=False).",
+                len(model.transformer_blocks),
+            )
+
         logger.info("Step 3/3 -- Loading resident transformer tensors to device=%s ...", device)
         streamer = cls(model=model, seeker=seeker, device=device, dtype=dtype, prefetch=prefetch, prefetch_device=prefetch_device)
         resident_ckpt_keys = streamer._get_resident_ckpt_keys()
+
+        # Load adaln_t_table first (float32, on CPU) before other resident tensors
+        if _is_pruned:
+            table_tensor = seeker.get_tensors(["adaln_t_table"], device="cpu", dtype=torch.float32)
+            adaln_table = table_tensor["adaln_t_table"]  # [1025, 8]
+            embedder = AdalNTableEmbedder(adaln_table)
+            model.time_embedder = embedder
+            logger.info("  Installed AdalNTableEmbedder (table shape %s) — pruned mode.",
+                        tuple(adaln_table.shape))
+
+            # Register a model-level forward_pre_hook to capture raw timestep.
+            # diffusers calls:  temb_sin = get_timestep_embedding(timestep, ...)
+            #                   temb = self.time_embedder(temb_sin)
+            # Our AdalNTableEmbedder.forward receives temb_sin (not raw t).
+            # The hook fires before any of that, giving us raw timestep.
+            _emb_ref = embedder  # captured by closure
+
+            def _cache_raw_timestep(module, args, kwargs):
+                t = kwargs.get("timestep")
+                if t is None and len(args) >= 2:
+                    t = args[1]   # positional: (hidden_states, timestep, ...)
+                if t is not None:
+                    _emb_ref._raw_t = t
+                    if not getattr(_emb_ref, "_t_logged", False):
+                        logger.info("  [adaln_t_debug] first timestep = %s  dtype=%s  values=%s",
+                                    tuple(t.shape), t.dtype,
+                                    t.flatten()[:4].tolist())
+                        _emb_ref._t_logged = True
+                return None  # do not modify args/kwargs
+
+            model.register_forward_pre_hook(_cache_raw_timestep, with_kwargs=True)
+            logger.info("  Registered raw-timestep pre-hook on transformer.")
 
         if resident_ckpt_keys:
             # Load tensors using checkpoint key names, then apply prefix remapping
@@ -267,6 +439,36 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
 
         clean_memory(device)
         report_memory("After resident load")
+
+        # ── Post-load: materialise any params still on meta device ────────────
+        from accelerate.utils.modeling import set_module_tensor_to_device
+        streaming_prefixes = tuple(
+            sname + "." for sname, _ in streamer._get_shard_order()
+        )
+        meta_names = [
+            n for n, p in model.named_parameters()
+            if p.device.type == "meta"
+            and not any(n.startswith(pfx) for pfx in streaming_prefixes)
+        ]
+        if meta_names:
+            logger.info(
+                "  Initialising %d non-streaming meta params missing from GGUF: %s ...",
+                len(meta_names), meta_names[:3],
+            )
+            with torch.no_grad():
+                for pname in meta_names:
+                    parts = pname.split(".")
+                    mod = model
+                    for part in parts[:-1]:
+                        mod = getattr(mod, part)
+                    param = getattr(mod, parts[-1])
+                    new_t = torch.empty(param.shape, dtype=dtype, device=device)
+                    if param.dim() >= 2:
+                        torch.nn.init.xavier_uniform_(new_t)
+                    else:
+                        torch.nn.init.zeros_(new_t)
+                    set_module_tensor_to_device(model, pname, device, value=new_t, dtype=dtype)
+            logger.info("  Meta-param init done.")
 
         block_count = len(streamer._get_shard_order())
         logger.info("Installed %d blocks for streaming.", block_count)

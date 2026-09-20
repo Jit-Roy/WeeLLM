@@ -144,12 +144,96 @@ class Qwen3VLForConditionalGenerationStreamer:
                         self.device, value=buf.float()
                     )
 
+        self._init_missing_tensors()
         clean_memory(self.device)
+
+    def _init_missing_tensors(self):
+        """Initialize omitted tensors (like RoPE inv_freq and tied heads) if they are still on meta."""
+        cfg = self._model.config
+        lm_cfg = cfg.text_config if hasattr(cfg, "text_config") else cfg
+
+        def _init_rope_inv_freq(head_dim: int, theta: float) -> torch.Tensor:
+            half = head_dim // 2
+            return 1.0 / (
+                theta ** (torch.arange(0, half, dtype=torch.float32) / half)
+            )
+
+        # 1. Language-model final norm (RMSNorm) ─ initialise to ones
+        try:
+            norm = self._model.model.language_model.norm
+            if next(norm.parameters()).device.type == "meta":
+                ones = torch.ones(lm_cfg.hidden_size, dtype=self.dtype, device=self.device)
+                set_module_tensor_to_device(self._model, "model.language_model.norm.weight",
+                                            self.device, value=ones)
+        except (AttributeError, StopIteration):
+            pass
+
+        # 2. Language-model RoPE buffers
+        try:
+            lm_rope = self._model.model.language_model.rotary_emb
+            head_dim = getattr(lm_cfg, "head_dim",
+                               lm_cfg.hidden_size // lm_cfg.num_attention_heads)
+            theta   = getattr(lm_cfg, "rope_theta", 1_000_000.0)
+            inv_freq = _init_rope_inv_freq(head_dim, theta).to(self.device)
+            for attr in ("inv_freq", "original_inv_freq"):
+                buf = getattr(lm_rope, attr, None)
+                if buf is not None and buf.device.type == "meta":
+                    set_module_tensor_to_device(
+                        self._model,
+                        f"model.language_model.rotary_emb.{attr}",
+                        self.device, value=inv_freq.clone(),
+                    )
+        except AttributeError:
+            pass
+
+        # 3. Vision RoPE buffer
+        try:
+            vis_rope = self._model.model.visual.rotary_pos_emb
+            vis_cfg  = cfg.vision_config if hasattr(cfg, "vision_config") else cfg
+            head_dim = getattr(vis_cfg, "hidden_size", 1152) // getattr(vis_cfg, "num_heads", 16)
+            theta    = getattr(vis_cfg, "rope_theta", 10_000.0)
+            inv_freq = _init_rope_inv_freq(head_dim, theta).to(self.device)
+            buf = getattr(vis_rope, "inv_freq", None)
+            if buf is not None and buf.device.type == "meta":
+                set_module_tensor_to_device(
+                    self._model, "model.visual.rotary_pos_emb.inv_freq",
+                    self.device, value=inv_freq,
+                )
+        except AttributeError:
+            pass
+
+        # 4. lm_head: tie to embed_tokens if configured
+        try:
+            lm_head = self._model.lm_head
+            tie = getattr(cfg, "tie_word_embeddings", True)
+            if tie:
+                embed_w = self._model.model.language_model.embed_tokens.weight
+                if lm_head.weight.device.type == "meta" and embed_w.device.type != "meta":
+                    set_module_tensor_to_device(
+                        self._model, "lm_head.weight",
+                        self.device, value=embed_w.data,
+                    )
+        except AttributeError:
+            pass
 
     def _place_tensors(self, state_dict: Dict[str, torch.Tensor], device: Optional[str] = None):
         device = device or self.device
         processed_sd = {}
         for name, tensor in state_dict.items():
+            # Fix patch_embed flattened by GGUF (from 5D to 4D)
+            if "patch_embed.proj.weight" in name and tensor.dim() == 4:
+                try:
+                    param = self._model.get_parameter(name)
+                    if param is not None and param.shape != tensor.shape:
+                        tensor = tensor.reshape(param.shape)
+                except Exception:
+                    try:
+                        param = dict(self._model.named_parameters()).get(name)
+                        if param is not None and param.shape != tensor.shape:
+                            tensor = tensor.reshape(param.shape)
+                    except Exception:
+                        pass
+                        
             if name.endswith(".weight_scale"):
                 continue
             
@@ -203,6 +287,10 @@ class Qwen3VLForConditionalGenerationStreamer:
     def _generic_pre_hook(self, module: nn.Module, args):
         prefix = getattr(module, "_te_prefix", "")
         layer_keys = [k for k in self._seeker.weight_map.keys() if k.startswith(prefix)]
+        if not layer_keys:
+            # Gracefully skip missing layers in pruned GGUF models
+            return args
+        
         gpu_sd = self._seeker.get_tensors(layer_keys, device=self.device, dtype=self.dtype)
         print(f"[Hook] Loading {len(gpu_sd)} tensors for {prefix} onto {self.device}")
         if not gpu_sd:
