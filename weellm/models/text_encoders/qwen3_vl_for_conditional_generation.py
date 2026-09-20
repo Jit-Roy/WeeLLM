@@ -55,7 +55,7 @@ def _get_resident_keys(seeker) -> List[str]:
     # which is unused in diffusion models but takes a lot of RAM.
     keys = []
     for k in seeker.weight_map.keys():
-        if "lm_head" in k:
+        if "lm_head" in k or "language_model.norm" in k:
             continue
         if not ("layers." in k or "encoder.layers" in k or "visual.blocks." in k):
             keys.append(k)
