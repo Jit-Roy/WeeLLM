@@ -43,6 +43,7 @@ venv.bak/
 *.ipynb
 backup
 inference*.py
+temp*.py
 
 # -----------------------------------------------------------------------------
 # Model weights & shards  (large binary files — store elsewhere)

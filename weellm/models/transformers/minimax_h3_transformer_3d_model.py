@@ -190,7 +190,9 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
         from weellm.io.memory import place_tensors
 
         remapped: Dict[str, torch.Tensor] = {}
-        for ck, tensor in state_dict.items():
+        # Iterate over keys and pop to free GPU memory immediately for modified tensors
+        for ck in list(state_dict.keys()):
+            tensor = state_dict.pop(ck)
             dk = _remap_ckpt_key(ck)  # prefix remap (blocks.X → transformer_blocks.X etc.)
 
             # Split fused qkv_proj weight/bias into separate to_q / to_k / to_v
@@ -220,8 +222,9 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
                 dk = dk.replace(".attn.k_norm.", ".attn.norm_k.")
             elif ".mlp.fc1." in dk:
                 t_cpu = tensor.cpu()
+                del tensor
                 gate, value = t_cpu.chunk(2, dim=0)
-                remapped[dk.replace(".mlp.fc1.", ".ff.net.0.proj.")] = torch.cat([value, gate], dim=0).cpu()
+                remapped[dk.replace(".mlp.fc1.", ".ff.net.0.proj.")] = torch.cat([value, gate], dim=0)
                 continue
             elif ".mlp.fc2." in dk:
                 dk = dk.replace(".mlp.fc2.", ".ff.net.2.")
@@ -230,8 +233,9 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
                 if ".ff.net.0.proj." in dk and tensor.dim() >= 1 and tensor.shape[0] > 1:
                     # Swap on CPU to avoid VRAM fragmentation OOM (294 MiB torch.cat peak)
                     t_cpu = tensor.cpu()
+                    del tensor
                     gate, value = t_cpu.chunk(2, dim=0)
-                    remapped[dk] = torch.cat([value, gate], dim=0).cpu()
+                    remapped[dk] = torch.cat([value, gate], dim=0)
                     continue
 
             remapped[dk] = tensor
