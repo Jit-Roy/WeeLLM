@@ -351,7 +351,10 @@ class BaseTransformerStreamer(ABC):
     def _install_hooks(self) -> None:
         for shard_name, block in self._shard_order:
             setattr(block, _SHARD_NAME_ATTR, shard_name)
-            block.register_forward_pre_hook(self._pre_hook)
+            # with_kwargs=True: several architectures (e.g. Qwen-Image 2.1) call their
+            # blocks with keyword arguments only, so a positional-only hook would see an
+            # empty `args` and silently skip the float16 clamp below.
+            block.register_forward_pre_hook(self._pre_hook, with_kwargs=True)
             block.register_forward_hook(self._post_hook)
 
     # ------------------------------------------------------------------
@@ -388,7 +391,7 @@ class BaseTransformerStreamer(ABC):
                 
         return new_sd
 
-    def _pre_hook(self, module: nn.Module, args):
+    def _pre_hook(self, module: nn.Module, args, kwargs):
         shard_name: str = getattr(module, _SHARD_NAME_ATTR)
         pos = self._shard_name_to_pos[shard_name]
         layer_keys = self._get_layer_keys(shard_name)
@@ -446,7 +449,8 @@ class BaseTransformerStreamer(ABC):
                 torch.cuda.current_stream().wait_stream(self._h2d_stream)
                 
             self.apply_state_dict(sd)
-            torch.cuda.synchronize()       # flush CUDA copy_ ops from place_tensors
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()   # flush CUDA copy_ ops from place_tensors
             del sd
 
         t2 = time.time()
@@ -461,12 +465,13 @@ class BaseTransformerStreamer(ABC):
         # Clamp float16 inputs to prevent softmax overflow.
         # ------------------------------------------------------------------
         if self.dtype == torch.float16:
-            args = tuple(
-                torch.clamp(a, -60000.0, 60000.0)
-                if isinstance(a, torch.Tensor) and a.is_floating_point()
-                else a
-                for a in args
-            )
+            def _clamp(value):
+                if isinstance(value, torch.Tensor) and value.is_floating_point():
+                    return torch.clamp(value, -60000.0, 60000.0)
+                return value
+
+            args   = tuple(_clamp(a) for a in args)
+            kwargs = {k: _clamp(v) for k, v in kwargs.items()}
 
         # ------------------------------------------------------------------
         # ------------------------------------------------------------------
@@ -502,14 +507,15 @@ class BaseTransformerStreamer(ABC):
                             self.seeker.get_tensors, akeys, "cpu", self.dtype
                         )
 
-        return args
+        return args, kwargs
 
     # ------------------------------------------------------------------
     # Post-hook  (GPU compute timer + VRAM calibration + eviction)
     # ------------------------------------------------------------------
 
     def _post_hook(self, module: nn.Module, args, output):
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         t_end  = time.time()
         t_start = getattr(module, "_weellm_t_compute_start", t_end)
         shard_name = getattr(module, _SHARD_NAME_ATTR)

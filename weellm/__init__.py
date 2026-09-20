@@ -55,6 +55,7 @@ __all__ = [
     "HiDreamImageTransformer2DModelStreamer",
     "Lumina2Transformer2DModelStreamer",
     "QwenImageTransformer2DModelStreamer",
+    "QwenImage21Transformer2DModelStreamer",
     "Ideogram4Transformer2DModelStreamer",
     "ErnieImageTransformer2DModelStreamer",
     "Krea2Transformer2DModelStreamer",
@@ -113,6 +114,7 @@ from .models.transformers.cogview4_transformer_2d_model  import CogView4Transfor
 from .models.transformers.hidream_transformer_2d_model   import HiDreamImageTransformer2DModelStreamer  # noqa: E402
 from .models.transformers.lumina2_transformer_2d_model   import Lumina2Transformer2DModelStreamer  # noqa: E402
 from .models.transformers.qwen_image_transformer_2d_model import QwenImageTransformer2DModelStreamer  # noqa: E402
+from .models.transformers.qwen_image_21_transformer_2d_model import QwenImage21Transformer2DModelStreamer  # noqa: E402
 from .models.transformers.ideogram4_transformer          import Ideogram4Transformer2DModelStreamer  # noqa: E402
 from .models.transformers.ernie_image_transformer_2d_model import ErnieImageTransformer2DModelStreamer  # noqa: E402
 from .models.transformers.krea2_transformer_2d_model import Krea2Transformer2DModelStreamer  # noqa: E402

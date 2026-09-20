@@ -75,6 +75,7 @@ _TR_MAP = {
     "ZImageTransformer2DModel":            "weellm.models.transformers.z_image_transformer_2d_model",
     "SD3Transformer2DModel":               "weellm.models.transformers.sd3_transformer_2d_model",
     "QwenImageTransformer2DModel":         "weellm.models.transformers.qwen_image_transformer_2d_model",
+    "QwenImage21Transformer2DModel":       "weellm.models.transformers.qwen_image_21_transformer_2d_model",
     "CogView4Transformer2DModel":          "weellm.models.transformers.cogview4_transformer_2d_model",
     "Lumina2Transformer2DModel":           "weellm.models.transformers.lumina2_transformer_2d_model",
     "AuraFlowTransformer2DModel":          "weellm.models.transformers.auraflow_transformer_2d_model",
@@ -180,7 +181,47 @@ class WeeBasePipeline:
             if kwargs.get("_auto_resize", True):
                 logger.info("[WeeLLM] Disabling '_auto_resize' to prevent catastrophic sequence length OOMs on 4GB GPUs.")
                 kwargs["_auto_resize"] = False
-                
+
+        # Prefix KV caching (Qwen-Image 2.1) keeps per-layer keys/values for the whole
+        # denoising loop. That is activation memory the streamer cannot evict, and the
+        # VRAM calibration pass cannot see it either, so default it off on tight budgets.
+        # Unlike the two switches above this one only supplies a default — an explicit
+        # user choice is always honoured.
+        # Qwen-Image 2.1 expresses classifier-free guidance as `true_cfg_scale` and has no
+        # `guidance_scale` at all. The text-to-image path does not filter unsupported
+        # kwargs, so `--guidance_scale` would raise TypeError there. Forward it instead.
+        if (
+            "guidance_scale" in kwargs
+            and "guidance_scale" not in sig.parameters
+            and "true_cfg_scale" in sig.parameters
+        ):
+            _guidance = kwargs.pop("guidance_scale")
+            if "true_cfg_scale" not in kwargs:
+                kwargs["true_cfg_scale"] = _guidance
+                logger.info(
+                    "[WeeLLM] %s expresses guidance as 'true_cfg_scale' — forwarding "
+                    "guidance_scale=%s to it.",
+                    self._pipeline.__class__.__name__, _guidance,
+                )
+
+        if "use_kv_cache" in sig.parameters:
+            if "use_kv_cache" not in kwargs:
+                logger.info(
+                    "[WeeLLM] Defaulting use_kv_cache=False — the prefix KV cache is per-layer "
+                    "activation memory the streamer cannot evict. Pass use_kv_cache=True to opt in."
+                )
+                kwargs["use_kv_cache"] = False
+        elif "use_kv_cache" in kwargs:
+            # `--use_kv_cache` is a global CLI flag, so it reaches pipelines that know
+            # nothing about it. Drop it rather than letting it raise a TypeError, but say
+            # so out loud — the user asked for something this model cannot do.
+            kwargs.pop("use_kv_cache")
+            logger.warning(
+                "[WeeLLM] %s does not support prefix KV caching — ignoring use_kv_cache.",
+                self._pipeline.__class__.__name__,
+            )
+
+
         # --- Memory Overhead Estimation ---
         est_w = kwargs.get("width", 1024)
         est_h = kwargs.get("height", 1024)
@@ -993,16 +1034,57 @@ class WeeBasePipeline:
                     )
                 elif hasattr(vae, "enable_tiling"):
                     # ── Image VAE: standard spatial tiling ───────────────────
+                    # Two attribute conventions exist in diffusers:
+                    #   * legacy AutoencoderKL (SD/SDXL): a single `tile_sample_min_size`
+                    #   * Wan-style 3D VAEs (e.g. AutoencoderKLQwenImage21): separate
+                    #     `tile_sample_min_height` / `tile_sample_min_width` plus strides
+                    # Setting only the legacy attribute on the latter silently does nothing,
+                    # so honour whichever the VAE actually exposes.
                     vae.enable_tiling()
-                    vae.tile_sample_min_size = vae_tile_size
-                    if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
-                        vae.tile_latent_min_size = int(
-                            vae_tile_size / (2 ** (len(vae.config.block_out_channels) - 1))
+                    applied = []
+
+                    if hasattr(vae, "tile_sample_min_height") and hasattr(vae, "tile_sample_min_width"):
+                        # These VAEs derive their latent-space tile geometry by integer-dividing
+                        # the sample-space values by the spatial compression ratio, so too small a
+                        # tile makes the latent stride round down to zero and the tiling loop then
+                        # slices empty tiles. Keep both at least one latent unit wide.
+                        ratio = int(getattr(vae, "spatial_compression_ratio", 1) or 1)
+                        tile = max(vae_tile_size, max(2 * ratio, 8))
+                        if tile != vae_tile_size:
+                            logger.warning(
+                                "      -> [WeeLLM] vae_tile_size=%d is too small for this VAE "
+                                "(%dx spatial compression); using %d instead.",
+                                vae_tile_size, ratio, tile,
+                            )
+                        vae.tile_sample_min_height = tile
+                        vae.tile_sample_min_width  = tile
+                        applied.append("tile_sample_min_height/width")
+                        # Keep the 0.75 stride/tile ratio these VAEs ship with (192/256).
+                        stride = min(tile, max(int(tile * 0.75), ratio))
+                        for _stride_attr in ("tile_sample_stride_height", "tile_sample_stride_width"):
+                            if hasattr(vae, _stride_attr):
+                                setattr(vae, _stride_attr, stride)
+                                applied.append(_stride_attr)
+
+                    if hasattr(vae, "tile_sample_min_size"):
+                        vae.tile_sample_min_size = vae_tile_size
+                        applied.append("tile_sample_min_size")
+                        if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
+                            vae.tile_latent_min_size = int(
+                                vae_tile_size / (2 ** (len(vae.config.block_out_channels) - 1))
+                            )
+                            applied.append("tile_latent_min_size")
+
+                    if applied:
+                        logger.info(
+                            "      -> [WeeLLM] Enabled Aggressive VAE Tiling (tile_size=%d, set: %s) "
+                            "to prevent decoding VRAM spikes.", vae_tile_size, ", ".join(applied),
                         )
-                    logger.info(
-                        "      -> [WeeLLM] Enabled Aggressive VAE Tiling (tile_size=%d) "
-                        "to prevent decoding VRAM spikes.", vae_tile_size,
-                    )
+                    else:
+                        logger.info(
+                            "      -> [WeeLLM] Enabled VAE Tiling; this VAE exposes no known tile-size "
+                            "attribute, so its built-in defaults are used."
+                        )
                 elif hasattr(pipeline, "enable_vae_tiling"):
                     pipeline.enable_vae_tiling()
                     logger.info("      -> [WeeLLM] Enabled VAE Tiling (via pipeline) to prevent decoding VRAM spikes.")

@@ -393,8 +393,8 @@ class Krea2Transformer2DModelStreamer(BaseTransformerStreamer):
             if k in expected_keys and (not any(k.startswith(p) for p in _STREAMING_PREFIXES) or "scale_shift_table" in k)
         ]
 
-    def _pre_hook(self, module: nn.Module, args):
-        res = super()._pre_hook(module, args)
+    def _pre_hook(self, module: nn.Module, args, kwargs):
+        res = super()._pre_hook(module, args, kwargs)
         if self.dtype == torch.float32 and getattr(self, "tracker", None) is None:
             self.tracker = VRAMTracker()
             self.tracker.__enter__()

@@ -56,7 +56,10 @@ class WeeTextToImagePipeline(WeeBasePipeline):
             logger.warning("[WeeLLM] Prompt Enhancer (PE) is currently disabled for ErnieImagePipeline due to performance constraints.")
             kwargs["use_pe"] = False
 
-        out = self._pipeline(prompt=prompt, generator=generator, **kwargs)
+        # Route through __call__ (as WeeImageToImagePipeline.generate already does) so
+        # generate() gets the same treatment as a direct pipeline call: kwarg defaults
+        # such as use_kv_cache, the VRAM overhead estimate and the OOM recovery path.
+        out = self(prompt=prompt, generator=generator, **kwargs)
         if hasattr(out, "images"):
             return out.images[0]
         return out[0][0]

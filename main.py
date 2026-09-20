@@ -171,6 +171,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--vae_tile_size", type=int, default=512,
         help="Tile size for VAE decoding to prevent VRAM spikes. 256=low VRAM but moire artifacts, 512=default, 1024=high VRAM.",
     )
+    parser.add_argument(
+        "--use_kv_cache", action="store_true",
+        help=(
+            "Enable prefix KV caching on models that support it (e.g. Qwen-Image 2.1). "
+            "Faster, but holds per-layer keys/values for the whole denoising loop — "
+            "activation memory the layer streamer cannot evict. Off by default."
+        ),
+    )
 
     # Video cache
     parser.add_argument(
@@ -398,6 +406,11 @@ def main() -> int:
         
     if args.negative_prompt:
         call_kwargs["negative_prompt"] = args.negative_prompt
+
+    # Only pass it when opted in — WeeBasePipeline.__call__ supplies the default (off)
+    # for pipelines that accept it, and pipelines that don't must not see the kwarg.
+    if args.use_kv_cache:
+        call_kwargs["use_kv_cache"] = True
 
     if args.num_frames is not None:
         call_kwargs["no_cache"] = args.no_cache

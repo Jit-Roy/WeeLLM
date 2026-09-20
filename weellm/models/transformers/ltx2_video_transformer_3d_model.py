@@ -73,16 +73,16 @@ class LTX2VideoTransformer3DModelStreamer(BaseTransformerStreamer):
         from weellm.io.memory import place_tensors
         place_tensors(self.model, remapped, self.device, self.dtype, skip_errors=skip_errors)
 
-    def _pre_hook(self, module: nn.Module, args):
-        args = super()._pre_hook(module, args)
-        
+    def _pre_hook(self, module: nn.Module, args, kwargs):
+        args, kwargs = super()._pre_hook(module, args, kwargs)
+
         from weellm.models.transformers.base_transformer_streamer import _SHARD_NAME_ATTR
         shard_name: str = getattr(module, _SHARD_NAME_ATTR)
-        
+
         if hasattr(self, "lora_loader") and self.lora_loader is not None:
             self.lora_loader.apply_to_module(module, shard_name)
-            
-        return args
+
+        return args, kwargs
 
     @classmethod
     def from_pretrained(

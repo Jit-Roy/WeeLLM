@@ -271,10 +271,12 @@ class BaseLazyDecoderStreamer(ABC):
         # Stage 2: H2D transfer (non-blocking DMA), then free CPU copy.
         # ----------------------------------------------------------------
         sd = {k: v.to(self.device, non_blocking=True) for k, v in sd.items()}
-        torch.cuda.synchronize()   # ensure DMA is complete before forward()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()   # ensure DMA is complete before forward()
 
         self._place_tensors(sd)
-        torch.cuda.synchronize()   # flush CUDA copy_ ops from place_tensors
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()   # flush CUDA copy_ ops from place_tensors
         del sd                      # CPU RAM freed immediately after H2D
 
         t2 = time.time()

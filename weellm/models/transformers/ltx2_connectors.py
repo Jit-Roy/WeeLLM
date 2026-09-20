@@ -99,3 +99,10 @@ class LTX2ConnectorsStreamer(BaseTransformerStreamer):
             del raw_sd
 
         return streamer
+
+
+# `_TE_MAP` resolves streamers as `<diffusers class name> + "Streamer"`, and LTX-2.5
+# names this component `LTX2TextConnectors` in model_index.json. The LTX-2.5 adapter
+# imports the class directly, so this alias only matters for the generic text-encoder
+# loading path — without it that path raises AttributeError.
+LTX2TextConnectorsStreamer = LTX2ConnectorsStreamer

@@ -104,7 +104,8 @@ class Gemma4UnifiedForConditionalGenerationStreamer:
         t1 = time.time()
         
         sd = {k: v.to(self.device, non_blocking=True) for k, v in sd.items()}
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         
         mapped_sd = {}
         for k, v in sd.items():
@@ -122,7 +123,8 @@ class Gemma4UnifiedForConditionalGenerationStreamer:
                 if "layer_scalar" not in mapped_k:
                     logger.error(f"FAILED TO PLACE {mapped_k}: {repr(e)}")
         
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         del sd
                     
         t2 = time.time()
