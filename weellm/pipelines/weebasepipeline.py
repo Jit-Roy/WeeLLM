@@ -75,6 +75,7 @@ _TR_MAP = {
     "ZImageTransformer2DModel":            "weellm.models.transformers.z_image_transformer_2d_model",
     "SD3Transformer2DModel":               "weellm.models.transformers.sd3_transformer_2d_model",
     "QwenImageTransformer2DModel":         "weellm.models.transformers.qwen_image_transformer_2d_model",
+    "QwenImage21Transformer2DModel":       "weellm.models.transformers.qwen_image_2_1_transformer_2d_model",
     "CogView4Transformer2DModel":          "weellm.models.transformers.cogview4_transformer_2d_model",
     "Lumina2Transformer2DModel":           "weellm.models.transformers.lumina2_transformer_2d_model",
     "AuraFlowTransformer2DModel":          "weellm.models.transformers.auraflow_transformer_2d_model",
@@ -343,6 +344,21 @@ class WeeBasePipeline:
         logger.info("[1/4] Loading Tokenizers and Scheduler ...")
         cls._load_tokenizers_and_scheduler(model_dir_path, index, device, effective_dtype, diffusers_kwargs)
 
+        if "processor" in index:
+            from transformers import AutoTokenizer, AutoProcessor
+            try:
+                if "tokenizer" not in diffusers_kwargs:
+                    tokenizer = AutoTokenizer.from_pretrained(model_dir_path / "processor")
+                    diffusers_kwargs["tokenizer"] = tokenizer
+            except Exception as e:
+                pass
+            try:
+                if "processor" not in diffusers_kwargs:
+                    processor = AutoProcessor.from_pretrained(model_dir_path / "processor")
+                    diffusers_kwargs["processor"] = processor
+            except Exception as e:
+                pass
+
         # ── Step 2: VAE ─────────────────────────────────────────────────
         logger.info("\n[2/4] Initializing VAE (Lazy loading on meta device) ...")
 
@@ -453,6 +469,12 @@ class WeeBasePipeline:
             
         # Clean up any remaining _path kwargs so they don't crash Diffusers __init__
         diffusers_kwargs = {k: v for k, v in diffusers_kwargs.items() if not k.endswith("_path")}
+        
+        # Filter diffusers_kwargs to only include arguments expected by the pipeline
+        import inspect
+        sig = inspect.signature(pipeline_cls.__init__)
+        expected_kwargs = set(sig.parameters.keys())
+        diffusers_kwargs = {k: v for k, v in diffusers_kwargs.items() if k in expected_kwargs}
             
         pipeline = pipeline_cls(**diffusers_kwargs)
         if hasattr(pipeline, "register_components"):
