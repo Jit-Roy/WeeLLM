@@ -26,8 +26,12 @@ class MiniMaxH3LoRAKeyMap:
             if a_key not in lora_keys or b_key not in lora_keys:
                 continue
 
-            # Original mapping logic from MiniMaxH3LoRALoader
+            # Strip standard diffusers / peft / comfyui prefixes
             name = base
+            for prefix in ("diffusion_model.", "transformer.", "base_model.model."):
+                if name.startswith(prefix):
+                    name = name[len(prefix):]
+
             if name.startswith("token_refiner.blocks."):
                 target = name.replace("token_refiner.blocks.", "token_refiner.refiner_blocks.", 1)
             elif name.startswith("blocks."):
