@@ -339,10 +339,11 @@ class BaseTransformerStreamer(ABC):
         place_tensors(self.model, state_dict, self.device, self.dtype, skip_errors=skip_errors)
 
     def _get_layer_keys(self, shard_name: str) -> List[str]:
-        return [
+        keys = [
             k for k in self.seeker.weight_map
             if k.startswith(shard_name + ".")
         ]
+        return keys
 
     # ------------------------------------------------------------------
     # Hook installation

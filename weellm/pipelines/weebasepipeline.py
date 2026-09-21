@@ -217,7 +217,7 @@ class WeeBasePipeline:
         estimated_vision_bytes = int(1.5 * 1024**3) if has_image else 0
         
         from weellm.models.transformers.base_transformer_streamer import BaseTransformerStreamer
-        BaseTransformerStreamer._estimated_vram_overhead_bytes = estimated_attention_bytes + estimated_vision_bytes
+        BaseTransformerStreamer._estimated_vram_overhead_bytes = estimated_attention_bytes
         BaseTransformerStreamer._estimated_ram_overhead_bytes = estimated_attention_bytes
         # ----------------------------------
         
@@ -1102,6 +1102,11 @@ class WeeBasePipeline:
 
             if cache_to_ram:
                 logger.info("\n[WeeLLM] One-Shot: Freeing Text Encoders from RAM...")
+                # Explicitly clear the RAM cache from the seeker since closure captures keep it alive
+                for te_key, te_mod in te_streamers.items():
+                    if hasattr(te_mod, "_seeker") and hasattr(te_mod._seeker, "clear_ram_cache"):
+                        te_mod._seeker.clear_ram_cache()
+                
                 for te_name in ["text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4",
                                  "tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4"]:
                     if hasattr(pipeline, te_name):

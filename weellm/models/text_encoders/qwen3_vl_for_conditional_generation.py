@@ -260,6 +260,21 @@ class Qwen3VLForConditionalGenerationStreamer:
             processed_sd[name] = tensor
 
         for name, tensor in processed_sd.items():
+            if name.endswith(".comfy_quant"):
+                continue
+                
+            # Safetensors quantized models often omit 'language_model.'
+            if name.startswith("model.embed_tokens"):
+                name = name.replace("model.embed_tokens", "model.language_model.embed_tokens")
+            elif name.startswith("model.norm"):
+                name = name.replace("model.norm", "model.language_model.norm")
+            elif name.startswith("model.layers"):
+                name = name.replace("model.layers", "model.language_model.layers")
+            
+            # The skeleton replaces language_model.norm with Identity(), so skip placing its weights
+            if name.startswith("model.language_model.norm"):
+                continue
+            
             if tensor.is_floating_point():
                 set_module_tensor_to_device(
                     self._model, name, device, value=tensor, dtype=self.dtype
@@ -271,6 +286,14 @@ class Qwen3VLForConditionalGenerationStreamer:
         for name in state_dict.keys():
             if name.endswith(".weight_scale"):
                 continue
+            
+            if name.startswith("model.embed_tokens"):
+                name = name.replace("model.embed_tokens", "model.language_model.embed_tokens")
+            elif name.startswith("model.norm"):
+                name = name.replace("model.norm", "model.language_model.norm")
+            elif name.startswith("model.layers"):
+                name = name.replace("model.layers", "model.language_model.layers")
+                
             set_module_tensor_to_device(self._model, name, "meta")
 
 
@@ -278,9 +301,16 @@ class Qwen3VLForConditionalGenerationStreamer:
         # Hook Language Layers
         if hasattr(self._model, "model") and hasattr(self._model.model, "language_model") and hasattr(self._model.model.language_model, "layers"):
             lang_layers = self._model.model.language_model.layers
+            
+            # Determine prefix format by checking weight_map
+            has_language_model_prefix = any(k.startswith("model.language_model.layers") for k in self._seeker.weight_map.keys())
+            
             for i in range(len(lang_layers)):
                 layer = lang_layers[i]
-                layer._te_prefix = f"model.language_model.layers.{i}."
+                if has_language_model_prefix:
+                    layer._te_prefix = f"model.language_model.layers.{i}."
+                else:
+                    layer._te_prefix = f"model.layers.{i}."
                 layer.register_forward_pre_hook(self._generic_pre_hook)
                 layer.register_forward_hook(self._generic_post_hook)
         

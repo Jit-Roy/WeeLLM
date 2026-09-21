@@ -118,6 +118,11 @@ class SafetensorsRAMSeeker(SafetensorsBase):
         -------
         Dict mapping tensor name → ``torch.Tensor``.
         """
+        from weellm.io.safetensors.comfy_dequant import expand_comfy_keys, process_comfy_tensors
+        
+        # Expand keys to include any comfy_quant side-tensors
+        keys = expand_comfy_keys(keys, self.weight_map)
+
         by_src: Dict[str, List[str]] = {}
         for key in keys:
             if key not in self.weight_map:
@@ -144,4 +149,4 @@ class SafetensorsRAMSeeker(SafetensorsBase):
                     dtype,
                 )
 
-        return result
+        return process_comfy_tensors(result)

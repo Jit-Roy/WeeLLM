@@ -49,11 +49,14 @@ class GGUFSeeker:
                 self._tensor_meta[diffusers_name] = (
                     tensor.tensor_type,
                     orig_shape,
-                    tensor.data,
+                    tensor.data_offset,
+                    tensor.n_bytes,
                     slice_info,
                     tensor.name,  # keep original name for cache keying
                 )
 
+        # Clear the reader to ensure memmap is closed and OS can free pages
+        self._reader = None
         self.weight_map: Dict[str, str] = {k: self.gguf_path.name for k in self._tensor_meta}
         logger.info("[GGUFSeeker] Loaded %d tensors (arch=%s)", len(self._tensor_meta), arch)
 
@@ -105,52 +108,63 @@ class GGUFSeeker:
         # Cache dequantized tensors so fused QKV keys share one decode pass
         _dequantized_cache: Dict[str, torch.Tensor] = {}
 
-        for key in keys:
-            if key not in self._tensor_meta:
-                raise KeyError(f"Tensor '{key}' not found in GGUF file.")
+        import numpy as np
 
-            qtype, shape, raw_data_np, slice_info, orig_name = self._tensor_meta[key]
+        with open(self.gguf_path, "rb") as f:
+            for key in keys:
+                if key not in self._tensor_meta:
+                    raise KeyError(f"Tensor '{key}' not found in GGUF file.")
 
-            if orig_name in _dequantized_cache:
-                t = _dequantized_cache[orig_name]
-            else:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", message="The given NumPy array is not writable")
-                    raw_torch = torch.from_numpy(raw_data_np)
+                qtype, shape, data_offset, n_bytes, slice_info, orig_name = self._tensor_meta[key]
 
-                if qtype in TORCH_COMPATIBLE_QTYPES:
-                    if qtype == _gguf_lib.GGMLQuantizationType.F32:
-                        t = raw_torch.view(torch.float32).reshape(shape)
-                    elif qtype == _gguf_lib.GGMLQuantizationType.F16:
-                        t = raw_torch.view(torch.float16).reshape(shape)
-                    else:
-                        t = raw_torch.reshape(shape)
-                    if t.is_floating_point() and t.dtype != target_dtype:
-                        t = t.to(target_dtype)
+                if orig_name in _dequantized_cache:
+                    t = _dequantized_cache[orig_name]
                 else:
-                    # Offload dequantization to GPU to accelerate it
-                    temp_device = "cuda" if torch.cuda.is_available() else device
-                    t = dequantize_tensor(
-                        raw_torch.to(temp_device, non_blocking=True),
-                        qtype,
-                        shape,
-                        dtype=target_dtype,
-                    )
-                    if device == "cpu" and temp_device != "cpu":
-                        t = t.to("cpu")  # synchronous — prevents H2D race condition
+                    buf = bytearray(n_bytes)
+                    f.seek(data_offset)
+                    n = f.readinto(buf)
+                    if n != n_bytes:
+                        raise ValueError(f"Short read for '{key}': expected {n_bytes} B, got {n} B")
+                    
+                    raw_data_np = np.frombuffer(buf, dtype=np.uint8)
 
-                _dequantized_cache[orig_name] = t
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", message="The given NumPy array is not writable")
+                        raw_torch = torch.from_numpy(raw_data_np)
 
-            if slice_info is not None:
-                split_idx, total_splits = slice_info
-                chunk_size = t.shape[0] // total_splits
-                t = t[split_idx * chunk_size : (split_idx + 1) * chunk_size, ...]
-                t = t.clone()  # release reference to the full cached tensor
+                    if qtype in TORCH_COMPATIBLE_QTYPES:
+                        if qtype == _gguf_lib.GGMLQuantizationType.F32:
+                            t = raw_torch.view(torch.float32).reshape(shape)
+                        elif qtype == _gguf_lib.GGMLQuantizationType.F16:
+                            t = raw_torch.view(torch.float16).reshape(shape)
+                        else:
+                            t = raw_torch.reshape(shape)
+                        if t.is_floating_point() and t.dtype != target_dtype:
+                            t = t.to(target_dtype)
+                    else:
+                        # Offload dequantization to GPU to accelerate it
+                        temp_device = "cuda" if torch.cuda.is_available() else device
+                        t = dequantize_tensor(
+                            raw_torch.to(temp_device, non_blocking=True),
+                            qtype,
+                            shape,
+                            dtype=target_dtype,
+                        )
+                        if device == "cpu" and temp_device != "cpu":
+                            t = t.to("cpu")  # synchronous — prevents H2D race condition
 
-            if getattr(self, "keymap_cls", None) and hasattr(self.keymap_cls, "postprocess_tensor"):
-                t = self.keymap_cls.postprocess_tensor(key, t, orig_name)
+                    _dequantized_cache[orig_name] = t
 
-            result[key] = t.to(device=device)
+                if slice_info is not None:
+                    split_idx, total_splits = slice_info
+                    chunk_size = t.shape[0] // total_splits
+                    t = t[split_idx * chunk_size : (split_idx + 1) * chunk_size, ...]
+                    t = t.clone()  # release reference to the full cached tensor
+
+                if getattr(self, "keymap_cls", None) and hasattr(self.keymap_cls, "postprocess_tensor"):
+                    t = self.keymap_cls.postprocess_tensor(key, t, orig_name)
+
+                result[key] = t.to(device=device)
 
         return result
 

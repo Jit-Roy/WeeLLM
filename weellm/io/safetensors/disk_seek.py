@@ -60,6 +60,11 @@ class SafetensorsDiskSeeker(SafetensorsBase):
         -------
         Dict mapping tensor name -> ``torch.Tensor``.
         """
+        from weellm.io.safetensors.comfy_dequant import expand_comfy_keys, process_comfy_tensors
+        
+        # Expand keys to include any comfy_quant side-tensors
+        keys = expand_comfy_keys(keys, self.weight_map)
+
         # Group keys by source shard file to minimise file-open overhead.
         by_src: Dict[str, List[str]] = {}
         for key in keys:
@@ -110,4 +115,4 @@ class SafetensorsDiskSeeker(SafetensorsBase):
 
                     result[key] = t
 
-        return result
+        return process_comfy_tensors(result)
