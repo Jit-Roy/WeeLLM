@@ -98,6 +98,7 @@ class GGUFSeeker:
         keys: List[str],
         device: str = "cpu",
         dtype: Optional[torch.dtype] = None,
+        process_gguf: bool = True,
     ) -> Dict[str, torch.Tensor]:
         import gguf as _gguf_lib
         from weellm.io.ggufs.gguf_dequant import dequantize_tensor, TORCH_COMPATIBLE_QTYPES
@@ -119,6 +120,7 @@ class GGUFSeeker:
 
                 if orig_name in _dequantized_cache:
                     t = _dequantized_cache[orig_name]
+                    is_raw = isinstance(t, tuple)
                 else:
                     buf = bytearray(n_bytes)
                     f.seek(data_offset)
@@ -133,6 +135,7 @@ class GGUFSeeker:
                         raw_torch = torch.from_numpy(raw_data_np)
 
                     if qtype in TORCH_COMPATIBLE_QTYPES:
+                        is_raw = False
                         if qtype == _gguf_lib.GGMLQuantizationType.F32:
                             t = raw_torch.view(torch.float32).reshape(shape)
                         elif qtype == _gguf_lib.GGMLQuantizationType.F16:
@@ -141,30 +144,55 @@ class GGUFSeeker:
                             t = raw_torch.reshape(shape)
                         if t.is_floating_point() and t.dtype != target_dtype:
                             t = t.to(target_dtype)
+                        _dequantized_cache[orig_name] = t
                     else:
-                        # Offload dequantization to GPU to accelerate it
-                        temp_device = "cuda" if torch.cuda.is_available() else device
-                        t = dequantize_tensor(
-                            raw_torch.to(temp_device, non_blocking=True),
-                            qtype,
-                            shape,
-                            dtype=target_dtype,
-                        )
-                        if device == "cpu" and temp_device != "cpu":
-                            t = t.to("cpu")  # synchronous — prevents H2D race condition
+                        if not process_gguf:
+                            t = (raw_torch, qtype, shape)
+                            is_raw = True
+                            _dequantized_cache[orig_name] = t
+                        else:
+                            is_raw = False
+                            # Offload dequantization to GPU to accelerate it
+                            temp_device = "cuda" if torch.cuda.is_available() else device
+                            t = dequantize_tensor(
+                                raw_torch.to(temp_device, non_blocking=True),
+                                qtype,
+                                shape,
+                                dtype=target_dtype,
+                            )
+                            if device == "cpu" and temp_device != "cpu":
+                                t = t.to("cpu")  # synchronous — prevents H2D race condition
+                            _dequantized_cache[orig_name] = t
 
-                    _dequantized_cache[orig_name] = t
+                if is_raw:
+                    raw_t, qtype_val, shape_val = t
+                    if slice_info is not None:
+                        split_idx, total_splits = slice_info
+                        # chunk size in bytes because raw_t is uint8 1D array
+                        chunk_size = raw_t.shape[0] // total_splits
+                        raw_t = raw_t[split_idx * chunk_size : (split_idx + 1) * chunk_size]
+                        raw_t = raw_t.clone()
+                        
+                        # adjust shape for the slice (assuming slicing is along first dim)
+                        shape_val = list(shape_val)
+                        if len(shape_val) > 0:
+                            shape_val[0] = shape_val[0] // total_splits
+                        shape_val = tuple(shape_val)
 
-                if slice_info is not None:
-                    split_idx, total_splits = slice_info
-                    chunk_size = t.shape[0] // total_splits
-                    t = t[split_idx * chunk_size : (split_idx + 1) * chunk_size, ...]
-                    t = t.clone()  # release reference to the full cached tensor
+                    # Store the raw tensor and metadata for later processing
+                    result[key] = raw_t.to(device=device)
+                    result[key + ".gguf_meta"] = {"qtype": qtype_val, "shape": shape_val}
+                else:
+                    if slice_info is not None:
+                        split_idx, total_splits = slice_info
+                        chunk_size = t.shape[0] // total_splits
+                        t = t[split_idx * chunk_size : (split_idx + 1) * chunk_size, ...]
+                        t = t.clone()  # release reference to the full cached tensor
 
-                if getattr(self, "keymap_cls", None) and hasattr(self.keymap_cls, "postprocess_tensor"):
-                    t = self.keymap_cls.postprocess_tensor(key, t, orig_name)
+                    if getattr(self, "keymap_cls", None) and hasattr(self.keymap_cls, "postprocess_tensor"):
+                        t = self.keymap_cls.postprocess_tensor(key, t, orig_name)
 
-                result[key] = t.to(device=device)
+                    result[key] = t.to(device=device)
 
         return result
 

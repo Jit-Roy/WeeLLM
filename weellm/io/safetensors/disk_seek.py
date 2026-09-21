@@ -43,6 +43,7 @@ class SafetensorsDiskSeeker(SafetensorsBase):
         keys: List[str],
         device: str = "cpu",
         dtype: Optional[torch.dtype] = None,
+        process_comfy: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """
         Load the tensors named by *keys* from disk and return them as a dict.
@@ -115,4 +116,6 @@ class SafetensorsDiskSeeker(SafetensorsBase):
 
                     result[key] = t
 
-        return process_comfy_tensors(result)
+        if process_comfy:
+            return process_comfy_tensors(result)
+        return result

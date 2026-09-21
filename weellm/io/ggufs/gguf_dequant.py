@@ -18,7 +18,7 @@ https://github.com/city96/ComfyUI-GGUF
 
 import gguf
 import torch
-from typing import Optional
+from typing import Optional, Dict
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -364,3 +364,33 @@ def dequantize_tensor(
             f"nor the integer passthrough handles this type. "
             f"Please open an issue or add a handler to gguf_dequant.py."
         )
+
+def process_gguf_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """
+    In-place dictionary modification that runs `dequantize_tensor` on raw GGUF byte buffers.
+    """
+    keys = list(result.keys())
+    for key in keys:
+        if key.endswith(".gguf_meta"):
+            meta = result[key]
+            prefix = key[:-len(".gguf_meta")]
+            w_raw = result[prefix]
+            
+            # Use floating point dtype from other tensors if available
+            target_dtype = torch.bfloat16
+            for k, v in result.items():
+                if v.is_floating_point():
+                    target_dtype = v.dtype
+                    break
+            
+            w_dequant = dequantize_tensor(
+                w_raw,
+                meta["qtype"],
+                meta["shape"],
+                dtype=target_dtype,
+            )
+            
+            result[prefix] = w_dequant
+            del result[key]
+            
+    return result

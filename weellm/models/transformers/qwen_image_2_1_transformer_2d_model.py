@@ -51,6 +51,19 @@ class QwenImage21Transformer2DModelStreamer(BaseTransformerStreamer):
     def cache_context(self, *args, **kwargs):
         return self.model.cache_context(*args, **kwargs)
 
+    def apply_state_dict(self, state_dict: dict[str, torch.Tensor]) -> None:
+        """Override to unmerge gate_up before placing on GPU."""
+        processed_sd = {}
+        for name, tensor in state_dict.items():
+            if "img_mlp.gate_up.weight" in name:
+                base = name.replace("img_mlp.gate_up.weight", "img_mlp.")
+                gate, proj = tensor.chunk(2, dim=0)
+                processed_sd[base + "gate_layer.weight"] = gate
+                processed_sd[base + "proj.weight"] = proj
+            else:
+                processed_sd[name] = tensor
+        super().apply_state_dict(processed_sd)
+
     @classmethod
     def from_pretrained(
         cls,

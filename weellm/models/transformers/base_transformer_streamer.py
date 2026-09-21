@@ -153,8 +153,9 @@ class BaseTransformerStreamer(ABC):
                 if pos < len(self._shard_order):
                     b_name, _ = self._shard_order[pos]
                     b_keys = self._get_layer_keys(b_name)
+                    kwargs = {"process_gguf": False} if "ggufs" in self.seeker.__module__ else {"process_comfy": False}
                     self._disk_futures[b_name] = self._disk_executor.submit(
-                        self.seeker.get_tensors, b_keys, "cpu", self.dtype
+                        self.seeker.get_tensors, b_keys, "cpu", self.dtype, **kwargs
                     )
 
             # Seed H2D for block[0] so it is already in VRAM when the first forward
@@ -368,7 +369,8 @@ class BaseTransformerStreamer(ABC):
         sd = fut.result() if fut is not None else None
         
         if sd is None:
-            sd = self.seeker.get_tensors(layer_keys, device="cpu", dtype=self.dtype)
+            kwargs = {"process_gguf": False} if "ggufs" in self.seeker.__module__ else {"process_comfy": False}
+            sd = self.seeker.get_tensors(layer_keys, device="cpu", dtype=self.dtype, **kwargs)
             
         if sd is None:
             return None
@@ -381,11 +383,19 @@ class BaseTransformerStreamer(ABC):
                     v = sd.pop(k)
                     new_sd[k] = v.to(self.device, non_blocking=True)
                     del v
+                from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
+                from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
+                new_sd = process_comfy_tensors(new_sd)
+                new_sd = process_gguf_tensors(new_sd)
         else:
             for k in list(sd.keys()):
                 v = sd.pop(k)
                 new_sd[k] = v.to(self.device)
                 del v
+            from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
+            from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
+            new_sd = process_comfy_tensors(new_sd)
+            new_sd = process_gguf_tensors(new_sd)
                 
         return new_sd
 
@@ -434,6 +444,10 @@ class BaseTransformerStreamer(ABC):
                     cpu_sd = disk_fut.result()
                     if cpu_sd is not None:
                         sd = {k: v.to(self.device) for k, v in cpu_sd.items()}
+                        from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
+                        from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
+                        sd = process_comfy_tensors(sd)
+                        sd = process_gguf_tensors(sd)
 
             if sd is None:
                 # Sync fallback: read directly to VRAM
@@ -500,7 +514,7 @@ class BaseTransformerStreamer(ABC):
                     if ahead_name not in self._disk_futures:
                         akeys = self._get_layer_keys(ahead_name)
                         self._disk_futures[ahead_name] = self._disk_executor.submit(
-                            self.seeker.get_tensors, akeys, "cpu", self.dtype
+                            self.seeker.get_tensors, akeys, "cpu", self.dtype, False
                         )
 
         return args
@@ -522,8 +536,10 @@ class BaseTransformerStreamer(ABC):
         # Dynamic Double-Buffering Calibration (End of Block 0)
         # ------------------------------------------------------------------
         if not self._db_calibration_done and torch.cuda.is_available():
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats(self.device)
             max_reserved = torch.cuda.max_memory_reserved(self.device)
-            
             global_vram_budget_gb = getattr(self.__class__, "_global_vram_budget_gb", None)
             if global_vram_budget_gb is not None:
                 total_vram = global_vram_budget_gb * 1024**3
