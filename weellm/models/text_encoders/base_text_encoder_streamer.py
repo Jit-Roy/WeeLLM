@@ -263,14 +263,25 @@ class BaseLazyDecoderStreamer(ABC):
 
         if sd is None:
             # Sync fallback: load directly to CPU (then H2D below).
-            sd = self._seeker.get_tensors(layer_keys, device="cpu", dtype=self.dtype)
+            kwargs = {"process_gguf": False} if "ggufs" in self._seeker.__module__ else {"process_comfy": False}
+            sd = self._seeker.get_tensors(layer_keys, device="cpu", dtype=self.dtype, **kwargs)
 
         t1 = time.time()
 
         # ----------------------------------------------------------------
         # Stage 2: H2D transfer (non-blocking DMA), then free CPU copy.
         # ----------------------------------------------------------------
-        sd = {k: v.to(self.device, non_blocking=True) for k, v in sd.items()}
+        new_sd = {}
+        for k, v in sd.items():
+            if isinstance(v, torch.Tensor):
+                new_sd[k] = v.to(self.device, non_blocking=True)
+            else:
+                new_sd[k] = v
+        
+        from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
+        from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
+        sd = process_comfy_tensors(new_sd)
+        sd = process_gguf_tensors(sd)
         torch.cuda.synchronize()   # ensure DMA is complete before forward()
 
         self._place_tensors(sd)
@@ -299,8 +310,9 @@ class BaseLazyDecoderStreamer(ABC):
                             if k.startswith(self._layer_prefix(nidx))
                         ]
                         # Prefetch to CPU pinned RAM (safe on all hardware sizes).
+                        kwargs = {"process_gguf": False} if "ggufs" in self._seeker.__module__ else {"process_comfy": False}
                         self._prefetch_futures[nidx] = self._executor.submit(
-                            self._seeker.get_tensors, nkeys, "cpu", self.dtype
+                            self._seeker.get_tensors, nkeys, "cpu", self.dtype, **kwargs
                         )
 
     def _layer_post_hook(self, module: nn.Module, args, output):
