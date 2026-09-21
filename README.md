@@ -99,7 +99,6 @@ WeeLLM dynamically streams text encoder and transformer layers to the GPU for ma
 ## TODOs
 
 - [ ] **ControlNet / T2I-Adapter Integration:** Enable structural conditioning (canny, depth, pose) while maintaining strict VRAM streaming budgets.
-- [ ] **LoRA Support:** Dynamically load and apply LoRA weights during the layer-streaming process without bloating system Vram and RAM.
 
 ---
 
@@ -148,11 +147,9 @@ python main.py \
 python main.py \
     --model "Lightricks/LTX-Video" \
     --prompt "A drone flying over a snowy mountain peak at sunrise." \
-    --negative_prompt "worst quality, inconsistent motion, blurry" \
     --height 512 \
     --width 704 \
-    --steps 40 \
-    --guidance_scale 3.0 \
+    --steps 10 \
     --seed 12345 \
     --dtype bfloat16 \
     --vram_budget 4 \
@@ -206,7 +203,7 @@ image = pipe.generate(
 image.save("output.png")
 ```
 
-### Text + Image to Image (Image-to-Image)
+### Image to Image 
 
 ```python
 from weellm import WeeImageToImagePipeline
@@ -294,8 +291,7 @@ pipe = WeeTextToImagePipeline.from_pretrained(
     device="cuda", 
     torch_dtype=torch.bfloat16,
     vram_budget=4, 
-    ram_budget=4,
-    prefetch=False  # Recommended when using GGUF to avoid GPU contention
+    ram_budget=4
 )
 
 image = pipe.generate(

@@ -95,6 +95,7 @@ test_ideogram.py
 *.mp4
 *.gguf
 temp
+demo*.py
 
 # Ignore shard directories created by WeeLLM's splitter
 **/splitted_model/

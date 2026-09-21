@@ -381,8 +381,12 @@ class BaseTransformerStreamer(ABC):
                 # non_blocking=True allows the GPU transfer to overlap with compute
                 for k in list(sd.keys()):
                     v = sd.pop(k)
-                    new_sd[k] = v.to(self.device, non_blocking=True)
-                    del v
+                    if isinstance(v, torch.Tensor):
+                        new_sd[k] = v.to(self.device, non_blocking=True)
+                    else:
+                        new_sd[k] = v
+                    if isinstance(v, torch.Tensor):
+                        del v
                 from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
                 from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
                 new_sd = process_comfy_tensors(new_sd)
@@ -390,8 +394,12 @@ class BaseTransformerStreamer(ABC):
         else:
             for k in list(sd.keys()):
                 v = sd.pop(k)
-                new_sd[k] = v.to(self.device)
-                del v
+                if isinstance(v, torch.Tensor):
+                    new_sd[k] = v.to(self.device)
+                else:
+                    new_sd[k] = v
+                if isinstance(v, torch.Tensor):
+                    del v
             from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
             from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
             new_sd = process_comfy_tensors(new_sd)
@@ -443,7 +451,12 @@ class BaseTransformerStreamer(ABC):
                 elif disk_fut is not None:
                     cpu_sd = disk_fut.result()
                     if cpu_sd is not None:
-                        sd = {k: v.to(self.device) for k, v in cpu_sd.items()}
+                        sd = {}
+                        for k, v in cpu_sd.items():
+                            if isinstance(v, torch.Tensor):
+                                sd[k] = v.to(self.device)
+                            else:
+                                sd[k] = v
                         from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
                         from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
                         sd = process_comfy_tensors(sd)
