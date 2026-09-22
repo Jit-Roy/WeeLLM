@@ -54,6 +54,12 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
         pipe = super().from_pretrained(model_dir_str, **kwargs)
         underlying = pipe._pipeline
         
+        # Diffusers 0.41 ModularPipeline expects 'vae' in components, not 'video_vae'
+        if getattr(underlying, "vae", None) is None and hasattr(underlying, "video_vae"):
+            underlying.vae = underlying.video_vae
+            if hasattr(underlying, "components"):
+                underlying.components["vae"] = underlying.video_vae
+        
         # ── Apply post-load patches ───────────────────────────────────────────
         cls._apply_pipeline_patches(underlying, device)
         cls._inject_tokenizer_processor(underlying, model_dir_path)

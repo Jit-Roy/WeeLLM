@@ -205,7 +205,12 @@ class WeeBasePipeline:
         transformer = getattr(self._pipeline, "transformer", getattr(self._pipeline, "unet", None))
         if transformer is not None and hasattr(transformer, "config"):
             if hasattr(transformer.config, "patch_size"):
-                patch_size = transformer.config.patch_size
+                patch = transformer.config.patch_size
+                if isinstance(patch, (list, tuple)):
+                    # For 3D models (time, height, width), take spatial patch size
+                    patch_size = patch[-1]
+                else:
+                    patch_size = patch
         
         tokens = (est_h // vae_scale // patch_size) * (est_w // vae_scale // patch_size)
         
@@ -376,6 +381,7 @@ class WeeBasePipeline:
                     vae_path_override = diffusers_kwargs.pop(f"{vae_key}_path", None)
                     lazy_vae = cls._load_vae(model_dir_path, device, vae_dtype, cache_to_ram, subfolder=vae_key, vae_path_override=vae_path_override)
                     diffusers_kwargs[vae_key] = lazy_vae.model
+                    diffusers_kwargs[f"{vae_key}_streamer"] = lazy_vae
                 except Exception as e:
                     logger.warning("Failed to load %s: %s", vae_key, e)
 
@@ -473,13 +479,34 @@ class WeeBasePipeline:
         # Filter diffusers_kwargs to only include arguments expected by the pipeline
         import inspect
         sig = inspect.signature(pipeline_cls.__init__)
-        expected_kwargs = set(sig.parameters.keys())
-        diffusers_kwargs = {k: v for k, v in diffusers_kwargs.items() if k in expected_kwargs}
+        has_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        if has_kwargs:
+            diffusers_filtered = diffusers_kwargs
+        else:
+            expected_kwargs = set(sig.parameters.keys())
+            diffusers_filtered = {k: v for k, v in diffusers_kwargs.items() if k in expected_kwargs}
             
-        pipeline = pipeline_cls(**diffusers_kwargs)
+        # Extract streamers from diffusers_kwargs before initialization
+        vae_streamers = {}
+        for vae_key in ["vae", "video_vae", "audio_vae"]:
+            streamer_key = f"{vae_key}_streamer"
+            if streamer_key in diffusers_kwargs:
+                vae_streamers[streamer_key] = diffusers_kwargs.pop(streamer_key)
+
+        try:
+            pipeline = pipeline_cls.from_pretrained(model_dir_str, **diffusers_kwargs)
+        except Exception as e:
+            logger.warning(f"from_pretrained initialization failed ({e}), falling back to direct instantiation.")
+            pipeline = pipeline_cls(**diffusers_filtered)
+            
         if hasattr(pipeline, "register_components"):
-            # Modular pipelines ignore kwargs in __init__, so we must register them explicitly
-            pipeline.register_components(**diffusers_kwargs)
+            # Modular pipelines' from_pretrained ignores kwargs because their __init__ uses **kwargs.
+            # We must explicitly register all passed components to ensure they are attached to the pipeline instance.
+            pipeline.register_components(**diffusers_filtered)
+            
+        # Attach streamers to the pipeline instance
+        for streamer_key, streamer in vae_streamers.items():
+            setattr(pipeline, streamer_key, streamer)
         
         pipeline.model_dir = str(model_dir)
 
@@ -1140,7 +1167,12 @@ class WeeBasePipeline:
                     args = tuple(a.to(tgt_dtype) if torch.is_tensor(a) and a.is_floating_point() else a for a in args)
                     kwargs = {k: (v.to(tgt_dtype) if torch.is_tensor(v) and v.is_floating_point() else v) for k, v in kwargs.items()}
 
-                res = original_vae_decode_vram(*args, **kwargs)
+                if hasattr(pipeline, "vae_streamer"):
+                    res = pipeline.vae_streamer.decode(*args, **kwargs)
+                elif hasattr(pipeline, "video_vae_streamer") and getattr(pipeline, "vae", None) is getattr(pipeline, "video_vae", None):
+                    res = pipeline.video_vae_streamer.decode(*args, **kwargs)
+                else:
+                    res = original_vae_decode_vram(*args, **kwargs)       
                 report_memory("After VAE Decode (Before GC)")
                 gc.collect()
                 if cuda_available:

@@ -95,3 +95,17 @@ class BaseVAEStreamer:
                 clean_memory(self.device)
                 report_memory("After VAE Encoder Eviction")
                 self._encoder_loaded = False
+
+    # -------------------------------------------------------------------------
+    # Transparent Proxy Methods (Diffusers Compatibility)
+    # -------------------------------------------------------------------------
+    @property
+    def config(self):
+        return self.model.config
+
+    def __call__(self, *args, **kwargs):
+        return self.model(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        # Route unknown attributes/methods directly to the underlying diffusers model
+        return getattr(self.model, name)
