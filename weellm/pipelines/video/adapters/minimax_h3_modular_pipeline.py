@@ -46,8 +46,7 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
         device = kwargs.get("device",      "cuda")
         dtype  = kwargs.get("torch_dtype", torch.bfloat16)
 
-        # ── Audio VAE stub (video-only mode) ──────────────────────────────────
-        kwargs.setdefault("audio_vae", _DummyAudioVAE())
+        # ── Audio VAE is loaded naturally ─────────────────────────────────────
 
         # ── Standard WeeBasePipeline loading ─────────────────────────────────
         # This loads VAE → TE (via GGUF override_weights_path) → Transformer

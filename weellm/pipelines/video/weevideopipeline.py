@@ -348,11 +348,20 @@ class WeeVideoPipeline(WeeBasePipeline):
                                 return pipe, state
                             
                             pipe, state = orig(pipe, state, i=i, t=t)
-                            callback = _video_cache.get_step_callback()
+                            callback = _video_cache.get_step_callback(resume_step=resume_step, resume_latents=resume_latents)
                             if callback is not None:
-                                latents = getattr(state, "latents", None)
-                                cb_kwargs = {"latents": latents}
-                                callback(pipe, i, t, cb_kwargs)
+                                cb_kwargs = {"latents": getattr(state, "latents", None)}
+                                if hasattr(state, "audio_latents"):
+                                    cb_kwargs["audio_latents"] = getattr(state, "audio_latents", None)
+                                
+                                ret_cb = callback(pipe, i, t, cb_kwargs)
+                                if ret_cb is not None:
+                                    cb_kwargs = ret_cb
+                                
+                                if "latents" in cb_kwargs and cb_kwargs["latents"] is not None:
+                                    state.latents = cb_kwargs["latents"]
+                                if "audio_latents" in cb_kwargs and cb_kwargs["audio_latents"] is not None and hasattr(state, "audio_latents"):
+                                    state.audio_latents = cb_kwargs["audio_latents"]
                             return pipe, state
                         block.loop_step = _hooked_loop.__get__(block, block.__class__)
                         block._weellm_patched_loop = True
@@ -429,16 +438,23 @@ class WeeVideoPipeline(WeeBasePipeline):
                         _video = _vproc.postprocess_video(_decoded, output_type="pil") if _vproc else _decoded
                         
                     _audio = None
-                    if "audio_latents" in _cached_final and getattr(_underlying, "audio_vae", None) and getattr(_underlying, "vocoder", None):
+                    if "audio_latents" in _cached_final and getattr(_underlying, "audio_vae", None):
                         try:
                             _audio_vae = _underlying.audio_vae
-                            _vocoder = _underlying.vocoder
+                            _vocoder = getattr(_underlying, "vocoder", None)
                             with torch.no_grad():
                                 _audio_lat = _cached_final["audio_latents"].to(_audio_vae.dtype).to(_audio_vae.device)
+                                if hasattr(_audio_vae, "config") and hasattr(_audio_vae.config, "latents_mean"):
+                                    _a_mean = torch.tensor(_audio_vae.config.latents_mean, device=_audio_vae.device, dtype=_audio_vae.dtype).view(1, -1, 1)
+                                    _a_std = torch.tensor(_audio_vae.config.latents_std, device=_audio_vae.device, dtype=_audio_vae.dtype).view(1, -1, 1)
+                                    _audio_lat = _audio_lat * _a_std + _a_mean
                                 _mel = _audio_vae.decode(_audio_lat, return_dict=False)[0]
-                                _mel = _mel.to(_vocoder.dtype).to(_vocoder.device)
-                                _audio_out = _vocoder(_mel)
-                                if isinstance(_audio_out, tuple): _audio_out = _audio_out[0]
+                                if _vocoder is not None:
+                                    _mel = _mel.to(_vocoder.dtype).to(_vocoder.device)
+                                    _audio_out = _vocoder(_mel)
+                                    if isinstance(_audio_out, tuple): _audio_out = _audio_out[0]
+                                else:
+                                    _audio_out = _mel.float().permute(1, 0, 2)
                                 _audio = _audio_out.cpu().float()
                         except Exception as e:
                             logger.warning(f"[VideoCache] Audio decode failed: {e}")
@@ -581,20 +597,33 @@ class WeeVideoPipeline(WeeBasePipeline):
             _audio_vae = getattr(_underlying, "audio_vae", None)
             _vocoder = getattr(_underlying, "vocoder", None)
             
-            if _audio_vae and _vocoder:
+            _is_waveform = False
+            if _audio_vae and hasattr(_audio_vae, "config") and hasattr(_audio_vae.config, "latent_channels"):
+                # If channel dim does not match latent_channels, it's likely already a waveform
+                if _audio.shape[-2] != _audio_vae.config.latent_channels:
+                    _is_waveform = True
+            
+            if not _is_waveform and _audio_vae:
                 try:
-                    logger.info("[WeeLLM] Manually decoding audio latents using audio_vae and vocoder...")
+                    logger.info("[WeeLLM] Manually decoding audio latents using audio_vae...")
                     with torch.no_grad():
                         _audio = _audio.to(_audio_vae.dtype).to(_audio_vae.device)
+                        if hasattr(_audio_vae, "config") and hasattr(_audio_vae.config, "latents_mean"):
+                            _a_mean = torch.tensor(_audio_vae.config.latents_mean, device=_audio_vae.device, dtype=_audio_vae.dtype).view(1, -1, 1)
+                            _a_std = torch.tensor(_audio_vae.config.latents_std, device=_audio_vae.device, dtype=_audio_vae.dtype).view(1, -1, 1)
+                            _audio = _audio * _a_std + _a_mean
                         _mel = _audio_vae.decode(_audio, return_dict=False)[0]
-                        _mel = _mel.to(_vocoder.dtype).to(_vocoder.device)
-                        _audio = _vocoder(_mel)
-                        if isinstance(_audio, tuple): _audio = _audio[0]
-                        _audio = _audio.cpu().float()
+                        if _vocoder is not None:
+                            _mel = _mel.to(_vocoder.dtype).to(_vocoder.device)
+                            _audio_out = _vocoder(_mel)
+                            if isinstance(_audio_out, tuple): _audio_out = _audio_out[0]
+                        else:
+                            _audio_out = _mel.float().permute(1, 0, 2)
+                        _audio = _audio_out.cpu().float()
                 except Exception as e:
                     logger.warning(f"Audio manual decoding failed: {e}")
-            else:
-                logger.warning("Pipeline output audio latents, but audio_vae/vocoder not found for manual decode.")
+            elif not _audio_vae and not _is_waveform:
+                logger.warning("Pipeline output audio latents, but audio_vae not found for manual decode.")
         
         # Unbatch if necessary
         if _frames is not None and isinstance(_frames, torch.Tensor) and _frames.dim() == 5:
