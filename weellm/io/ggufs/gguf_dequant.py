@@ -328,7 +328,21 @@ def dequantize_tensor(
         rows     = raw_data.reshape((-1, raw_data.shape[-1])).view(torch.uint8)
         n_blocks = rows.numel() // type_size
         blocks   = rows.reshape((n_blocks, type_size))
-        result   = dequant_fn(blocks, block_size, type_size, dtype)
+        
+        # CHUNKED DEQUANTIZATION: prevents massive VRAM spikes for huge tensors
+        # (e.g. a 1.45 GB BF16 tensor bit-shifted requires a 2.9 GB intermediate)
+        CHUNK_SIZE_BLOCKS = (1024 * 1024 * 32) // type_size  # ~32 MB of input per chunk
+        
+        if n_blocks > CHUNK_SIZE_BLOCKS:
+            out_elements = n_blocks * block_size
+            result = torch.empty(out_elements, dtype=dtype, device=raw_data.device)
+            for i in range(0, n_blocks, CHUNK_SIZE_BLOCKS):
+                end = min(i + CHUNK_SIZE_BLOCKS, n_blocks)
+                chunk_res = dequant_fn(blocks[i:end], block_size, type_size, dtype)
+                result[i * block_size : end * block_size] = chunk_res.flatten()
+        else:
+            result = dequant_fn(blocks, block_size, type_size, dtype)
+            
         return result.reshape(shape).to(dtype)
 
     # Integer storage types (I8 / I16 / I32 / I64) — not quantized, just cast.

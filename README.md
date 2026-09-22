@@ -66,6 +66,7 @@ WeeLLM dynamically streams text encoder and transformer layers to the GPU for ma
 - Krea 2 Turbo
 - Krea 2 Raw
 - Qwen Image
+- Qwen Image 2.1
 - Ideogram 4
 - ERNIE-Image
 - ERNIE-Image-Turbo
@@ -87,6 +88,7 @@ WeeLLM dynamically streams text encoder and transformer layers to the GPU for ma
 - Flux.2 Klein 9B
 - LongCat Image Edit
 - Qwen Image Edit
+- Qwen Image 2.1
 - HiDream E1 Full
 
 ## Video Generation Models

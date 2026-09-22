@@ -244,6 +244,7 @@ class VideoStepCache:
                     if v is not None:
                         save_dict[k] = v.cpu()
                 if save_dict:
+                    run_dir.mkdir(parents=True, exist_ok=True)
                     step_path = run_dir / f"step_{step_index:04d}.pt"
                     torch.save(save_dict, str(step_path))
                     logger.debug(

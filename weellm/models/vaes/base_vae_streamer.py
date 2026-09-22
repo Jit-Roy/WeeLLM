@@ -72,8 +72,8 @@ class BaseVAEStreamer:
             mapped = self._resolve_vae_key(name)
             try:
                 set_module_tensor_to_device(self.model, mapped, "meta")
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[ERROR] Failed to evict key {mapped}: {e}", flush=True)
 
     def _load_encoder(self):
         with self._encoder_lock:
