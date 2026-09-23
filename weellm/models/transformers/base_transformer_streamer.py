@@ -139,8 +139,10 @@ class BaseTransformerStreamer(ABC):
             
         self._double_buffering_enabled = True
         self._db_calibration_done = False
+        self._resident_loaded = False
             
         self._install_hooks()
+        self.model.register_forward_pre_hook(self._ensure_resident)
         
         # ----------------------------------------------------------------
         # Pipeline Seeding
@@ -297,6 +299,35 @@ class BaseTransformerStreamer(ABC):
             released,
         )
         return released
+
+    def load_resident(self) -> None:
+        """Load connector weights needed before streamed blocks execute."""
+        if self._resident_loaded:
+            return
+        keys = self._get_resident_keys()
+        state_dict = self.seeker.get_tensors(keys, device=self.device, dtype=self.dtype)
+        self.apply_state_dict(state_dict)
+        self._resident_loaded = True
+
+    def release_resident(self) -> int:
+        """Evict connector weights while another pipeline component runs."""
+        if not self._resident_loaded:
+            return 0
+        released = 0
+        for name in self._get_resident_keys():
+            try:
+                set_module_tensor_to_device(self.model, name, "meta")
+                released += 1
+            except (AttributeError, ValueError):
+                pass
+        self._resident_loaded = False
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return released
+
+    def _ensure_resident(self, module, args):
+        self.load_resident()
+        return args
 
     # ------------------------------------------------------------------
     # Abstract interface — implement in each architecture subclass

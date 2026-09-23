@@ -162,38 +162,55 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
 
         try:
             from diffusers.models.transformers.transformer_minimax_h3 import MiniMaxH3TransformerBlock
-            FFN_CHUNK_SIZE = 1024
+            FFN_CHUNK_SIZE = 8192
 
             def _chunked_block_forward(self, hidden_states, temb, adaln_indices, rotary_emb, attention_mask=None):
                 shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(temb)
+                seq_len = hidden_states.shape[1]
 
-                # Attention with in-place AdaLN
+                # Attention with in-place AdaLN (chunked)
                 residual = hidden_states
                 norm_hidden_states = self.norm1(hidden_states)
-                scale_indexed = scale_msa.index_select(0, adaln_indices); scale_indexed.add_(1.0)
-                norm_hidden_states.mul_(scale_indexed); del scale_indexed
-                shift_indexed = shift_msa.index_select(0, adaln_indices)
-                norm_hidden_states.add_(shift_indexed); del shift_indexed
-                attn_output = self.attn(norm_hidden_states, rotary_emb, attention_mask)
-                gate_msa_col = gate_msa.index_select(0, adaln_indices)
-                attn_output.mul_(gate_msa_col); del gate_msa_col
+                for i in range(0, seq_len, FFN_CHUNK_SIZE):
+                    end = min(i + FFN_CHUNK_SIZE, seq_len)
+                    chunk = norm_hidden_states[:, i:end, :]
+                    scale_chunk = scale_msa.index_select(0, adaln_indices[i:end]).add_(1.0)
+                    chunk.mul_(scale_chunk)
+                    shift_chunk = shift_msa.index_select(0, adaln_indices[i:end])
+                    chunk.add_(shift_chunk)
+                    del scale_chunk, shift_chunk
+
+                attn_output = self.attn([norm_hidden_states], rotary_emb, attention_mask)
+                for i in range(0, seq_len, FFN_CHUNK_SIZE):
+                    end = min(i + FFN_CHUNK_SIZE, seq_len)
+                    chunk = attn_output[:, i:end, :]
+                    gate_chunk = gate_msa.index_select(0, adaln_indices[i:end])
+                    chunk.mul_(gate_chunk)
+                    del gate_chunk
+                    
                 hidden_states = residual.add_(attn_output); del attn_output
 
                 # FFN with in-place AdaLN + chunked computation
                 residual = hidden_states
                 norm_hidden_states = self.norm2(hidden_states)
-                scale_indexed = scale_mlp.index_select(0, adaln_indices); scale_indexed.add_(1.0)
-                norm_hidden_states.mul_(scale_indexed); del scale_indexed
-                shift_indexed = shift_mlp.index_select(0, adaln_indices)
-                norm_hidden_states.add_(shift_indexed); del shift_indexed
-                seq_len = norm_hidden_states.shape[1]
                 ff_output = torch.empty_like(norm_hidden_states)
+                
                 for i in range(0, seq_len, FFN_CHUNK_SIZE):
                     end = min(i + FFN_CHUNK_SIZE, seq_len)
-                    ff_output[:, i:end, :] = self.ff(norm_hidden_states[:, i:end, :])
+                    chunk = norm_hidden_states[:, i:end, :]
+                    scale_chunk = scale_mlp.index_select(0, adaln_indices[i:end]).add_(1.0)
+                    chunk.mul_(scale_chunk)
+                    shift_chunk = shift_mlp.index_select(0, adaln_indices[i:end])
+                    chunk.add_(shift_chunk)
+                    del scale_chunk, shift_chunk
+                    
+                    ff_chunk = self.ff(chunk)
+                    gate_chunk = gate_mlp.index_select(0, adaln_indices[i:end])
+                    ff_chunk.mul_(gate_chunk)
+                    ff_output[:, i:end, :] = ff_chunk
+                    del ff_chunk, gate_chunk
+                    
                 del norm_hidden_states
-                gate_col = gate_mlp.index_select(0, adaln_indices)
-                ff_output.mul_(gate_col); del gate_col
                 hidden_states = residual.add_(ff_output); del ff_output
                 return hidden_states
 
@@ -212,47 +229,104 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
 
             def _apply_rotary_emb_inplace_(hs, cos, sin):
                 rotary_dim = cos.shape[-1]; half = rotary_dim // 2
-                cos_ = cos.to(hs.dtype)[None, :, None, :]
-                sin_ = sin.to(hs.dtype)[None, :, None, :]
-                hs_r = hs[..., :rotary_dim]
-                x1 = hs_r[..., :half].clone(); x2 = hs_r[..., half:].clone()
-                temp = x2 * sin_[..., :half]
-                hs_r[..., :half].copy_(x1).mul_(cos_[..., :half]).sub_(temp); del temp
-                temp = x1 * sin_[..., half:]
-                hs_r[..., half:].copy_(x2).mul_(cos_[..., half:]).add_(temp); del temp
-                del x1, x2
+                chunk_sz = 8192
+                for i in range(0, hs.shape[1], chunk_sz):
+                    end = min(i + chunk_sz, hs.shape[1])
+                    cos_chunk = cos[i:end].to(hs.dtype)[None, :, None, :]
+                    sin_chunk = sin[i:end].to(hs.dtype)[None, :, None, :]
+                    
+                    hs_r = hs[:, i:end, ..., :rotary_dim]
+                    x1 = hs_r[..., :half].clone()
+                    x2 = hs_r[..., half:].clone()
+                    
+                    temp = x2 * sin_chunk[..., :half]
+                    hs_r[..., :half].copy_(x1).mul_(cos_chunk[..., :half]).sub_(temp)
+                    del temp
+                    
+                    temp = x1 * sin_chunk[..., half:]
+                    hs_r[..., half:].copy_(x2).mul_(cos_chunk[..., half:]).add_(temp)
+                    del temp, x1, x2, cos_chunk, sin_chunk
                 return hs
 
             def _rmsnorm_inplace_(x, weight, eps):
-                rms = x.float().pow(2).mean(dim=-1, keepdim=True).add(eps).sqrt().to(x.dtype)
-                x.div_(rms); x.mul_(weight); return x
+                # Chunked to prevent full FP32 upcasting spike
+                chunk_sz = 8192
+                for i in range(0, x.shape[1], chunk_sz):
+                    chunk = x[:, i:i+chunk_sz]
+                    rms = chunk.float().pow(2).mean(dim=-1, keepdim=True).add(eps).sqrt().to(x.dtype)
+                    chunk.div_(rms)
+                    chunk.mul_(weight)
+                return x
 
-            def _mem_efficient_attn_call(self, attn, hidden_states, rotary_emb=None, attention_mask=None):
+            def _mem_efficient_attn_call(self, attn, hidden_states_wrapped, rotary_emb=None, attention_mask=None):
+                import gc
+                
+                # Unwrap the list to claim the final reference
+                if isinstance(hidden_states_wrapped, list):
+                    hidden_states = hidden_states_wrapped.pop()
+                else:
+                    hidden_states = hidden_states_wrapped
+
                 if attn.fused_projections:
                     query, key, value = attn.to_qkv(hidden_states).chunk(3, dim=-1)
                 else:
-                    query = attn.to_q(hidden_states)
-                    key   = attn.to_k(hidden_states)
-                    value = attn.to_v(hidden_states)
+                    # Pre-allocate output tensors using the first chunk to get dimensions safely
+                    chunk_sz = 8192
+                    first_chunk = hidden_states[:, :chunk_sz]
+                    q_first = attn.to_q(first_chunk)
+                    k_first = attn.to_k(first_chunk)
+                    v_first = attn.to_v(first_chunk)
+                    
+                    seq_len = hidden_states.shape[1]
+                    query = torch.empty((1, seq_len, q_first.shape[-1]), dtype=q_first.dtype, device=q_first.device)
+                    key   = torch.empty((1, seq_len, k_first.shape[-1]), dtype=k_first.dtype, device=k_first.device)
+                    value = torch.empty((1, seq_len, v_first.shape[-1]), dtype=v_first.dtype, device=v_first.device)
+                    
+                    query[:, :chunk_sz] = q_first
+                    key[:, :chunk_sz] = k_first
+                    value[:, :chunk_sz] = v_first
+                    del first_chunk, q_first, k_first, v_first
+                    
+                    for i in range(chunk_sz, seq_len, chunk_sz):
+                        chunk = hidden_states[:, i:i+chunk_sz]
+                        query[:, i:i+chunk_sz] = attn.to_q(chunk)
+                        key[:, i:i+chunk_sz] = attn.to_k(chunk)
+                        value[:, i:i+chunk_sz] = attn.to_v(chunk)
+                
+                # Physically destroy the tensor before continuing
                 del hidden_states
+                gc.collect()
+                torch.cuda.empty_cache()
+
                 query = query.unflatten(-1, (attn.heads, -1))
                 key   = key.unflatten(-1, (attn.heads, -1))
                 value = value.unflatten(-1, (attn.heads, -1))
+
                 _rmsnorm_inplace_(query, attn.norm_q.weight, attn.norm_q.eps)
                 _rmsnorm_inplace_(key,   attn.norm_k.weight, attn.norm_k.eps)
+
                 if rotary_emb is not None:
                     _apply_rotary_emb_inplace_(query, *rotary_emb)
                     _apply_rotary_emb_inplace_(key,   *rotary_emb)
+                logger.info(f"VRAM before SDPA: {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+
                 hidden_states = dispatch_attention_fn(
                     query, key, value, attn_mask=attention_mask, dropout_p=0.0,
                     is_causal=False, backend=self._attention_backend,
                     parallel_config=self._parallel_config,
                 )
+                logger.info(f"VRAM after SDPA: {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+                
                 query_dtype = query.dtype
                 del query, key, value
+                gc.collect(); torch.cuda.empty_cache()
+                logger.info(f"VRAM after del QKV: {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+
                 hidden_states = hidden_states.flatten(2, 3).to(query_dtype)
                 hidden_states = attn.to_out[0](hidden_states)
                 hidden_states = attn.to_out[1](hidden_states)
+                logger.info(f"VRAM after to_out: {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+                logger.info(f"--- ATTN EXIT ---")
                 return hidden_states
 
             MiniMaxH3AttnProcessor.__call__ = _mem_efficient_attn_call
@@ -282,7 +356,7 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
                 target_device = hidden_states.device
 
                 # JIT-move setup modules
-                for m in (self.proj_in, self.audio_proj_in, self.context_embedder, self.token_refiner, self.rope):
+                for m in (self.proj_in, self.audio_proj_in, self.context_embedder, self.rope):
                     m.to(target_device)
                 
                 rotary_emb = self.rope(position_ids)
@@ -293,7 +367,7 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
                 text_embeds  = self.token_refiner(text_embeds)
 
                 # Offload setup modules back
-                for m in (self.proj_in, self.audio_proj_in, self.context_embedder, self.token_refiner):
+                for m in (self.proj_in, self.audio_proj_in, self.context_embedder):
                     m.to("cpu")
 
                 # In-place packing (avoids 231 MB duplicate allocations)

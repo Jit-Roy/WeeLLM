@@ -139,20 +139,26 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
         if hasattr(self.model, "transformer_blocks"):
             for i, block in enumerate(self.model.transformer_blocks):
                 order.append((f"transformer_blocks.{i}", block))
+        if hasattr(self.model, "token_refiner") and hasattr(self.model.token_refiner, "refiner_blocks"):
+            for i, block in enumerate(self.model.token_refiner.refiner_blocks):
+                order.append((f"token_refiner.refiner_blocks.{i}", block))
         return order
 
-    def _get_streaming_prefix(self) -> str:
+    def _get_streaming_prefixes(self) -> List[str]:
         # Check if the GGUF uses diffusers naming or original naming
+        prefixes = ["token_refiner.refiner_blocks."]
         if any(k.startswith("transformer_blocks.") for k in self.seeker.weight_map):
-            return "transformer_blocks."
-        return "blocks."
+            prefixes.append("transformer_blocks.")
+        else:
+            prefixes.append("blocks.")
+        return prefixes
 
     def _get_resident_ckpt_keys(self) -> List[str]:
         """Returns checkpoint keys for non-streaming tensors."""
-        prefix = self._get_streaming_prefix()
+        prefixes = self._get_streaming_prefixes()
         return [
             k for k in self.seeker.weight_map
-            if not k.startswith(prefix)
+            if not any(k.startswith(p) for p in prefixes)
         ]
 
     def _get_resident_keys(self) -> List[str]:
@@ -167,8 +173,11 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
         This reversal is needed in _get_layer_keys so the streaming pre-hook can
         find the right tensors in the seeker.
         """
-        prefix = self._get_streaming_prefix()
-        if prefix == "transformer_blocks.":
+        if diffusers_shard_name.startswith("token_refiner.refiner_blocks."):
+            return diffusers_shard_name
+
+        prefixes = self._get_streaming_prefixes()
+        if "transformer_blocks." in prefixes:
             return diffusers_shard_name
 
         # Reverse the blocks.→transformer_blocks. mapping
@@ -231,12 +240,13 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
             else:
                 # GGUF: MiniMaxH3KeyMap renamed fc1->ff.net.0.proj; still need gate/value swap
                 if ".ff.net.0.proj." in dk and tensor.dim() >= 1 and tensor.shape[0] > 1:
-                    # Swap on CPU to avoid VRAM fragmentation OOM (294 MiB torch.cat peak)
-                    t_cpu = tensor.cpu()
-                    del tensor
-                    gate, value = t_cpu.chunk(2, dim=0)
-                    remapped[dk] = torch.cat([value, gate], dim=0)
-                    continue
+                    if self.seeker.__class__.__name__ == "GGUFSeeker":
+                        # Swap on CPU to avoid VRAM fragmentation OOM (294 MiB torch.cat peak)
+                        t_cpu = tensor.cpu()
+                        del tensor
+                        gate, value = t_cpu.chunk(2, dim=0)
+                        remapped[dk] = torch.cat([value, gate], dim=0)
+                        continue
 
             remapped[dk] = tensor
 
