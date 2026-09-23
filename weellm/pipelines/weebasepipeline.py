@@ -90,6 +90,32 @@ _TR_MAP = {
     "LTX2VideoTransformer3DModel":         "weellm.models.transformers.ltx2_video_transformer_3d_model",
 }
 
+# ---------------------------------------------------------------------------
+# VAE class -> streamer module and class mapping
+# ---------------------------------------------------------------------------
+_VAE_MAP = {
+    "AutoencoderKL": (
+        "weellm.models.vaes.autoencoder_kl",
+        "AutoencoderKL",
+    ),
+    "AutoencoderKLMiniMaxH3": (
+        "weellm.models.vaes.autoencoder_kl_minimax_h3",
+        "AutoencoderKLMiniMaxH3Streamer",
+    ),
+    "AutoencoderKLMiniMaxH3Audio": (
+        "weellm.models.vaes.autoencoder_kl_minimax_h3",
+        "AutoencoderKLMiniMaxH3Streamer",
+    ),
+    "MiniMaxH3VideoVAE": (
+        "weellm.models.vaes.autoencoder_kl_minimax_h3",
+        "AutoencoderKLMiniMaxH3Streamer",
+    ),
+    "MiniMaxH3AudioVAE": (
+        "weellm.models.vaes.autoencoder_kl_minimax_h3",
+        "AutoencoderKLMiniMaxH3Streamer",
+    ),
+}
+
 
 # ---------------------------------------------------------------------------
 # WeePipeline wrapper
@@ -422,6 +448,7 @@ class WeeBasePipeline:
             model_dir_path, index, device, effective_dtype, prefetch, cache_to_ram,
             transformer_path_override=transformer_path_override
         )
+        transformer_streamer._resident_loaded = True
         tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
         tr_model = cls._patch_to(tr_model)
         tr_model._weellm_streamer = transformer_streamer
@@ -635,18 +662,30 @@ class WeeBasePipeline:
             except Exception as e:
                 logger.warning("Could not read VAE config.json: %s. Defaulting to AutoencoderKL.", e)
                 
-        if class_name == "AutoencoderKLMiniMaxH3":
-            from weellm.models.vaes.autoencoder_kl_minimax_h3 import AutoencoderKLMiniMaxH3Streamer as VaeStreamer
-        else:
-            from weellm.models.vaes.autoencoder_kl import AutoencoderKL as VaeStreamer
+        module_path, streamer_name = _VAE_MAP.get(class_name, _VAE_MAP["AutoencoderKL"])
+        VaeStreamer = getattr(importlib.import_module(module_path), streamer_name)
 
         with override_weights_path(vae_path_override, subfolder=subfolder):
-            return VaeStreamer.from_pretrained(
+            streamer = VaeStreamer.from_pretrained(
                 vae_dir,
                 device=device,
                 dtype=torch_dtype,
                 cache_to_ram=cache_to_ram,
             )
+
+        # Diffusers uses ``vae.device`` to place latents before decode. A
+        # streamed VAE has meta parameters by design, so its inherited device
+        # property incorrectly reports ``meta`` and destroys the latent.
+        model = streamer.model
+        execution_device = torch.device(device)
+        model_class = type(model)
+        streamed_class = type(
+            f"WeeLLM{model_class.__name__}",
+            (model_class,),
+            {"device": property(lambda self: execution_device)},
+        )
+        model.__class__ = streamed_class
+        return streamer
 
     @staticmethod
     def _load_text_encoders(

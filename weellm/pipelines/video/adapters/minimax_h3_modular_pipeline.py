@@ -58,6 +58,13 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
             underlying.vae = underlying.video_vae
             if hasattr(underlying, "components"):
                 underlying.components["vae"] = underlying.video_vae
+
+        # ModularPipeline decodes audio directly through the component. Route
+        # that call through the streamer so streamed parameters are materialised.
+        audio_streamer = getattr(pipe, "audio_vae_streamer", None)
+        audio_vae = getattr(underlying, "audio_vae", None)
+        if audio_streamer is not None and audio_vae is not None:
+            audio_vae.decode = audio_streamer.decode
         
         # ── Apply post-load patches ───────────────────────────────────────────
         cls._apply_pipeline_patches(underlying, device)

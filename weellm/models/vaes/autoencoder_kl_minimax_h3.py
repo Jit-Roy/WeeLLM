@@ -21,33 +21,7 @@ logger = logging.getLogger("weellm")
 
 class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
     """
-    Memory-efficient streaming VAE wrapper for the MiniMax-H3 Video VAE.
-
-    Architecture overview
-    ---------------------
-    The MiniMaxH3 decoder is a 36-block ViT that operates on a packed sequence of
-    (temporal_clip x spatial_tile) patch tokens.  Loading all 36 blocks at once
-    would require ~5 GB of VRAM -- far beyond a 4 GB budget.
-
-    Strategy: 3-tier async pipeline
-      Tier 1 - Disk thread: continuously reads the next block shard from disk
-               into a CPU-RAM queue (prefetch depth = max_ram_cache).
-      Tier 2 - H2D worker (ThreadPoolExecutor): pulls a block from the CPU queue,
-               pins it to a ping-pong GPU buffer, submits an async H2D copy on a
-               dedicated CUDA stream.
-      Tier 3 - GPU compute stream: waits for the H2D event, wires the buffer into
-               nn.Module params via _place_tensor, runs the micro-batched forward
-               over all tiles in-place, evicts the weights, then kicks off the
-               next H2D transfer while compute is in flight.
-
-    Only 2 GPU block buffers (ping-pong) are kept alive at any time, so peak
-    VRAM from block weights is always 2 x ~150 MB = ~300 MB.
-
-    decode() also handles:
-      - Temporal chunking  (mirrors diffusers _decode)
-      - Spatial tiling     (mirrors diffusers _decode_clip / _split_tiles)
-      - Temporal overlap blending
-      - Result caching to .weellm_cache/vae_decode_cache.pt
+    Memory-efficient streaming VAE wrapper for the MiniMax-H3 Video & Audio VAE.
     """
 
     def __init__(
@@ -60,12 +34,120 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
     ) -> None:
         super().__init__(model, seeker, device, dtype)
         self._config_extras = config_extras or {}
-        self._patch_encode()
+        
+        self.is_audio = hasattr(model, "decoder") and hasattr(model.decoder, "ups")
+        
+        if self.is_audio:
+            self._native_decode = model.decode
+            self._stream_hooks = []
+            self._install_decoder_hooks()
+            self._patch_encode_audio()
+        else:
+            self._patch_encode()
 
     @property
     def decoder_streaming_prefixes(self) -> tuple:
+        if getattr(self, "is_audio", False):
+            return ("decoder.", "encoder.", "quant_conv.", "post_quant_conv.")
         return ("decoder.transformer_blocks.",)
 
+    def _get_resident_keys(self) -> List[str]:
+        if getattr(self, "is_audio", False):
+            streamed = ("decoder.ups.", "decoder.resblocks.")
+            return [
+                key for key in self.seeker.weight_map
+                if not any(self._key_matches(key, prefix) for prefix in streamed)
+                and not self._key_matches(key, "encoder.")
+            ]
+        return super()._get_resident_keys()
+
+    @staticmethod
+    def _key_matches(key, suffix):
+        suffix = suffix.rstrip(".")
+        return (
+            key == suffix
+            or key.startswith(suffix + ".")
+            or key.endswith("." + suffix)
+            or ("." + suffix + ".") in key
+        )
+
+    def _keys_for(self, suffix):
+        return [key for key in self.seeker.weight_map if self._key_matches(key, suffix)]
+
+    def _load_resident_audio(self):
+        keys = self._get_resident_keys()
+        print("DEBUG: _load_resident_audio keys count:", len(keys), flush=True)
+        if "decoder.activation_post.act.alpha" in keys:
+            print("DEBUG: decoder.activation_post.act.alpha IS in keys!", flush=True)
+        else:
+            print("DEBUG: decoder.activation_post.act.alpha IS NOT in keys!", flush=True)
+
+        tensors = self.seeker.get_tensors(keys, device=self.device, dtype=self.dtype)
+        for name, tensor in tensors.items():
+            if "alpha" in name:
+                print("DEBUG: placing", name, flush=True)
+            self._place_tensor(name, tensor, self.device, self.dtype)
+        print("DEBUG: after place_tensor, alpha device:", self.model.decoder.activation_post.act.alpha.device, flush=True)
+
+    def _install_decoder_hooks(self):
+        decoder = getattr(self.model, "model", self.model).decoder
+        modules = list(decoder.ups)
+        modules.extend(decoder.resblocks)
+        for module in modules:
+            module.register_forward_pre_hook(self._block_pre_hook)
+            module.register_forward_hook(self._block_post_hook)
+
+    def _block_prefix(self, module):
+        decoder = getattr(self.model, "model", self.model).decoder
+        for name, candidate in decoder.named_modules():
+            if candidate is module:
+                return "decoder." + name
+        raise RuntimeError("Audio VAE block is not part of the decoder")
+
+    def _block_pre_hook(self, module, args):
+        prefix = self._block_prefix(module)
+        keys = self._keys_for(prefix)
+        tensors = self.seeker.get_tensors(keys, device=self.device, dtype=self.dtype)
+        for name, tensor in tensors.items():
+            self._place_tensor(name, tensor, self.device, self.dtype)
+        module._weellm_audio_keys = keys
+        return args
+
+    def _block_post_hook(self, module, args, output):
+        self._evict_keys(getattr(module, "_weellm_audio_keys", []))
+        module._weellm_audio_keys = []
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return output
+
+    def _patch_encode_audio(self) -> None:
+        original_encode = self.model.encode
+
+        def _lazy_encode(self_obj, *args, **kwargs):
+            self._load_all_audio()
+            kwargs.pop("return_dict", None)
+            if args and isinstance(args[0], torch.Tensor):
+                args = (args[0].to(self.dtype),) + args[1:]
+            result = original_encode(*args, return_dict=True, **kwargs)
+            if hasattr(result, "latent_dist"):
+                posterior = result.latent_dist
+            else:
+                from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
+                posterior = DiagonalGaussianDistribution(result)
+            self._evict_all_audio()
+            return (posterior,)
+
+        self.model.encode = _lazy_encode.__get__(self.model, self.model.__class__)
+
+    def _load_all_audio(self):
+        keys = self._get_resident_keys() + self._get_encoder_keys()
+        tensors = self.seeker.get_tensors(keys, device=self.device, dtype=self.dtype)
+        for name, tensor in tensors.items():
+            self._place_tensor(name, tensor, self.device, self.dtype)
+
+    def _evict_all_audio(self):
+        self._evict_keys(list(self.seeker.weight_map.keys()))
+        clean_memory(self.device)
     def _patch_encode(self) -> None:
         """Wrap model.encode() to lazy-load encoder weights on first call."""
         original_encode = self.model.encode
@@ -87,6 +169,17 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
         self.model.encode = _lazy_encode.__get__(self.model, self.model.__class__)
 
     def decode(self, latents, return_dict=True, **kwargs):
+        if getattr(self, "is_audio", False):
+            self._load_resident_audio()
+            try:
+                return self._native_decode(
+                    latents.to(self.device, dtype=self.dtype),
+                    return_dict=return_dict,
+                    **kwargs,
+                )
+            finally:
+                self._evict_all_audio()
+
         """Decode latents through the 3-tier streaming VAE decoder.
 
         Loads one of the 36 transformer blocks at a time using an async
@@ -206,9 +299,10 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
                     tile_info.append((ci, yi, xi))
 
         # Stack all tiles into one batch for blocked GPU processing
-        all_hs  = torch.cat([item[0] for item in tile_z], dim=0)
-        all_cos = torch.cat([item[1][0] for item in tile_z], dim=0)
-        all_sin = torch.cat([item[1][1] for item in tile_z], dim=0)
+        # KEEP ON CPU to save VRAM (saves ~2.1 GB peak VRAM)
+        all_hs  = torch.cat([item[0].cpu() for item in tile_z], dim=0).pin_memory()
+        all_cos = torch.cat([item[1][0].cpu() for item in tile_z], dim=0).pin_memory()
+        all_sin = torch.cat([item[1][1].cpu() for item in tile_z], dim=0).pin_memory()
         num_patches, T_tile, H_tile, W_tile = tile_z[0][2], tile_z[0][3], tile_z[0][4], tile_z[0][5]
         tile_z = None  # free list
 
@@ -339,12 +433,12 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
                     # Writing output directly back into all_hs avoids a torch.cat
                     # allocation that would double peak VRAM.
                     for b_start in range(0, num_tiles_total, MAX_MICROBATCH):
-                        chunk_hs  = all_hs [b_start : b_start + MAX_MICROBATCH]
-                        chunk_cos = all_cos[b_start : b_start + MAX_MICROBATCH]
-                        chunk_sin = all_sin[b_start : b_start + MAX_MICROBATCH]
+                        chunk_hs  = all_hs [b_start : b_start + MAX_MICROBATCH].to(self.device, non_blocking=True)
+                        chunk_cos = all_cos[b_start : b_start + MAX_MICROBATCH].to(self.device, non_blocking=True)
+                        chunk_sin = all_sin[b_start : b_start + MAX_MICROBATCH].to(self.device, non_blocking=True)
                         out_chunk = block(chunk_hs, (chunk_cos, chunk_sin))
-                        # In-place copy: reuses all_hs storage; out_chunk freed immediately
-                        all_hs[b_start : b_start + MAX_MICROBATCH].copy_(out_chunk)
+                        # In-place copy back to CPU: reuses all_hs storage; out_chunk freed immediately
+                        all_hs[b_start : b_start + MAX_MICROBATCH].copy_(out_chunk.cpu(), non_blocking=True)
                         del out_chunk, chunk_hs, chunk_cos, chunk_sin
                         if hasattr(torch, "clear_autocast_cache"):
                             torch.clear_autocast_cache()
@@ -393,9 +487,17 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
         )
 
         # norm_out + proj_out + unpatch (all resident weights, no disk I/O)
-        all_hs = dec.norm_out(all_hs)
-        all_hs = dec.proj_out(all_hs)
-        all_hs = all_hs[:, :num_patches, :]  # drop register + cls tokens
+        # Microbatch this step because all_hs on GPU could OOM (2.1GB input -> 2.1GB intermediate -> 500MB output)
+        final_hs_list = []
+        for b_start in range(0, num_tiles_total, MAX_MICROBATCH):
+            chunk = all_hs[b_start : b_start + MAX_MICROBATCH].to(self.device, non_blocking=True)
+            chunk = dec.norm_out(chunk)
+            chunk = dec.proj_out(chunk)
+            chunk = chunk[:, :num_patches, :]  # drop register + cls tokens
+            final_hs_list.append(chunk.cpu())
+        
+        all_hs = torch.cat(final_hs_list, dim=0)
+        del final_hs_list
 
         patch_size   = dec.patch_size
         patch_size_t = dec.patch_size_t
@@ -403,7 +505,8 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
         all_hs = all_hs.view(N, T_tile, H_tile, W_tile, dec.out_channels, patch_size_t, patch_size, patch_size)
         all_hs = all_hs.permute(0, 4, 1, 5, 2, 6, 3, 7).contiguous()
         all_hs = all_hs.reshape(N, dec.out_channels, T_tile * patch_size_t, H_tile * patch_size, W_tile * patch_size)
-        decoded_tiles = [t.unsqueeze(0) for t in all_hs.unbind(dim=0)]  # list of (1, C, t, h, w)
+        # Move decoded tiles back to GPU for spatial and temporal stitching
+        decoded_tiles = [t.unsqueeze(0).to(self.device, non_blocking=True) for t in all_hs.unbind(dim=0)]
 
         # Stitch tiles per clip, then blend temporal overlaps
         num_y = len(y_indices)
@@ -454,55 +557,91 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
     @classmethod
     def from_pretrained(
         cls,
-        vae_dir: Union[str, Path],
-        device: str = "cuda",
-        dtype: torch.dtype = torch.bfloat16,
-        cache_to_ram: bool = False,
+        vae_dir,
+        device="cuda",
+        dtype=torch.bfloat16,
+        cache_to_ram=False,
     ) -> "AutoencoderKLMiniMaxH3Streamer":
-        from diffusers.models.autoencoders.autoencoder_kl_minimax_h3 import AutoencoderKLMiniMaxH3
-
+        import importlib
+        
         vae_dir = Path(vae_dir)
         config_path = vae_dir / "config.json"
+        
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
 
-        logger.info("  Step 1/3 -- Initialising LiveSeeker on MiniMax VAE weights ...")
-        source_path = vae_dir / config["source_path"] if "source_path" in config else vae_dir
-        seeker = get_seeker(str(source_path), cache_to_ram=cache_to_ram)
-        logger.info("  Found %d VAE tensors across shards.", len(seeker.weight_map))
+        class_name = config.get("_class_name", "AutoencoderKLMiniMaxH3")
+        is_audio = ("Audio" in class_name)
+        
+        if is_audio:
+            diffusers = importlib.import_module("diffusers")
+            vae_cls = getattr(diffusers, class_name)
+            logger.info("  Step 1/3 -- Initialising LiveSeeker on Audio VAE weights (%s) ...", class_name)
+            seeker = get_seeker(str(vae_dir), cache_to_ram=cache_to_ram)
+            logger.info("  Found %d VAE tensors across shards.", len(seeker.weight_map))
 
-        logger.info("  Step 2/3 -- Instantiating AutoencoderKLMiniMaxH3 on meta device ...")
-        init_cfg = {k: v for k, v in config.items() if not k.startswith("_")}
-        with init_empty_weights():
-            model = AutoencoderKLMiniMaxH3(**init_cfg)
-        model.eval()
+            logger.info("  Step 2/3 -- Instantiating %s on meta device ...", class_name)
+            with default_dtype(dtype), init_empty_weights():
+                cfg = vae_cls.load_config(str(config_path))
+                model = vae_cls.from_config(cfg)
+            model.eval()
 
-        config_extras = {
-            "latent_channels": config.get("latent_channels", 24),
-            "latents_mean":    config.get("latents_mean", [0.0] * 24),
-            "latents_std":     config.get("latents_std",  [1.0] * 24),
-            "clip_length":     config.get("clip_length",  17),
-        }
-        streamer = cls(model, seeker, device, dtype, config_extras=config_extras)
+            streamer = cls(model, seeker, device, dtype)
+            
+            _decoder = getattr(model, "decoder", None)
+            if _decoder is not None:
+                from accelerate.utils.modeling import set_module_tensor_to_device
+                for buf_name, buf in list(_decoder.named_buffers()):
+                    if buf.device.type == "cpu":
+                        buf.data = buf.data.to(device)
+                        logger.info("    [VAE] Moved audio decoder buffer '%s' -> %s", buf_name, device)
+                for param_name, param in list(_decoder.named_parameters()):
+                    # Snake1d alpha/beta are sometimes missing from the checkpoint, leaving them as uninitialized meta tensors.
+                    full_key = f"decoder.{param_name}"
+                    if param_name.endswith(".alpha") or param_name.endswith(".beta"):
+                        print(f"DEBUG: {param_name} device={param.device}")
+                    if param.device.type == "meta" and full_key not in seeker.weight_map:
+                        set_module_tensor_to_device(model.decoder, param_name, device, value=torch.ones_like(param, device=device, dtype=dtype))
+                        logger.info("    [VAE] Initialized missing meta parameter '%s' to ones on %s", param_name, device)
 
-        logger.info("  Step 3/3 -- Loading VAE resident tensors to GPU ...")
-        resident_keys = streamer._get_resident_keys()
-        resident_sd   = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
-        for name, tensor in resident_sd.items():
-            streamer._place_tensor(name, tensor, device, dtype)
-        del resident_sd
+            logger.info("  Step 3/3 -- Audio VAE initialized on meta device (0 resident keys).")
+            return streamer
+        else:
+            from diffusers.models.autoencoders.autoencoder_kl_minimax_h3 import AutoencoderKLMiniMaxH3
+            logger.info("  Step 1/3 -- Initialising LiveSeeker on MiniMax VAE weights ...")
+            source_path = vae_dir / config["source_path"] if "source_path" in config else vae_dir
+            seeker = get_seeker(str(source_path), cache_to_ram=cache_to_ram)
+            logger.info("  Found %d VAE tensors across shards.", len(seeker.weight_map))
 
-        # Non-persistent buffers (e.g. decoder.rope.inv_freq) land on CPU under
-        # init_empty_weights(). Move them to the target device so RoPE does not
-        # crash with a cuda:0 vs cpu device mismatch.
-        _decoder = getattr(model, "decoder", None)
-        if _decoder is not None:
-            for buf_name, buf in list(_decoder.named_buffers()):
-                if buf.device.type == "cpu":
-                    buf.data = buf.data.to(device)
-                    logger.info("    [VAE] Moved decoder buffer '%s' -> %s", buf_name, device)
+            logger.info("  Step 2/3 -- Instantiating AutoencoderKLMiniMaxH3 on meta device ...")
+            init_cfg = {k: v for k, v in config.items() if not k.startswith("_")}
+            with init_empty_weights():
+                model = AutoencoderKLMiniMaxH3(**init_cfg)
+            model.eval()
 
-        clean_memory(device)
-        report_memory("After VAE resident load")
-        logger.info("  MiniMaxVAEStreamer ready (%d resident keys, decoder blocks streamed).", len(resident_keys))
-        return streamer
+            config_extras = {
+                "latent_channels": config.get("latent_channels", 24),
+                "latents_mean":    config.get("latents_mean", [0.0] * 24),
+                "latents_std":     config.get("latents_std",  [1.0] * 24),
+                "clip_length":     config.get("clip_length",  17),
+            }
+            streamer = cls(model, seeker, device, dtype, config_extras=config_extras)
+
+            logger.info("  Step 3/3 -- Loading VAE resident tensors to GPU ...")
+            resident_keys = streamer._get_resident_keys()
+            resident_sd   = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
+            for name, tensor in resident_sd.items():
+                streamer._place_tensor(name, tensor, device, dtype)
+            del resident_sd
+
+            _decoder = getattr(model, "decoder", None)
+            if _decoder is not None:
+                for buf_name, buf in list(_decoder.named_buffers()):
+                    if buf.device.type == "cpu":
+                        buf.data = buf.data.to(device)
+                        logger.info("    [VAE] Moved decoder buffer '%s' -> %s", buf_name, device)
+
+            clean_memory(device)
+            report_memory("After VAE resident load")
+            logger.info("  MiniMaxVAEStreamer ready (%d resident keys, decoder blocks streamed).", len(resident_keys))
+            return streamer
