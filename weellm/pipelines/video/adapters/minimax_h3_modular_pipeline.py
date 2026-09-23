@@ -279,12 +279,13 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
                 if token_tags.shape != (sequence_length,) or timestep_indices.shape != (sequence_length,):
                     raise ValueError("`token_tags` and `timestep_indices` must be `(seq_len,)` tensors.")
 
-                rotary_emb = self.rope(position_ids)
                 target_device = hidden_states.device
 
                 # JIT-move setup modules
-                for m in (self.proj_in, self.audio_proj_in, self.context_embedder, self.token_refiner):
+                for m in (self.proj_in, self.audio_proj_in, self.context_embedder, self.token_refiner, self.rope):
                     m.to(target_device)
+                
+                rotary_emb = self.rope(position_ids)
 
                 video_embeds = self.proj_in(hidden_states.to(_get_param_dtype(self.proj_in)))
                 audio_embeds = self.audio_proj_in(audio_hidden_states.to(_get_param_dtype(self.audio_proj_in)))

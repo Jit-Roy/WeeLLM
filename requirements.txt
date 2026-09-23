@@ -6,6 +6,7 @@
 # Core deep learning
 torch>=2.1.0
 torchvision
+torchao
 
 # Diffusers + transformers
 diffusers @ git+https://github.com/huggingface/diffusers

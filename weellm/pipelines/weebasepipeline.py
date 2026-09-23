@@ -1167,9 +1167,9 @@ class WeeBasePipeline:
                     args = tuple(a.to(tgt_dtype) if torch.is_tensor(a) and a.is_floating_point() else a for a in args)
                     kwargs = {k: (v.to(tgt_dtype) if torch.is_tensor(v) and v.is_floating_point() else v) for k, v in kwargs.items()}
 
-                if hasattr(pipeline, "vae_streamer"):
+                if hasattr(pipeline, "vae_streamer") and "decode" in pipeline.vae_streamer.__class__.__dict__:
                     res = pipeline.vae_streamer.decode(*args, **kwargs)
-                elif hasattr(pipeline, "video_vae_streamer") and getattr(pipeline, "vae", None) is getattr(pipeline, "video_vae", None):
+                elif hasattr(pipeline, "video_vae_streamer") and "decode" in pipeline.video_vae_streamer.__class__.__dict__ and getattr(pipeline, "vae", None) is getattr(pipeline, "video_vae", None):
                     res = pipeline.video_vae_streamer.decode(*args, **kwargs)
                 else:
                     res = original_vae_decode_vram(*args, **kwargs)       
