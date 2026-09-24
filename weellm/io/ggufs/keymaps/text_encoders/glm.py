@@ -14,6 +14,7 @@ class GLMKeyMap:
                 "token_embd.weight" in gguf_keys
                 and any(k.startswith("blk.") for k in gguf_keys)
                 and "blk.0.ffn_up.weight" in gguf_keys
+                and "blk.0.ffn_gate.weight" not in gguf_keys
             )
         )
 
