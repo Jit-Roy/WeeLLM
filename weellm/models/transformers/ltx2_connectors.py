@@ -6,15 +6,15 @@ class LTX2ConnectorsStreamer(BaseTransformerStreamer):
         return LTX2TextConnectors
 
     def _get_resident_keys(self):
-        return [
-            "text_proj_in",
-            "video_text_proj_in",
-            "audio_text_proj_in",
+        keys = [
             "video_connector.learnable_registers",
-            "video_connector.norm_out",
+            "video_connector.norm_out.weight",
+            "video_connector.norm_out.bias",
             "audio_connector.learnable_registers",
-            "audio_connector.norm_out"
+            "audio_connector.norm_out.weight",
+            "audio_connector.norm_out.bias"
         ]
+        return [k for k in keys if k in self.seeker.weight_map]
 
     def _get_shard_order(self):
         order = []
