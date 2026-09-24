@@ -140,6 +140,12 @@ class GGUFSeeker:
                             t = raw_torch.view(torch.float32).reshape(shape)
                         elif qtype == _gguf_lib.GGMLQuantizationType.F16:
                             t = raw_torch.view(torch.float16).reshape(shape)
+                        elif qtype == _gguf_lib.GGMLQuantizationType.I8:
+                            t = raw_torch.view(torch.int8).reshape(shape)
+                        elif qtype == _gguf_lib.GGMLQuantizationType.I16:
+                            t = raw_torch.view(torch.int16).reshape(shape)
+                        elif qtype == _gguf_lib.GGMLQuantizationType.I32:
+                            t = raw_torch.view(torch.int32).reshape(shape)
                         else:
                             t = raw_torch.reshape(shape)
                         if t.is_floating_point() and t.dtype != target_dtype:
