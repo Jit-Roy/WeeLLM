@@ -598,8 +598,6 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
                 for param_name, param in list(_decoder.named_parameters()):
                     # Snake1d alpha/beta are sometimes missing from the checkpoint, leaving them as uninitialized meta tensors.
                     full_key = f"decoder.{param_name}"
-                    if param_name.endswith(".alpha") or param_name.endswith(".beta"):
-                        print(f"DEBUG: {param_name} device={param.device}")
                     if param.device.type == "meta" and full_key not in seeker.weight_map:
                         set_module_tensor_to_device(model.decoder, param_name, device, value=torch.ones_like(param, device=device, dtype=dtype))
                         logger.info("    [VAE] Initialized missing meta parameter '%s' to ones on %s", param_name, device)

@@ -82,11 +82,53 @@ class T5EncoderModelStreamer:
             block.register_forward_pre_hook(self._pre_hook)
             block.register_forward_hook(self._post_hook)
 
+        self.model.encoder.final_layer_norm.register_forward_pre_hook(
+            self._final_norm_pre_hook
+        )
+
+    def _final_norm_pre_hook(self, module: nn.Module, args):
+        if not args or not torch.is_tensor(args[0]):
+            return
+
+        hidden_states = args[0]
+        weight = getattr(module, "weight", None)
+        if weight is None or weight.device != hidden_states.device:
+            keys = [
+                key for key in self.seeker.weight_map
+                if key.startswith("encoder.final_layer_norm.")
+            ]
+            if keys:
+                state_dict = self.seeker.get_tensors(
+                    keys, device=hidden_states.device, dtype=self.dtype
+                )
+                place_tensors(
+                    self.model, state_dict, hidden_states.device, self.dtype
+                )
+            
+            # If still not on the correct device (e.g. missing from checkpoint)
+            weight = getattr(module, "weight", None)
+            if weight is not None and weight.device != hidden_states.device:
+                if weight.device.type == "meta":
+                    weight.data = torch.ones_like(weight, device=hidden_states.device, dtype=self.dtype)
+                else:
+                    weight.data = weight.data.to(device=hidden_states.device, dtype=self.dtype)
+
     def _pre_hook(self, module: nn.Module, args):
         idx = module._t5_block_idx
         block_keys = self._get_block_keys(idx)
         sd = self.seeker.get_tensors(block_keys, device=self.device, dtype=self.dtype)
         place_tensors(self.model, sd, self.device, self.dtype)
+        
+        # Catch any parameters that failed to move (e.g. missing from checkpoint or stuck on CPU)
+        for name, param in module.named_parameters():
+            if param.device.type != self.device:
+                if param.device.type == "meta":
+                    if "layer_norm" in name:
+                        param.data = torch.ones_like(param, device=self.device, dtype=self.dtype)
+                    else:
+                        param.data = torch.zeros_like(param, device=self.device, dtype=self.dtype)
+                else:
+                    param.data = param.data.to(device=self.device, dtype=self.dtype)
 
     def _evict_block(self, module: nn.Module, block_idx: int) -> None:
         """
@@ -203,5 +245,12 @@ class T5EncoderModelStreamer:
         return cls(model, seeker, device, dtype, max_length)
 
     def __call__(self, *args, **kwargs):
+        for key in ("input_ids", "attention_mask", "encoder_attention_mask"):
+            value = kwargs.get(key)
+            if torch.is_tensor(value) and value.device.type != "meta":
+                kwargs[key] = value.to(self.device)
+        args = list(args)
+        if args and torch.is_tensor(args[0]) and args[0].device.type != "meta":
+            args[0] = args[0].to(self.device)
         kwargs["return_dict"] = False
         return self.model(*args, **kwargs)
