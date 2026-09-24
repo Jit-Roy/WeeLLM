@@ -149,6 +149,16 @@ class UMT5EncoderModelStreamer:
         print(f"  -> {num_blocks} UMT5 encoder blocks will stream on-demand. Resident weights on GPU.")
         report_memory("After UMT5 encoder init")
 
+        # Diffusers extracts `text_encoder_2.model` and calls it directly, bypassing UMT5EncoderModelStreamer.__call__.
+        # Because our first parameter (embeddings) is pinned to CPU, diffusers assumes the entire model is on CPU
+        # and passes inputs on CPU. We intercept the raw model's forward pass to force inputs back to the GPU.
+        def force_inputs_to_device(module, args, kwargs):
+            new_args = tuple(arg.to(device) if torch.is_tensor(arg) else arg for arg in args)
+            new_kwargs = {k: v.to(device) if torch.is_tensor(v) else v for k, v in kwargs.items()}
+            return new_args, new_kwargs
+            
+        model.register_forward_pre_hook(force_inputs_to_device, with_kwargs=True)
+
         return cls(model, seeker, device, dtype, max_length)
 
     def __call__(self, *args, **kwargs):

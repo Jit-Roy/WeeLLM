@@ -594,7 +594,6 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
                 for buf_name, buf in list(_decoder.named_buffers()):
                     if buf.device.type == "cpu":
                         buf.data = buf.data.to(device)
-                        logger.info("    [VAE] Moved audio decoder buffer '%s' -> %s", buf_name, device)
                 for param_name, param in list(_decoder.named_parameters()):
                     # Snake1d alpha/beta are sometimes missing from the checkpoint, leaving them as uninitialized meta tensors.
                     full_key = f"decoder.{param_name}"

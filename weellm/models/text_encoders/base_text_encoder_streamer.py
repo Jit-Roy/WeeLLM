@@ -230,6 +230,18 @@ class BaseLazyDecoderStreamer(ABC):
     # ------------------------------------------------------------------ #
 
     def _install_hooks(self) -> None:
+        # Diffusers extracts the raw model and calls it directly, which completely bypasses 
+        # any wrapper __call__. It also queries the first parameter (which is on CPU) to
+        # determine the model device, so it passes inputs on CPU. To prevent this, we attach a pre-hook 
+        # to the raw model itself to intercept and move inputs to CUDA.
+        def force_inputs_to_device(module, args, kwargs):
+            new_args = tuple(arg.to(self.device) if torch.is_tensor(arg) else arg for arg in args)
+            new_kwargs = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in kwargs.items()}
+            return new_args, new_kwargs
+        
+        h_root = self._model.register_forward_pre_hook(force_inputs_to_device, with_kwargs=True)
+        self._hook_handles.append(h_root)
+
         capture_set = self._capture_layer_indices()
         for layer_idx in range(self._num_layers):
             layer = self._get_model_layers()[layer_idx]

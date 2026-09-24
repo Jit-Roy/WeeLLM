@@ -113,6 +113,17 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
         self._install_qwen_root_forward_patch()
 
     def _install_hooks(self):
+        # Diffusers extracts the raw model and calls it directly, which completely bypasses 
+        # any wrapper __call__. It also queries the first parameter (which is on CPU) to
+        # determine the model device, so it passes inputs on CPU. To prevent this, we attach a pre-hook 
+        # to the raw model itself to intercept and move inputs to CUDA.
+        def force_inputs_to_device(module, args, kwargs):
+            new_args = tuple(arg.to(self.device) if torch.is_tensor(arg) else arg for arg in args)
+            new_kwargs = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in kwargs.items()}
+            return new_args, new_kwargs
+        
+        self.model.register_forward_pre_hook(force_inputs_to_device, with_kwargs=True)
+
         for i, shard_name in enumerate(self._shard_order):
             layer = self.model.model.language_model.layers[i]
             layer._qwen_te_shard = shard_name

@@ -202,7 +202,7 @@ class GGUFSeeker:
         for key in keys:
             if key not in self._tensor_meta:
                 continue
-            _, shape, _, slice_info, _ = self._tensor_meta[key]
+            _, shape, _, _, slice_info, _ = self._tensor_meta[key]
             n_elements = math.prod(shape) if shape else 1
             if slice_info is not None:
                 n_elements = n_elements // slice_info[1]
