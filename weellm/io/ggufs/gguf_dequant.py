@@ -393,7 +393,7 @@ def process_gguf_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Ten
             # Use floating point dtype from other tensors if available
             target_dtype = torch.bfloat16
             for k, v in result.items():
-                if v.is_floating_point():
+                if isinstance(v, torch.Tensor) and v.is_floating_point():
                     target_dtype = v.dtype
                     break
             

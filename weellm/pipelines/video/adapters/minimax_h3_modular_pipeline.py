@@ -412,29 +412,3 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
             logger.info("[WeeLLM/MiniMax] Strategy 3: In-place packing + embed deletion + peak reset patched.")
         except Exception as e:
             logger.warning("[WeeLLM/MiniMax] Strategy 3 patch failed: %s", e)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Stub
-# ─────────────────────────────────────────────────────────────────────────────
-
-class _DummyAudioVAE:
-    """No-op stub for the audio VAE (video-only mode)."""
-    class config:
-        latent_channels = 32
-        sampling_rate   = 32000
-        latents_mean    = [0.0] * 32
-        latents_std     = [1.0] * 32
-
-    def __call__(self, *a, **kw): return None
-    def to(self, *a, **kw):       return self
-
-    def encode(self, *a, **kw):
-        class _D:
-            def mode(self):    return torch.zeros(1, 32, 1)
-            def sample(self, generator=None): return torch.zeros(1, 32, 1)
-        class _O: latent_dist = _D()
-        return _O()
-
-    def decode(self, *a, **kw):
-        return (torch.zeros(2, 1, 1),)
