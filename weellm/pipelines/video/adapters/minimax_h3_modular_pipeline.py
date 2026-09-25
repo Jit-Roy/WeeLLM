@@ -38,9 +38,20 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
             if not hasattr(_df, _cls):
                 setattr(_df, _cls, type(_cls, (), {}))
 
+        # We do not support Ref2VA yet. If we didn't explicitly pass transformer_ref
+        # or transformer_ref_path, force it to None so we don't download it from HF.
+        if "transformer_ref" not in kwargs and "transformer_ref_path" not in kwargs:
+            kwargs["transformer_ref"] = None
+
         # ── Resolve model dir ─────────────────────────────────────────────────
+        skip_components = {
+            k[:-5] for k, v in kwargs.items()
+            if k.endswith("_path") and v is not None
+        }
+        skip_components.update({k for k, v in kwargs.items() if v is None})
+        
         from weellm.io.utils import resolve_model_path
-        model_dir_str  = str(resolve_model_path(str(model_dir)))
+        model_dir_str  = str(resolve_model_path(str(model_dir), skip_components=skip_components or None))
         model_dir_path = Path(model_dir_str)
 
         device = kwargs.get("device",      "cuda")
