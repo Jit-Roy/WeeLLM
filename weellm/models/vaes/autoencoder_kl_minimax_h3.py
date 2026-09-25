@@ -398,6 +398,10 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
             b._forward_pre_hooks.clear()
             b._forward_hooks.clear()
 
+        # torch.compile caches the compiled graph internally via torch._dynamo.
+        # Suppress errors so a compile failure falls back to eager without crashing.
+        torch._dynamo.config.suppress_errors = True
+
         try:
             total_gpu_idle = 0.0
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
@@ -432,11 +436,25 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
                     # Micro-batched GPU forward pass (in-place update of all_hs)
                     # Writing output directly back into all_hs avoids a torch.cat
                     # allocation that would double peak VRAM.
+                    # Compile current block (weights are on GPU at this point).
+                    # torch.compile's internal dynamo cache deduplicates across all 36 blocks:
+                    # block 0 triggers real compilation (~10s one-time), blocks 1-35 are cache hits.
+                    # We must NOT cache the OptimizedModule across block iterations — each block
+                    # instance must be compiled when ITS weights are loaded, otherwise the cached
+                    # wrapper would reference a different block's evicted (meta) parameters.
+                    #
+                    # mode="default": kernel fusion without CUDA graph capture.
+                    # reduce-overhead uses CUDA graphs which require static shapes; for infinite-length
+                    # videos the last microbatch can have any remainder size (n_tiles % MAX_MICROBATCH),
+                    # causing per-shape re-capture overhead. default mode + dynamic=True handles any
+                    # batch size with the same compiled kernel, safely scaling to any video length.
+                    compiled_block = torch.compile(block, mode="default", dynamic=True)
+
                     for b_start in range(0, num_tiles_total, MAX_MICROBATCH):
                         chunk_hs  = all_hs [b_start : b_start + MAX_MICROBATCH].to(self.device, non_blocking=True)
                         chunk_cos = all_cos[b_start : b_start + MAX_MICROBATCH].to(self.device, non_blocking=True)
                         chunk_sin = all_sin[b_start : b_start + MAX_MICROBATCH].to(self.device, non_blocking=True)
-                        out_chunk = block(chunk_hs, (chunk_cos, chunk_sin))
+                        out_chunk = compiled_block(chunk_hs, (chunk_cos, chunk_sin))
                         # In-place copy back to CPU: reuses all_hs storage; out_chunk freed immediately
                         all_hs[b_start : b_start + MAX_MICROBATCH].copy_(out_chunk.cpu(), non_blocking=True)
                         del out_chunk, chunk_hs, chunk_cos, chunk_sin
