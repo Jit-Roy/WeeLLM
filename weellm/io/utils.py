@@ -95,7 +95,7 @@ def resolve_model_path(model_id_or_path: str, skip_components: set = None) -> Pa
     # or local path) are skipped — no need to download their safetensors from HF.
     allow_patterns = ["model_index.json"]
     for key, value in index_data.items():
-        if isinstance(value, list) and len(value) == 2:
+        if isinstance(value, list) and len(value) >= 2:
             if skip_components and key in skip_components:
                 logger.info("  Skipping safetensors download for '%s' (override provided), but keeping configs", key)
                 allow_patterns.append(f"{key}/*.json")
