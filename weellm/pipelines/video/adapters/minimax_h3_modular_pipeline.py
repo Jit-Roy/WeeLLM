@@ -200,8 +200,6 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
                 # FFN with in-place AdaLN + chunked computation
                 residual = hidden_states
                 norm_hidden_states = self.norm2(hidden_states)
-                ff_output = torch.empty_like(norm_hidden_states)
-                
                 for i in range(0, seq_len, FFN_CHUNK_SIZE):
                     end = min(i + FFN_CHUNK_SIZE, seq_len)
                     chunk = norm_hidden_states[:, i:end, :]
@@ -213,12 +211,10 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
                     
                     ff_chunk = self.ff(chunk)
                     gate_chunk = gate_mlp.index_select(0, adaln_indices[i:end])
-                    ff_chunk.mul_(gate_chunk)
-                    ff_output[:, i:end, :] = ff_chunk
-                    del ff_chunk, gate_chunk
-                    
+                    ff_chunk.mul_(gate_chunk); del gate_chunk
+                    residual[:, i:end, :].add_(ff_chunk); del ff_chunk
                 del norm_hidden_states
-                hidden_states = residual.add_(ff_output); del ff_output
+                hidden_states = residual
                 return hidden_states
 
             patched = 0
@@ -302,7 +298,6 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
                 
                 # Physically destroy the tensor before continuing
                 del hidden_states
-                gc.collect()
                 torch.cuda.empty_cache()
 
                 query = query.unflatten(-1, (attn.heads, -1))
@@ -326,7 +321,7 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
                 
                 query_dtype = query.dtype
                 del query, key, value
-                gc.collect(); torch.cuda.empty_cache()
+                torch.cuda.empty_cache()
                 logger.info(f"VRAM after del QKV: {torch.cuda.memory_allocated()/1024**3:.3f} GB")
 
                 hidden_states = hidden_states.flatten(2, 3).to(query_dtype)
@@ -385,7 +380,6 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
 
                 # Free embeddings now before the block loop
                 del video_embeds, audio_embeds, text_embeds
-                gc.collect()
                 torch.cuda.empty_cache()
                 torch.cuda.reset_peak_memory_stats()
 
