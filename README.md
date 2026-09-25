@@ -234,7 +234,37 @@ image = pipe.generate(
 image.save("output_i2i.png")
 ```
 
-### Text & Image to Video 
+### Text to Video
+
+```python
+from weellm import WeeVideoPipeline
+import torch
+
+pipe = WeeVideoPipeline.from_pretrained(
+    "MiniMaxAI/MiniMax-H3",
+    device="cuda",
+    torch_dtype=torch.bfloat16,
+    text_encoder_path="unsloth/MiniMax-H3-GGUF/qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
+    transformer_path="unsloth/MiniMax-H3-GGUF/minimax_h3_fl2va_pruned-Q5_0.gguf",
+    lora_weights="lightx2v/Minimax-h3-Turbo/minimax_h3_ref2v_turbo_4step_v0.1_bf16.safetensors"
+)
+
+video_frames = pipe(
+    prompt=(
+        "A fast sports car driving through a futuristic neon city at night, "
+        "rain reflecting the lights, 4K, cinematic lighting."
+    ),
+    height=512,
+    width=512,
+    num_frames=56,
+    num_inference_steps=6,
+    seed=42,
+)
+
+video_frames.save("minimax_output.mp4", fps=24)
+```
+
+### Image to Video 
 
 ```python
 from weellm import WeeVideoPipeline
