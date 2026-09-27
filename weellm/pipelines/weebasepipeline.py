@@ -449,6 +449,12 @@ class WeeBasePipeline:
             transformer_path_override=transformer_path_override
         )
         transformer_streamer._resident_loaded = True
+        
+        lora_weights = diffusers_kwargs.pop("lora_weights", None)
+        lora_scale = diffusers_kwargs.pop("lora_scale", 1.0)
+        if lora_weights is not None:
+            transformer_streamer.load_lora(lora_weights, lora_scale)
+
         tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
         tr_model = cls._patch_to(tr_model)
         tr_model._weellm_streamer = transformer_streamer

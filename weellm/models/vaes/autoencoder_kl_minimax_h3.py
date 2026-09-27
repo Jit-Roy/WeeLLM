@@ -189,7 +189,9 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
         import os
         cache_dir = os.path.join(os.getcwd(), ".weellm_cache")
         os.makedirs(cache_dir, exist_ok=True)
-        cache_file = os.path.join(cache_dir, "vae_decode_cache.pt")
+        # Use shape and sum to ensure we don't load a cached decode from a different run
+        cache_id = f"{latents.shape[2]}f_{latents.shape[3]}x{latents.shape[4]}_{int(latents.abs().sum().item())}"
+        cache_file = os.path.join(cache_dir, f"vae_decode_cache_{cache_id}.pt")
 
         if os.path.exists(cache_file):
             logger.info("    [VAE Streamer] Loading cached decoded video from %s ...", cache_file)

@@ -370,6 +370,20 @@ class BaseTransformerStreamer(ABC):
         """Write *state_dict* tensors into model parameters (meta -> real device)."""
         place_tensors(self.model, state_dict, self.device, self.dtype, skip_errors=skip_errors)
 
+    def load_lora(self, lora_path: str, lora_scale: float = 1.0) -> None:
+        """Attach a PEFT-style LoRA to this streamer.
+
+        Uses GenericLazyLoRALoader — only the safetensors header is read into
+        RAM now; A/B tensors are streamed from disk per block at forward time.
+        Supported by every streamer automatically; no per-model override needed.
+        """
+        from weellm.models.loras.lora_streamer import GenericLazyLoRALoader
+        self.lora_loader = GenericLazyLoRALoader(lora_path, scale=lora_scale)
+        logger.info(
+            "[LoRA] Attached '%s' (scale=%.2f) to %s.",
+            lora_path, lora_scale, type(self).__name__,
+        )
+
     def _get_layer_keys(self, shard_name: str) -> List[str]:
         keys = [
             k for k in self.seeker.weight_map
@@ -507,6 +521,10 @@ class BaseTransformerStreamer(ABC):
             self.apply_state_dict(sd)
             torch.cuda.synchronize()       # flush CUDA copy_ ops from place_tensors
             del sd
+
+        # LoRA: apply after weights are in VRAM (pinned OR freshly loaded)
+        if getattr(self, "lora_loader", None) is not None:
+            self.lora_loader.apply_to_module(module, shard_name)
 
         t2 = time.time()
 
