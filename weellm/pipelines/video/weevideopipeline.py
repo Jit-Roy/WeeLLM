@@ -193,7 +193,7 @@ class WeeVideoPipeline(WeeBasePipeline):
         #   1. User explicitly passed both → use as-is, ignore everything else.
         #   2. Image-to-video (kwargs["image"] set by WeeLTX2Pipeline router):
         #        - Missing dim(s) are filled from the first frame's actual size.
-        #   3. Text-to-video (no image): default to 544×960.
+        #   3. Text-to-video (no image): default to 512×512.
         # In all cases the resolved values are written back into kwargs so the
         # underlying diffusers pipeline and the cache both see the same dims.
         _user_h = kwargs.get("height")
@@ -227,11 +227,11 @@ class WeeVideoPipeline(WeeBasePipeline):
                 except Exception as _dim_err:
                     logger.warning(
                         "[WeeLLM] Could not extract dims from first frame (%s) — "
-                        "falling back to 544×960.", _dim_err
+                        "falling back to 512x512.", _dim_err
                     )
 
-                height = _user_h if _user_h is not None else (_fh if _fh else 544)
-                width  = _user_w if _user_w is not None else (_fw if _fw else 960)
+                height = _user_h if _user_h is not None else (_fh if _fh else 512)
+                width  = _user_w if _user_w is not None else (_fw if _fw else 512)
                 logger.info(
                     "[WeeLLM] I2V mode — resolved dims: height=%d, width=%d "
                     "(source: %s)",
@@ -240,8 +240,8 @@ class WeeVideoPipeline(WeeBasePipeline):
                 )
             else:
                 # T2V mode: sensible default.
-                height = _user_h if _user_h is not None else 544
-                width  = _user_w if _user_w is not None else 960
+                height = _user_h if _user_h is not None else 512
+                width  = _user_w if _user_w is not None else 512
                 logger.info(
                     "[WeeLLM] T2V mode — resolved dims: height=%d, width=%d",
                     height, width,

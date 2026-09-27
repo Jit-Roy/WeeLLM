@@ -90,6 +90,34 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
         for _k in ("guidance_scale", "negative_prompt", "image_guidance_scale"):
             kwargs.pop(_k, None)
 
+        # ── Smart height/width resolution & snapping (MiniMax-specific) ──
+        _h, _w = kwargs.get("height"), kwargs.get("width")
+        _img = kwargs.get("image")
+
+        if _h is None or _w is None:
+            import PIL.Image
+            h, w = _h or 512, _w or 512
+            _first = _img[0] if isinstance(_img, list) and _img else _img
+
+            # 1. Fallback to image dims if present
+            if isinstance(_first, PIL.Image.Image):
+                w, h = _w or _first.width, _h or _first.height
+            elif hasattr(_first, "shape") and len(_first.shape) >= 2:
+                h, w = _h or int(_first.shape[-2]), _w or int(_first.shape[-1])
+
+            # 2. Snap to multiple of 32
+            kwargs["height"] = max(32, round(h / 32) * 32)
+            kwargs["width"]  = max(32, round(w / 32) * 32)
+            
+            if kwargs["height"] != h or kwargs["width"] != w:
+                logger.info("[WeeLLM/MiniMax] Snapped dims %dx%d → %dx%d", w, h, kwargs["width"], kwargs["height"])
+
+            # 3. Physically resize to prevent VAE crash (supports single image or list of frames)
+            if isinstance(_img, PIL.Image.Image) and _img.size != (kwargs["width"], kwargs["height"]):
+                kwargs["image"] = _img.resize((kwargs["width"], kwargs["height"]), PIL.Image.Resampling.LANCZOS)
+            elif isinstance(_img, list) and isinstance(_first, PIL.Image.Image):
+                kwargs["image"] = [i.resize((kwargs["width"], kwargs["height"]), PIL.Image.Resampling.LANCZOS) for i in _img]
+                
         # Snap num_frames to 17*n+5 (MiniMax VAE requirement)
         _nf = kwargs.get("num_frames")
         if _nf is not None:
