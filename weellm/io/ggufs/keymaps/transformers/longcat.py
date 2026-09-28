@@ -161,5 +161,6 @@ class LongCatKeyMap:
         mapping = {}
         for gguf_key in gguf_keys:
             clean = gguf_key.replace("model.diffusion_model.", "")
-            mapping[gguf_key] = full_map.get(clean, clean)
+            target = full_map.get(clean, clean)
+            mapping[gguf_key] = [(target, None)]
         return mapping

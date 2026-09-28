@@ -31,6 +31,14 @@ from weellm.io.ggufs.keymaps.transformers.minimax_h3 import MiniMaxH3KeyMap
 from weellm.io.ggufs.keymaps.text_encoders.qwen3vl import Qwen3VLKeyMap
 from weellm.io.ggufs.keymaps.transformers.ltx25 import LTX25KeyMap
 from weellm.io.ggufs.keymaps.transformers.qwen_image_21 import QwenImage21KeyMap
+from weellm.io.ggufs.keymaps.transformers.longcat import LongCatKeyMap
+from weellm.io.ggufs.keymaps.transformers.auraflow import AuraFlowKeyMap
+from weellm.io.ggufs.keymaps.transformers.cogview4 import CogView4KeyMap
+from weellm.io.ggufs.keymaps.transformers.ernie_image import ErnieImageKeyMap
+from weellm.io.ggufs.keymaps.transformers.hidream import HiDreamKeyMap
+from weellm.io.ggufs.keymaps.transformers.ideogram4 import Ideogram4KeyMap
+from weellm.io.ggufs.keymaps.transformers.lumina2 import Lumina2KeyMap
+from weellm.io.ggufs.keymaps.transformers.qwen_image import QwenImageKeyMap
 
 logger = logging.getLogger("weellm")
 
@@ -41,6 +49,8 @@ _REGISTRY = [
     Gemma4KeyMap,   # multi_modal_projector.* + *.layer_scalar (already diffusers naming)
     LlamaKeyMap,    # blk.*
     Flux2KeyMap,    # Flux.2 Klein: 8 double + 24 single blocks
+    LongCatKeyMap,  # MUST come before FluxKeyMap: uses double_blocks.* but NO vec_in/guidance_in
+    AuraFlowKeyMap, # double_layers.* + w2q naming
     FluxKeyMap,     # double_blocks.*
     SD3KeyMap,      # joint_blocks.*
     SDXLKeyMap,     # model.diffusion_model.* + label_emb / transformer_blocks.9
@@ -49,8 +59,14 @@ _REGISTRY = [
     ZImageKeyMap,   # context_refiner.* / noise_refiner.*
     Qwen3VLKeyMap,  # visual.blocks.* + model.layers.* (unsloth Qwen3VL TE GGUF)
     MiniMaxH3KeyMap,# blocks.* (MiniMax H3 checkpoint convention)
-    LTX25KeyMap,     # ltxv native keys
+    LTX25KeyMap,    # ltxv native keys
     QwenImage21KeyMap,
+    CogView4KeyMap,
+    ErnieImageKeyMap,
+    HiDreamKeyMap,
+    Ideogram4KeyMap,
+    Lumina2KeyMap,
+    QwenImageKeyMap,
 ]
 
 
@@ -98,4 +114,12 @@ __all__ = [
     "MiniMaxH3KeyMap",
     "LTX25KeyMap",
     "QwenImage21KeyMap",
-]
+    "LongCatKeyMap",
+    "AuraFlowKeyMap",
+    "CogView4KeyMap",
+    "ErnieImageKeyMap",
+    "HiDreamKeyMap",
+    "Ideogram4KeyMap",
+    "Lumina2KeyMap",
+    "QwenImageKeyMap",
+]
