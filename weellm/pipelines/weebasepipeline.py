@@ -1203,7 +1203,12 @@ class WeeBasePipeline:
                 if cuda_available:
                     torch.cuda.empty_cache()
                 report_memory("Before VAE Decode (After GC)")
-                _evict_module_to_meta(getattr(pipeline, "transformer", None), "transformer")
+                tr = getattr(pipeline, "transformer", None)
+                _evict_module_to_meta(tr, "transformer")
+                if tr is not None:
+                    st = getattr(tr, "_weellm_streamer", None)
+                    if st is not None:
+                        st._resident_loaded = False
                 report_memory("Before VAE Decode (After Transformer Offload)")
 
                 # Cast float inputs (latents) to VAE's expected dtype
