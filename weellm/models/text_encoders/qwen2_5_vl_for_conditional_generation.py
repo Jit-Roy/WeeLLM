@@ -536,6 +536,4 @@ class Qwen2_5_VLForConditionalGenerationStreamer:
             prefetch=prefetch,
             max_length=max_length,
         )
-        if is_edit_model:
-            instance._offload_visual_after_forward()
         return instance
