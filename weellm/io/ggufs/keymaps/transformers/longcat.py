@@ -59,7 +59,28 @@ _DOUBLE_BLOCK_MAP = {
     "attn.norm_k.weight":            "attn.norm_k.weight",
     "attn.norm_added_q.weight":      "attn.norm_added_q.weight",
     "attn.norm_added_k.weight":      "attn.norm_added_k.weight",
-    # fused QKV (img_attn.qkv) is split into to_q, to_k, to_v by the GGUF dequant layer
+    # fused QKV (img_attn.qkv) is split into to_q, to_k, to_v
+    "img_attn.qkv.weight": [
+        ("attn.to_q.weight", 0, 3),
+        ("attn.to_k.weight", 1, 3),
+        ("attn.to_v.weight", 2, 3),
+    ],
+    "img_attn.qkv.bias": [
+        ("attn.to_q.bias", 0, 3),
+        ("attn.to_k.bias", 1, 3),
+        ("attn.to_v.bias", 2, 3),
+    ],
+    # fused txt QKV
+    "txt_attn.qkv.weight": [
+        ("attn.add_q_proj.weight", 0, 3),
+        ("attn.add_k_proj.weight", 1, 3),
+        ("attn.add_v_proj.weight", 2, 3),
+    ],
+    "txt_attn.qkv.bias": [
+        ("attn.add_q_proj.bias", 0, 3),
+        ("attn.add_k_proj.bias", 1, 3),
+        ("attn.add_v_proj.bias", 2, 3),
+    ],
     "img_attn.proj.weight":          "attn.to_out.0.weight",
     "img_attn.proj.bias":            "attn.to_out.0.bias",
     "img_mod.lin.weight":            "norm1.linear.weight",
@@ -87,6 +108,19 @@ _DOUBLE_BLOCK_MAP = {
 _SINGLE_BLOCK_MAP = {
     "modulation.lin.weight":  "norm.linear.weight",
     "modulation.lin.bias":    "norm.linear.bias",
+    # fused QKV+MLP (linear1) is split into to_q, to_k, to_v, and proj_mlp
+    "linear1.weight": [
+        ("attn.to_q.weight", None),
+        ("attn.to_k.weight", None),
+        ("attn.to_v.weight", None),
+        ("proj_mlp.weight", None),
+    ],
+    "linear1.bias": [
+        ("attn.to_q.bias", None),
+        ("attn.to_k.bias", None),
+        ("attn.to_v.bias", None),
+        ("proj_mlp.bias", None),
+    ],
     "linear2.weight":         "proj_out.weight",
     "linear2.bias":           "proj_out.bias",
     "norm.query_norm.weight": "attn.norm_q.weight",
@@ -99,10 +133,22 @@ def _build_full_map(n_double: int = 10, n_single: int = 20) -> dict:
     m = dict(_MAP_BASIC)
     for i in range(n_double):
         for comfy_suffix, diffusers_suffix in _DOUBLE_BLOCK_MAP.items():
-            m[f"double_blocks.{i}.{comfy_suffix}"] = f"transformer_blocks.{i}.{diffusers_suffix}"
+            if isinstance(diffusers_suffix, list):
+                m[f"double_blocks.{i}.{comfy_suffix}"] = [
+                    (f"transformer_blocks.{i}.{dst}", split_idx, total_splits)
+                    for dst, split_idx, total_splits in diffusers_suffix
+                ]
+            else:
+                m[f"double_blocks.{i}.{comfy_suffix}"] = f"transformer_blocks.{i}.{diffusers_suffix}"
     for i in range(n_single):
         for comfy_suffix, diffusers_suffix in _SINGLE_BLOCK_MAP.items():
-            m[f"single_blocks.{i}.{comfy_suffix}"] = f"single_transformer_blocks.{i}.{diffusers_suffix}"
+            if isinstance(diffusers_suffix, list):
+                m[f"single_blocks.{i}.{comfy_suffix}"] = [
+                    (f"single_transformer_blocks.{i}.{dst}", split_info)
+                    for dst, split_info in diffusers_suffix
+                ]
+            else:
+                m[f"single_blocks.{i}.{comfy_suffix}"] = f"single_transformer_blocks.{i}.{diffusers_suffix}"
     return m
 
 # Default map covers LongCat-Image (10/20). Edit model is handled dynamically in build_remap.
@@ -161,6 +207,34 @@ class LongCatKeyMap:
         mapping = {}
         for gguf_key in gguf_keys:
             clean = gguf_key.replace("model.diffusion_model.", "")
-            target = full_map.get(clean, clean)
-            mapping[gguf_key] = [(target, None)]
+            if clean in full_map:
+                target = full_map[clean]
+                if isinstance(target, list):
+                    # Handle fused QKV tensors which map to multiple diffusers keys
+                    mapping[gguf_key] = []
+                    for item in target:
+                        if len(item) == 3:
+                            mapping[gguf_key].append((item[0], (item[1], item[2])))
+                        else:
+                            mapping[gguf_key].append((item[0], item[1]))
+                else:
+                    mapping[gguf_key] = [(target, None)]
+            else:
+                mapping[gguf_key] = [(clean, None)]
         return mapping
+
+    @staticmethod
+    def postprocess_tensor(diffusers_key: str, tensor: Any, orig_name: str) -> Any:
+        # Single block linear1 combines Q, K, V, and MLP.
+        # Q, K, V are size `dim` each, MLP is size `4 * dim`. Total = 7 * dim.
+        if "single_blocks" in orig_name and "linear1" in orig_name:
+            dim = tensor.shape[0] // 7
+            if "to_q" in diffusers_key:
+                return tensor[0 : dim, ...]
+            elif "to_k" in diffusers_key:
+                return tensor[dim : dim*2, ...]
+            elif "to_v" in diffusers_key:
+                return tensor[dim*2 : dim*3, ...]
+            elif "proj_mlp" in diffusers_key:
+                return tensor[dim*3 : , ...]
+        return tensor
