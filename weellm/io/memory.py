@@ -170,13 +170,6 @@ def evict_module(module: nn.Module) -> int:
                 pass
             evicted += 1
 
-    for name, buf in list(module.named_buffers(recurse=True)):
-        dev = getattr(buf, "device", None)
-        if dev is not None and dev.type != "meta":
-            try:
-                set_module_tensor_to_device(module, name, "meta")
-            except Exception:
-                pass
 
     return evicted
 
