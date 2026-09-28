@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
   <br>
-  <a href="https://github.com/Jit-Roy/ComfyUI-WeeLLM"><img src="https://img.shields.io/badge/🧩_ComfyUI-Custom_Node-blueviolet?logo=github&style=flat" alt="ComfyUI Custom Node"></a>
+  <a href="https://github.com/Jit-Roy/ComfyUI-WeeLLM"><img src="https://img.shields.io/badge/_ComfyUI-Custom_Node-blueviolet?logo=github&style=flat" alt="ComfyUI Custom Node"></a>
   &nbsp;
   <a href="https://www.kaggle.com/code/freedomfighter1290/weellm"><img src="https://kaggle.com/static/images/open-in-kaggle.svg" alt="Open In Kaggle"></a>
 </div>
