@@ -35,3 +35,7 @@ psutil>=5.9.0
 # GGUF model support (optional — only needed for .gguf model files)
 gguf>=0.13.0
 av
+
+# Triton uses a Windows build on Windows and the standard package on Linux.
+triton-windows; sys_platform == "win32"
+triton; sys_platform == "linux"

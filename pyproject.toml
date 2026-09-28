@@ -36,6 +36,8 @@ dependencies = [
     "psutil>=5.9.0",
     "gguf>=0.13.0",
     "av",
+    "triton-windows; sys_platform == 'win32'",
+    "triton; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
