@@ -5,12 +5,17 @@
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
   <br>
+  <a href="https://github.com/Jit-Roy/ComfyUI-WeeLLM"><img src="https://img.shields.io/badge/🧩_ComfyUI-Custom_Node-blueviolet?logo=github&style=flat" alt="ComfyUI Custom Node"></a>
+  &nbsp;
   <a href="https://www.kaggle.com/code/freedomfighter1290/weellm"><img src="https://kaggle.com/static/images/open-in-kaggle.svg" alt="Open In Kaggle"></a>
 </div>
 
 # Layer-streaming inference for large diffusion models — Under 4 GB VRAM, no quantization
 
 WeeLLM dynamically streams text encoder and transformer layers to the GPU for massive models. Instead of forcing the entire model into VRAM, it intelligently pins as many blocks as your hardware allows, and seamlessly streams the rest layer-by-layer in the background — enabling massive models to run smoothly on budgets as low as 4GB VRAM.
+
+> **🚀 [Official ComfyUI Extension Now Available!](https://github.com/Jit-Roy/ComfyUI-WeeLLM)**  
+> *Bring WeeLLM's ultra-low VRAM layer-streaming capabilities directly into your ComfyUI workflows!*
 
 ---
 
