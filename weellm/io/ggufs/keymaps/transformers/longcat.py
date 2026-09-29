@@ -15,6 +15,14 @@ Source of truth:
 """
 from typing import Any, Dict, List
 
+# Tensors stored as [shift | scale] in the ComfyUI/BFL checkpoint but Diffusers'
+# AdaLayerNormContinuous.forward() reads them as [scale | shift].
+# We must swap the two halves, matching the same logic used by FluxKeyMap.
+_SWAP_SCALE_SHIFT_GGUF_KEYS: frozenset = frozenset({
+    "final_layer.adaLN_modulation.1.weight",
+    "final_layer.adaLN_modulation.1.bias",
+})
+
 # Format: comfy_gguf_key -> diffusers_key
 # Verified against actual diffusers safetensors state dict
 _MAP_BASIC = {
@@ -225,6 +233,15 @@ class LongCatKeyMap:
 
     @staticmethod
     def postprocess_tensor(diffusers_key: str, tensor: Any, orig_name: str) -> Any:
+        import torch
+        # norm_out: ComfyUI/BFL stores adaLN_modulation as [shift | scale],
+        # but Diffusers AdaLayerNormContinuous.forward() reads [scale | shift].
+        # Swap the two halves so scale and shift land in the correct slots.
+        clean = orig_name.replace("model.diffusion_model.", "")
+        if clean in _SWAP_SCALE_SHIFT_GGUF_KEYS:
+            half = tensor.shape[0] // 2
+            return torch.cat([tensor[half:], tensor[:half]], dim=0).contiguous()
+
         # Single block linear1 combines Q, K, V, and MLP.
         # Q, K, V are size `dim` each, MLP is size `4 * dim`. Total = 7 * dim.
         if "single_blocks" in orig_name and "linear1" in orig_name:
