@@ -187,7 +187,11 @@ class GGUFSeeker:
 
                     # Store the raw tensor and metadata for later processing
                     result[key] = raw_t.to(device=device)
-                    result[key + ".gguf_meta"] = {"qtype": qtype_val, "shape": shape_val}
+                    meta_dict = {"qtype": qtype_val, "shape": shape_val, "orig_name": orig_name}
+                    keymap = getattr(self, "keymap_cls", None)
+                    if keymap is not None:
+                        meta_dict["keymap_cls"] = keymap
+                    result[key + ".gguf_meta"] = meta_dict
                 else:
                     if slice_info is not None:
                         split_idx, total_splits = slice_info

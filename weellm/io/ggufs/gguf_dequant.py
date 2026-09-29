@@ -404,6 +404,10 @@ def process_gguf_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Ten
                 dtype=target_dtype,
             )
             
+            keymap = meta.get("keymap_cls")
+            if keymap is not None and hasattr(keymap, "postprocess_tensor"):
+                w_dequant = keymap.postprocess_tensor(prefix, w_dequant, meta["orig_name"])
+            
             result[prefix] = w_dequant
             del result[key]
             
