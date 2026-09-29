@@ -1052,15 +1052,12 @@ class WeeBasePipeline:
 
         cuda_available = torch.cuda.is_available() and device != "cpu"
 
-        # xformers for pre-Ampere GPUs
         if cuda_available and torch.cuda.get_device_capability()[0] < 8:
-            try:
-                pipeline.enable_xformers_memory_efficient_attention()
-                logger.info(
-                    "      -> [WeeLLM] Enabled xFormers memory-efficient attention for older GPU (Compute < 8.0)."
-                )
-            except Exception:
-                pass
+            torch.backends.cuda.enable_flash_sdp(False)
+            logger.info(
+                "      -> [WeeLLM] Pre-Ampere GPU detected (Compute < 8.0): disabled Flash Attention "
+                "(not supported on Compute < 8.0)."
+            )
 
         try:
             vae = getattr(pipeline, "vae", None)
