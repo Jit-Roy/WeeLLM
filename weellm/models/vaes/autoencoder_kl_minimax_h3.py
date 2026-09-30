@@ -140,10 +140,16 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
         self.model.encode = _lazy_encode.__get__(self.model, self.model.__class__)
 
     def _load_all_audio(self):
-        keys = self._get_resident_keys() + self._get_encoder_keys()
-        tensors = self.seeker.get_tensors(keys, device=self.device, dtype=self.dtype)
+        # For decode we need ALL weights: resident + decoder.ups + decoder.resblocks.
+        # We explicitly skip encoder keys to save VRAM (they are not needed for decode).
+        all_keys = [
+            k for k in self.seeker.weight_map
+            if not self._key_matches(k, "encoder.")
+        ]
+        # Audio VAE must be in fp32 — BigVGAN with bfloat16 produces 20 dB noise.
+        tensors = self.seeker.get_tensors(all_keys, device=self.device, dtype=torch.float32)
         for name, tensor in tensors.items():
-            self._place_tensor(name, tensor, self.device, self.dtype)
+            self._place_tensor(name, tensor, self.device, torch.float32)
 
     def _evict_all_audio(self):
         self._evict_keys(list(self.seeker.weight_map.keys()))
@@ -170,13 +176,26 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
 
     def decode(self, latents, return_dict=True, **kwargs):
         if getattr(self, "is_audio", False):
-            self._load_resident_audio()
+            # Audio VAE (BigVGAN, ~578 MB) - load ALL weights to GPU, decode, then evict.
+            # We do NOT use _native_decode (model.decode) because it is wrapped by
+            # @apply_forward_hook, which fires accelerate offload hooks that conflict
+            # with our meta-device streaming and corrupt the output into pure noise.
+            # Instead, call the underlying decoder modules directly.
+            self._load_all_audio()
             try:
-                return self._native_decode(
-                    latents.to(self.device, dtype=self.dtype),
-                    return_dict=return_dict,
-                    **kwargs,
-                )
+                with torch.no_grad():
+                    z = latents.to(self.device, dtype=torch.float32)
+                    # Mirrors AutoencoderKLMiniMaxH3Audio.decode exactly, but calling
+                    # the sub-modules directly so no @apply_forward_hook wrapper fires.
+                    decoder_dtype = torch.float32  # audio VAE must stay fp32
+                    decoded = self.model.decoder(
+                        self.model.dec_in_proj(z.to(decoder_dtype))
+                    )
+                    decoded = decoded.float()
+                    if not return_dict:
+                        return (decoded,)
+                    from diffusers.models.autoencoders.vae import DecoderOutput
+                    return DecoderOutput(sample=decoded)
             finally:
                 self._evict_all_audio()
 

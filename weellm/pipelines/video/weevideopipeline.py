@@ -462,6 +462,8 @@ class WeeVideoPipeline(WeeBasePipeline):
                     _audio_rate = 48000
                     if hasattr(_underlying, "vocoder") and hasattr(_underlying.vocoder, "config"):
                         _audio_rate = getattr(_underlying.vocoder.config, "output_sampling_rate", 48000)
+                    elif hasattr(_underlying, "audio_sampling_rate"):
+                        _audio_rate = getattr(_underlying, "audio_sampling_rate", 48000)
 
                     return WeeVideoResult(
                         frames=_video,
@@ -636,6 +638,8 @@ class WeeVideoPipeline(WeeBasePipeline):
         _audio_rate = 48000
         if hasattr(_underlying, "vocoder") and hasattr(_underlying.vocoder, "config"):
             _audio_rate = getattr(_underlying.vocoder.config, "output_sampling_rate", 48000)
+        elif hasattr(_underlying, "audio_sampling_rate"):
+            _audio_rate = getattr(_underlying, "audio_sampling_rate", 48000)
 
         # Return the wrapper if we successfully intercepted frames, otherwise return raw output
         if _frames is not None:

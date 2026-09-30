@@ -524,7 +524,9 @@ class BaseTransformerStreamer(ABC):
 
         # LoRA: apply after weights are in VRAM (pinned OR freshly loaded)
         if getattr(self, "lora_loader", None) is not None:
-            self.lora_loader.apply_to_module(module, shard_name)
+            if not is_pinned or not getattr(module, "_weellm_lora_applied", False):
+                self.lora_loader.apply_to_module(module, shard_name)
+                setattr(module, "_weellm_lora_applied", True)
 
         t2 = time.time()
 

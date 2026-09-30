@@ -205,7 +205,20 @@ class GenericLazyLoRALoader:
                     b_t = self._read_tensor(f, b_key, valid_targets[0][0].device)   # float32 on GPU
 
                     with torch.no_grad():
-                        delta = self.scale * (b_t @ a_t)
+                        alpha = None
+                        alpha_key = a_key.rsplit('.lora_A', 1)[0] + '.alpha'
+                        if alpha_key in self._header:
+                            alpha_t = self._read_tensor(f, alpha_key, valid_targets[0][0].device)
+                            alpha = alpha_t.item()
+                            del alpha_t
+
+                        rank = a_t.size(0)
+                        
+                        scale = self.scale
+                        if alpha is not None:
+                            scale = scale * (alpha / rank)
+                            
+                        delta = scale * (b_t @ a_t)
                         
                         for param, local_key, slice_info in valid_targets:
                             # Apply slicing if necessary
