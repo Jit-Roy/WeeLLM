@@ -453,6 +453,16 @@ class WeeBasePipeline:
         lora_weights = diffusers_kwargs.pop("lora_weights", None)
         lora_scale = diffusers_kwargs.pop("lora_scale", 1.0)
         if lora_weights is not None:
+            if not Path(lora_weights).exists() and "/" in str(lora_weights):
+                try:
+                    from huggingface_hub import hf_hub_download
+                    parts = str(lora_weights).split("/")
+                    repo_id = "/".join(parts[:2])
+                    filename = "/".join(parts[2:])
+                    logger.info(f"Downloading LoRA from {repo_id} ({filename}) ...")
+                    lora_weights = hf_hub_download(repo_id=repo_id, filename=filename)
+                except Exception as e:
+                    logger.warning(f"Failed to download LoRA from Hugging Face: {e}")
             transformer_streamer.load_lora(lora_weights, lora_scale)
 
         tr_model = getattr(transformer_streamer, "model", getattr(transformer_streamer, "_model", transformer_streamer))
