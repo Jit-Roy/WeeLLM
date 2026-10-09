@@ -112,8 +112,17 @@ class SafetensorsDiskSeeker(SafetensorsBase):
 
                     raw_result[raw_key] = t
 
+        # When a keymap is active, dequantisation MUST happen inside the seeker
+        # (before remapping), regardless of the process_comfy flag.
+        # Reason: remapping renames .weight to its diffusers equivalent, but
+        # side-tensors (.comfy_quant, .svdq_l1, etc.) have no diffusers mapping
+        # and stay as raw keys.  If we skip dequantisation here, _do_h2d's
+        # subsequent process_comfy_tensors() call sees mismatched key namespaces
+        # and raises KeyError on the missing raw .weight key.
+        effective_process_comfy = process_comfy or (self._keymap_cls is not None)
+
         # Dequantize comfy_quant / SVDQ groups (operates on raw keys).
-        if process_comfy:
+        if effective_process_comfy:
             raw_result = process_comfy_tensors(raw_result)
 
         # Remap raw keys back to diffusers keys and apply any reshape/postprocess.

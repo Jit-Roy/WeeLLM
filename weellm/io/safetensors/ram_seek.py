@@ -101,6 +101,7 @@ class SafetensorsRAMSeeker(SafetensorsBase):
         keys: List[str],
         device: str = "cpu",
         dtype: Optional[torch.dtype] = None,
+        process_comfy: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """
         Load the tensors named by *keys* (diffusers key names) from the in-memory RAM cache.
@@ -144,8 +145,12 @@ class SafetensorsRAMSeeker(SafetensorsBase):
                     dtype,
                 )
 
+        # When a keymap is active, dequantisation MUST happen inside the seeker
+        # (before remapping), regardless of the process_comfy flag — see disk_seek.py.
+        effective_process_comfy = process_comfy or (self._keymap_cls is not None)
+
         # Dequantize comfy_quant / SVDQ groups (operates on raw keys).
-        raw_result = process_comfy_tensors(raw_result)
+        raw_result = process_comfy_tensors(raw_result) if effective_process_comfy else raw_result
 
         # Remap raw keys back to diffusers keys and apply any reshape/postprocess.
         if self._keymap_cls is None:
