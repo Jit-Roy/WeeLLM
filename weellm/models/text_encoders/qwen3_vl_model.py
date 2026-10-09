@@ -111,6 +111,55 @@ class Qwen3VLModelStreamer:
 
         clean_memory(self.device)
 
+    @staticmethod
+    def _remap_keys(state_dict: Dict[str, torch.Tensor], model: "nn.Module") -> Dict[str, torch.Tensor]:
+        """
+        Normalise checkpoint key namespaces to match the Qwen3VLModel skeleton
+        (produced by AutoModel.from_config). Handles three real-world formats:
+
+        Format A — Official krea/Krea-2-Turbo text_encoder subfolder:
+            language_model.layers.{i}.*   visual.blocks.{i}.*
+            → No remapping needed (already matches skeleton).
+
+        Format B — gonzalomo / community VL export (Qwen3VLTextModel-style):
+            model.layers.{i}.*            model.visual.blocks.{i}.*
+            model.embed_tokens.*          model.norm.*
+            → Remap model.{rest} → language_model.{rest}
+              EXCEPT model.visual.* → visual.*
+
+        Format C — Full-wrapper export (Qwen3VLForConditionalGeneration):
+            model.language_model.layers.{i}.*    model.visual.blocks.{i}.*
+            → Strip leading "model." prefix.
+        """
+        if not state_dict:
+            return state_dict
+
+        sample_key = next(iter(state_dict))
+
+        # Format A: already correct
+        if not sample_key.startswith("model."):
+            return state_dict
+
+        # Distinguish B vs C by checking for "model.language_model."
+        has_lm_level = any(k.startswith("model.language_model.") for k in state_dict)
+
+        if has_lm_level:
+            # Format C: strip outer "model." prefix
+            return {k[len("model."):]: v for k, v in state_dict.items()}
+        else:
+            # Format B: model.visual.* → visual.*
+            #           model.{rest}   → language_model.{rest}
+            remapped = {}
+            for k, v in state_dict.items():
+                if k.startswith("model.visual."):
+                    remapped["visual." + k[len("model.visual."):]] = v
+                elif k.startswith("model."):
+                    remapped["language_model." + k[len("model."):]] = v
+                else:
+                    remapped[k] = v
+            return remapped
+
+
     def _place_tensors(self, state_dict: Dict[str, torch.Tensor], device: Optional[str] = None):
         device = device or self.device
         processed_sd = {}
@@ -131,6 +180,10 @@ class Qwen3VLModelStreamer:
                 
             processed_sd[name] = tensor
 
+        # Remap keys if checkpoint was saved from the full wrapper (has "model." prefix)
+        # but the skeleton is the inner Qwen3VLModel (no ".model" child).
+        processed_sd = self._remap_keys(processed_sd, self._model)
+
         for name, tensor in processed_sd.items():
             if tensor.is_floating_point():
                 set_module_tensor_to_device(
@@ -140,9 +193,12 @@ class Qwen3VLModelStreamer:
                 set_module_tensor_to_device(self._model, name, device, value=tensor)
 
     def _evict_layer(self, state_dict: Dict[str, torch.Tensor]):
-        for name in state_dict.keys():
-            if name.endswith(".weight_scale"):
-                continue
+        # Remap keys to skeleton namespace before evicting (same logic as _place_tensors)
+        remapped = self._remap_keys(
+            {k: v for k, v in state_dict.items() if not k.endswith(".weight_scale")},
+            self._model
+        )
+        for name in remapped.keys():
             set_module_tensor_to_device(self._model, name, "meta")
 
 
@@ -159,11 +215,33 @@ class Qwen3VLModelStreamer:
         self._model.register_forward_pre_hook(force_inputs_to_device, with_kwargs=True)
 
         # Hook Language Layers
+        # _te_prefix must match the raw checkpoint key namespace in the seeker's
+        # weight_map (before any remapping), so layer key lookups return the
+        # correct tensors. Detect the format from the weight_map keys:
+        #   Format A (official): language_model.layers.*   → lang_prefix = "language_model"
+        #   Format B (gonzalomo): model.layers.*           → lang_prefix = "model"
+        #   Format C (full-wrap): model.language_model.*   → lang_prefix = "model.language_model"
+        sample_wm_key = next(
+            (k for k in self._seeker.weight_map if not k.endswith("_scale")), ""
+        )
+        if not sample_wm_key.startswith("model."):
+            # Format A
+            lang_prefix = "language_model"
+            vis_prefix  = "visual"
+        elif any(k.startswith("model.language_model.") for k in self._seeker.weight_map):
+            # Format C
+            lang_prefix = "model.language_model"
+            vis_prefix  = "model.visual"
+        else:
+            # Format B
+            lang_prefix = "model"
+            vis_prefix  = "model.visual"
+
         if hasattr(self._model, "language_model") and hasattr(self._model.language_model, "layers"):
             lang_layers = self._model.language_model.layers
             for i in range(len(lang_layers)):
                 layer = lang_layers[i]
-                layer._te_prefix = f"language_model.layers.{i}."
+                layer._te_prefix = f"{lang_prefix}.layers.{i}."
                 layer.register_forward_pre_hook(self._generic_pre_hook)
                 layer.register_forward_hook(self._generic_post_hook)
         
@@ -172,7 +250,7 @@ class Qwen3VLModelStreamer:
             vis_blocks = self._model.visual.blocks
             for i in range(len(vis_blocks)):
                 layer = vis_blocks[i]
-                layer._te_prefix = f"visual.blocks.{i}."
+                layer._te_prefix = f"{vis_prefix}.blocks.{i}."
                 layer.register_forward_pre_hook(self._generic_pre_hook)
                 layer.register_forward_hook(self._generic_post_hook)
 
