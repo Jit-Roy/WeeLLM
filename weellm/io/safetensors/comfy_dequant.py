@@ -93,6 +93,10 @@ def process_svdq_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Ten
     Find SVDQ groups in the loaded tensors (detected by companion .svdq_l1 key),
     dequantize them, and remove the raw quantization tensors from the dict.
     Returns the same dict with .weight tensors replaced by their dequantized form.
+
+    Supports both plain SVDQ and ConvRot-SVDQ (format "convrot_w4a4"), where the
+    4-bit unpacked weights live in a Hadamard-rotated basis and must be un-rotated
+    before adding the low-rank correction.
     """
     prefixes = [
         k[:-len(".svdq_l1")]
@@ -107,6 +111,24 @@ def process_svdq_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Ten
         if not all(k in result for k in (w_key, s_key, l1_key, l2_key)):
             continue
 
+        # Read comfy_quant metadata to determine exact format
+        cq_key = prefix + ".comfy_quant"
+        has_convrot = False
+        rot_size = 256
+        if cq_key in result:
+            meta_bytes = result[cq_key]
+            if meta_bytes.dtype != torch.uint8:
+                meta_bytes = meta_bytes.view(torch.uint8)
+            try:
+                meta = json.loads(bytes(meta_bytes.tolist()).decode("utf-8"))
+                fmt = meta.get("format", "")
+                # "convrot_w4a4" means weights were stored in a Hadamard-rotated
+                # basis; we must un-rotate each row-group before reconstruction.
+                has_convrot = "convrot" in fmt
+                rot_size = int(meta.get("convrot_groupsize", 256))
+            except Exception:
+                pass
+
         # Infer target dtype from surrounding floating-point tensors
         target_dtype = torch.bfloat16
         for k, v in result.items():
@@ -114,13 +136,34 @@ def process_svdq_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Ten
                 target_dtype = v.dtype
                 break
 
-        result[w_key] = _dequant_svdq(
-            result[w_key], result[s_key], result[l1_key], result[l2_key],
-            target_dtype=target_dtype,
-        )
+        w = result[w_key]
+        scale = result[s_key]
+        l1 = result[l1_key]
+        l2 = result[l2_key]
+
+        if has_convrot:
+            # ConvRot-SVDQ: W_q is in the Hadamard-rotated basis.
+            # Dequant: W_physical = (unpack(W_q) * scale[:, None] @ H) + L1 @ L2
+            # where H is the normalised Hadamard matrix of size rot_size.
+            device = w.device
+            H = generate_hadamard(rot_size, device=str(device), dtype=torch.float32)
+            w_unpacked = _unpack_nibbles(w)          # float32 (out, in)
+            w_scaled   = w_unpacked * scale.float().unsqueeze(1)  # (out, in)
+            # Un-rotate in chunks to avoid building a huge intermediate tensor
+            out_features, in_features = w_scaled.shape
+            w_rot = torch.empty_like(w_scaled)
+            for i in range(0, in_features, rot_size):
+                end_i = min(i + rot_size, in_features)
+                w_rot[:, i:end_i] = w_scaled[:, i:end_i] @ H[:end_i - i, :end_i - i]
+            w_base = w_rot
+        else:
+            # Plain SVDQ: no rotation, direct scale + low-rank
+            w_base = _unpack_nibbles(w) * scale.float().unsqueeze(1)
+
+        w_lr = l1.float() @ l2.float()
+        result[w_key] = (w_base + w_lr).to(target_dtype)
+
         del result[s_key], result[l1_key], result[l2_key]
-        # comfy_quant metadata blob is also present but not needed after dequant
-        cq_key = prefix + ".comfy_quant"
         if cq_key in result:
             del result[cq_key]
 
