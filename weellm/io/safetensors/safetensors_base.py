@@ -48,8 +48,13 @@ class SafetensorsBase:
         else:
             self.model_dir = path
             self._explicit_file = None
-            
+
+        # Public weight_map always contains *diffusers* keys after _parse_index.
         self.weight_map: Dict[str, str] = {}
+        # Internal maps for raw-key lookups (header access, comfy expansion).
+        # If no keymap applies, _d2s is identity and _keymap_cls is None.
+        self._d2s: Dict[str, str] = {}          # diffusers_key -> src (raw checkpoint) key
+        self._keymap_cls = None                  # detected keymap plugin, or None
         self._parsed_headers: Dict[str, dict] = {}
         self._data_bases: Dict[str, int] = {}
 
@@ -62,30 +67,53 @@ class SafetensorsBase:
         if self._explicit_file:
             src_file = self._explicit_file
             header, _ = self._read_header(self.model_dir / src_file)
-            self.weight_map = {
+            raw_map = {
                 k: src_file
                 for k in header.keys()
                 if k != "__metadata__"
             }
-            return
-
-        index_path     = self.model_dir / "model.safetensors.index.json"
-        alt_index_path = self.model_dir / "diffusion_pytorch_model.safetensors.index.json"
-
-        if index_path.exists():
-            with open(index_path, "r", encoding="utf-8") as f:
-                self.weight_map = json.load(f)["weight_map"]
-        elif alt_index_path.exists():
-            with open(alt_index_path, "r", encoding="utf-8") as f:
-                self.weight_map = json.load(f)["weight_map"]
         else:
-            src_file = self._find_single_shard()
-            header, _ = self._read_header(self.model_dir / src_file)
-            self.weight_map = {
-                k: src_file
-                for k in header.keys()
-                if k != "__metadata__"
-            }
+            index_path     = self.model_dir / "model.safetensors.index.json"
+            alt_index_path = self.model_dir / "diffusion_pytorch_model.safetensors.index.json"
+
+            if index_path.exists():
+                with open(index_path, "r", encoding="utf-8") as f:
+                    raw_map = json.load(f)["weight_map"]
+            elif alt_index_path.exists():
+                with open(alt_index_path, "r", encoding="utf-8") as f:
+                    raw_map = json.load(f)["weight_map"]
+            else:
+                src_file = self._find_single_shard()
+                header, _ = self._read_header(self.model_dir / src_file)
+                raw_map = {
+                    k: src_file
+                    for k in header.keys()
+                    if k != "__metadata__"
+                }
+
+        self._apply_keymap(raw_map)
+
+    def _apply_keymap(self, raw_map: Dict[str, str]) -> None:
+        """Apply a safetensors keymap (if any) and populate self.weight_map / self._d2s."""
+        from weellm.io.safetensors.keymaps import build_remap_fn
+        remap_fn, keymap_cls = build_remap_fn(list(raw_map.keys()))
+        self._keymap_cls = keymap_cls
+
+        if remap_fn is None:
+            # No remapping needed — diffusers keys == raw keys
+            self.weight_map = raw_map
+            self._d2s = {k: k for k in raw_map}   # identity
+        else:
+            # Build remapped weight_map (diffusers keys → shard filename)
+            # and _d2s (diffusers key → original raw key)
+            new_map: Dict[str, str] = {}
+            d2s: Dict[str, str] = {}
+            for src_key, shard in raw_map.items():
+                dst_key = remap_fn(src_key)
+                new_map[dst_key] = shard
+                d2s[dst_key] = src_key
+            self.weight_map = new_map
+            self._d2s = d2s
 
     def _find_single_shard(self) -> str:
         """Return the filename of the single safetensors shard in model_dir.
@@ -154,13 +182,15 @@ class SafetensorsBase:
         for key in keys:
             if key not in self.weight_map:
                 continue
-            src = self.weight_map[key]
+            src     = self.weight_map[key]
+            src_key = self._d2s.get(key, key)   # translate diffusers key → raw key
             header, _ = self._read_header(self.model_dir / src)
-            if key not in header or key == "__metadata__":
+            if src_key not in header or src_key == "__metadata__":
                 continue
-            meta   = header[key]
+            meta   = header[src_key]
             shape  = meta.get("shape", [])
             dstr   = meta.get("dtype", "F32")
             count  = int(np.prod(shape)) if shape else 1
-            total += count * np.dtype(DTYPE_MAP[dstr]).itemsize
-        return total
+            nbytes = count * np.dtype(DTYPE_MAP.get(dstr, np.uint8)).itemsize
+            total += nbytes
+        return total or 1   # never return 0 — prevents ZeroDivisionError in prefetch depth calc

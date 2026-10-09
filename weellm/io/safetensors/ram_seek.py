@@ -103,34 +103,29 @@ class SafetensorsRAMSeeker(SafetensorsBase):
         dtype: Optional[torch.dtype] = None,
     ) -> Dict[str, torch.Tensor]:
         """
-        Load the tensors named by *keys* from the in-memory RAM cache.
-
-        Parameters
-        ----------
-        keys:
-            Tensor names to load (must be present in ``self.weight_map``).
-        device:
-            PyTorch device string (e.g. ``"cuda"``, ``"cpu"``).
-        dtype:
-            If given, floating-point tensors are cast to this dtype after load.
-
-        Returns
-        -------
-        Dict mapping tensor name → ``torch.Tensor``.
+        Load the tensors named by *keys* (diffusers key names) from the in-memory RAM cache.
+        Transparently handles key remapping (via SafetensorsBase._d2s) and
+        dequantization (comfy_quant / SVDQ).
         """
         from weellm.io.safetensors.comfy_dequant import expand_comfy_keys, process_comfy_tensors
-        
-        # Expand keys to include any comfy_quant side-tensors
-        keys = expand_comfy_keys(keys, self.weight_map)
+
+        # Translate diffusers keys -> raw checkpoint keys (_d2s is identity when no keymap).
+        raw_keys = [self._d2s.get(k, k) for k in keys]
+
+        # Build raw weight_map view for comfy expansion (needs original key names).
+        raw_weight_map = {v: self.weight_map[k] for k, v in self._d2s.items() if k in self.weight_map}
+
+        # Expand raw keys to include comfy_quant / SVDQ side-tensors.
+        raw_keys_expanded = expand_comfy_keys(raw_keys, raw_weight_map)
 
         by_src: Dict[str, List[str]] = {}
-        for key in keys:
-            if key not in self.weight_map:
-                raise KeyError(f"Tensor '{key}' not found in model index.")
-            src = self.weight_map[key]
-            by_src.setdefault(src, []).append(key)
+        for raw_key in raw_keys_expanded:
+            if raw_key not in raw_weight_map:
+                raise KeyError(f"Tensor '{raw_key}' not found in model index.")
+            src = raw_weight_map[raw_key]
+            by_src.setdefault(src, []).append(raw_key)
 
-        result: Dict[str, torch.Tensor] = {}
+        raw_result: Dict[str, torch.Tensor] = {}
 
         for src_file, src_keys in by_src.items():
             filepath = self.model_dir / src_file
@@ -138,10 +133,10 @@ class SafetensorsRAMSeeker(SafetensorsBase):
             header = self._parsed_headers[src_file]
             cache  = self._ram_cache[src_file]
 
-            for key in src_keys:
-                meta   = header[key]
+            for raw_key in src_keys:
+                meta   = header[raw_key]
                 start, end = meta["data_offsets"]
-                result[key] = self._bytes_to_tensor(
+                raw_result[raw_key] = self._bytes_to_tensor(
                     cache[start:end],
                     meta["dtype"],
                     meta["shape"],
@@ -149,4 +144,18 @@ class SafetensorsRAMSeeker(SafetensorsBase):
                     dtype,
                 )
 
-        return process_comfy_tensors(result)
+        # Dequantize comfy_quant / SVDQ groups (operates on raw keys).
+        raw_result = process_comfy_tensors(raw_result)
+
+        # Remap raw keys back to diffusers keys and apply any reshape/postprocess.
+        if self._keymap_cls is None:
+            return raw_result
+
+        s2d = {v: k for k, v in self._d2s.items()}
+        result: Dict[str, torch.Tensor] = {}
+        for raw_key, tensor in raw_result.items():
+            dst_key = s2d.get(raw_key, raw_key)
+            tensor  = self._keymap_cls.postprocess_tensor(dst_key, tensor, raw_key)
+            result[dst_key] = tensor
+        return result
+
