@@ -69,7 +69,7 @@ def _unpack_nibbles(packed: torch.Tensor) -> torch.Tensor:
     lo = torch.where(lo_u >= 8, lo_u.to(torch.int16) - 16, lo_u.to(torch.int16)).to(torch.float32)
     hi = torch.where(hi_u >= 8, hi_u.to(torch.int16) - 16, hi_u.to(torch.int16)).to(torch.float32)
     out_rows, in_packed = u8.shape
-    result = torch.empty(out_rows, in_packed * 2, dtype=torch.float32)
+    result = torch.empty(out_rows, in_packed * 2, dtype=torch.float32, device=packed.device)
     result[:, 0::2] = lo
     result[:, 1::2] = hi
     return result

@@ -143,6 +143,7 @@ class BaseTransformerStreamer(ABC):
             
         self._install_hooks()
         self.model.register_forward_pre_hook(self._ensure_resident)
+        self._install_t4_gguf_fence_hooks()
         
         # ----------------------------------------------------------------
         # Pipeline Seeding
@@ -394,6 +395,61 @@ class BaseTransformerStreamer(ABC):
     # ------------------------------------------------------------------
     # Hook installation
     # ------------------------------------------------------------------
+
+    def _install_t4_gguf_fence_hooks(self) -> None:
+        """
+        On Turing-era GPUs (sm < 8.0, e.g. Kaggle T4) streaming GGUF weights,
+        adjacent GPU kernels can read output memory before prior writes are fully
+        committed. This is triggered specifically by the fresh per-block weight writes
+        (dequantize → copy_ → compute) that GGUF streaming performs at every layer.
+        Static-weight models (standard safetensors loaded once into VRAM) are unaffected.
+
+        Fix: a lightweight D2H sync (.item() readback) after each weighted sub-layer
+        acts as a hardware memory fence, ensuring every kernel fully commits its writes
+        before the next one starts.
+
+        This is a no-op on:
+          - Ampere+ GPUs (sm >= 8.0) — no memory ordering issue
+          - Non-GGUF seekers (safetensors) — no fresh per-block weight writes
+        """
+        # Only needed for GGUF seekers (identified by module path containing 'ggufs')
+        if "ggufs" not in self.seeker.__module__:
+            return
+
+        if not torch.cuda.is_available():
+            return
+
+        try:
+            dev = torch.device(self.device)
+            dev_idx = dev.index if dev.index is not None else torch.cuda.current_device()
+            major, _ = torch.cuda.get_device_capability(dev_idx)
+        except Exception:
+            return
+
+        # sm >= 8.0 (Ampere/Ada/Hopper) does not have this issue
+        if major >= 8:
+            return
+
+        gpu_name = torch.cuda.get_device_name(dev_idx)
+        logger.warning(
+            "[WeeLLM] GGUF streaming on sm_%d GPU (%s) detected. "
+            "Applying memory-fence hooks to prevent kernel write-ordering race condition "
+            "that causes NaN outputs. Overhead: ~3s/step.",
+            major, gpu_name,
+        )
+
+        def _fence_hook(module: nn.Module, inp, out) -> None:
+            if isinstance(out, torch.Tensor):
+                out.float().sum().item()  # D2H sync — forces GPU to commit all writes
+            # return None implicitly: PyTorch keeps the original output unchanged
+
+        count = 0
+        for name, module in self.model.named_modules():
+            if hasattr(module, 'weight') or 'attn' in name.lower() or 'ff' in name.lower():
+                module.register_forward_hook(_fence_hook)
+                count += 1
+
+        logger.warning("[WeeLLM] Memory-fence patch active: %d sync points registered.", count)
 
     def _install_hooks(self) -> None:
         for shard_name, block in self._shard_order:
