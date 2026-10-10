@@ -21,10 +21,12 @@ from typing import Callable, Dict, List, Optional, Tuple, Any
 logger = logging.getLogger("weellm")
 
 from weellm.io.safetensors.keymaps.transformers.krea2 import Krea2SafetensorsKeyMap
+from weellm.io.safetensors.keymaps.vaes.qwen_image_vae import QwenImageVAEKeyMap
 
 # Ordered: first match wins. Place more-specific detectors first.
 _REGISTRY = [
     Krea2SafetensorsKeyMap,   # model.diffusion_model.* (gonzalomo ComfyUI)
+    QwenImageVAEKeyMap,        # conv1/conv2 + decoder.upsamples.* (original Wan/Qwen VAE)
 ]
 
 
@@ -57,4 +59,4 @@ def build_remap_fn(
     return None, None
 
 
-__all__ = ["build_remap_fn", "Krea2SafetensorsKeyMap"]
+__all__ = ["build_remap_fn", "Krea2SafetensorsKeyMap", "QwenImageVAEKeyMap"]
