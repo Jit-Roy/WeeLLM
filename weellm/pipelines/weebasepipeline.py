@@ -72,6 +72,7 @@ _TE_EXTERNAL_REPO = {
 _TR_MAP = {
     "FluxTransformer2DModel":              "weellm.models.transformers.flux_transformer_2d_model",
     "Flux2Transformer2DModel":             "weellm.models.transformers.flux2_transformer_2d_model",
+    "Flux3Transformer2DModel":             "weellm.models.transformers.flux3_transformer_2d_model",
     "ZImageTransformer2DModel":            "weellm.models.transformers.z_image_transformer_2d_model",
     "SD3Transformer2DModel":               "weellm.models.transformers.sd3_transformer_2d_model",
     "QwenImageTransformer2DModel":         "weellm.models.transformers.qwen_image_transformer_2d_model",
@@ -105,6 +106,10 @@ _VAE_MAP = {
     "AutoencoderKLMiniMaxH3Audio": (
         "weellm.models.vaes.autoencoder_kl_minimax_h3",
         "AutoencoderKLMiniMaxH3Streamer",
+    ),
+    "AutoencoderKLFlux2": (
+        "weellm.models.vaes.autoencoder_kl",
+        "AutoencoderKL",
     ),
     "MiniMaxH3VideoVAE": (
         "weellm.models.vaes.autoencoder_kl_minimax_h3",
@@ -159,6 +164,26 @@ class WeeBasePipeline:
     def __init__(self, pipeline) -> None:
         # Use object.__setattr__ to bypass our own __setattr__ during init.
         object.__setattr__(self, "_pipeline", pipeline)
+
+    def _configure_guidance(self, guidance_scale) -> bool:
+        """Configure guidance when the wrapped pipeline exposes the guider protocol."""
+        guider = getattr(self._pipeline, "guider", None)
+        if guider is None:
+            return False
+
+        enable = getattr(guider, "enable", None)
+        disable = getattr(guider, "disable", None)
+        if not callable(enable) or not callable(disable) or not hasattr(guider, "guidance_scale"):
+            return False
+
+        if guidance_scale <= 1.0:
+            disable()
+            logger.info("[WeeLLM] Classifier-free guidance disabled; using one transformer pass per step.")
+        else:
+            guider.guidance_scale = guidance_scale
+            enable()
+            logger.info("[WeeLLM] Classifier-free guidance enabled with scale %.2f.", guidance_scale)
+        return True
 
     # ------------------------------------------------------------------
     # Transparent delegation
@@ -577,6 +602,8 @@ class WeeBasePipeline:
     @staticmethod
     def _load_index(model_dir: Path) -> dict:
         index_path = model_dir / "model_index.json"
+        if not index_path.exists():
+            index_path = model_dir / "modular_model_index.json"
         with open(index_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
@@ -644,12 +671,15 @@ class WeeBasePipeline:
         for key in ["tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4", "text_processor", "processor"]:
             if key in index:
                 try:
-                    if key in ["text_processor", "processor"]:
+                    component_config = index[key][2] if len(index[key]) > 2 else {}
+                    subfolder = component_config.get("subfolder", key)
+                    component_class = index[key][1] if len(index[key]) > 1 else ""
+                    if key in ["text_processor", "processor"] or component_class.endswith("Processor"):
                         from transformers import AutoProcessor
-                        out[key] = AutoProcessor.from_pretrained(str(model_dir), subfolder=key)
+                        out[key] = AutoProcessor.from_pretrained(str(model_dir), subfolder=subfolder)
                     else:
                         from transformers import AutoTokenizer
-                        out[key] = AutoTokenizer.from_pretrained(str(model_dir), subfolder=key)
+                        out[key] = AutoTokenizer.from_pretrained(str(model_dir), subfolder=subfolder)
 
 
                 except Exception as e:

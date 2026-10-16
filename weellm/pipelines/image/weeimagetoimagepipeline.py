@@ -61,15 +61,22 @@ class WeeImageToImagePipeline(WeeBasePipeline):
         import inspect
         sig = inspect.signature(self._pipeline.__call__)
         supported_kwargs = set(sig.parameters.keys())
+        accepts_arbitrary_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in sig.parameters.values()
+        )
         
         # (Image dimension auto-fixing and _auto_resize disabling are now safely handled by WeeBasePipeline.__call__)
 
-        filtered_kwargs = {}
-        for k, v in kwargs.items():
-            if k in supported_kwargs:
-                filtered_kwargs[k] = v
-            else:
-                logger.debug("  [WeeLLM] Ignoring unsupported kwarg '%s' for %s", k, self._pipeline.__class__.__name__)
+        if accepts_arbitrary_kwargs:
+            filtered_kwargs = kwargs
+        else:
+            filtered_kwargs = {}
+            for k, v in kwargs.items():
+                if k in supported_kwargs:
+                    filtered_kwargs[k] = v
+                else:
+                    logger.debug("  [WeeLLM] Ignoring unsupported kwarg '%s' for %s", k, self._pipeline.__class__.__name__)
                 
         return super().__call__(*args, **filtered_kwargs)
 
@@ -93,6 +100,10 @@ class WeeImageToImagePipeline(WeeBasePipeline):
         ``PIL.Image.Image`` — the first generated image.
         """
         seed = kwargs.pop("seed", None)
+        guidance_scale = kwargs.pop("guidance_scale", None)
+        if guidance_scale is not None:
+            self._configure_guidance(guidance_scale)
+
         generator: Optional[torch.Generator] = None
         if seed is not None:
             device = getattr(self._pipeline, "device", torch.device("cpu"))

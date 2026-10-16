@@ -161,14 +161,14 @@ def evict_module(module: nn.Module) -> int:
     """
     evicted = 0
 
-    for name, param in list(module.named_parameters(recurse=True)):
-        dev = getattr(param, "device", None)
+    for name, tensor in list(module.named_parameters(recurse=True)) + list(module.named_buffers(recurse=True)):
+        dev = getattr(tensor, "device", None)
         if dev is not None and dev.type != "meta":
             try:
                 set_module_tensor_to_device(module, name, "meta")
+                evicted += 1
             except Exception:
                 pass
-            evicted += 1
 
 
     return evicted

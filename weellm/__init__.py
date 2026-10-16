@@ -48,6 +48,7 @@ __all__ = [
     # Transformers
     "FluxTransformer2DModelStreamer",
     "Flux2Transformer2DModelStreamer",
+    "Flux3Transformer2DModelStreamer",
     "ZImageTransformer2DModelStreamer",
     "SD3Transformer2DModelStreamer",
     "AuraFlowTransformer2DModelStreamer",
@@ -107,6 +108,7 @@ from .models.vaes.autoencoder_kl_minimax_h3 import AutoencoderKLMiniMaxH3Streame
 # Transformers
 from .models.transformers.flux_transformer_2d_model      import FluxTransformer2DModelStreamer  # noqa: E402
 from .models.transformers.flux2_transformer_2d_model     import Flux2Transformer2DModelStreamer  # noqa: E402
+from .models.transformers.flux3_transformer_2d_model     import Flux3Transformer2DModelStreamer  # noqa: E402
 from .models.transformers.z_image_transformer_2d_model   import ZImageTransformer2DModelStreamer  # noqa: E402
 from .models.transformers.sd3_transformer_2d_model        import SD3Transformer2DModelStreamer  # noqa: E402
 from .models.transformers.auraflow_transformer_2d_model  import AuraFlowTransformer2DModelStreamer  # noqa: E402

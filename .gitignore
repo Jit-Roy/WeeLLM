@@ -76,6 +76,7 @@ LTX-2.5/
 stable-diffusion-3.5-large/
 Krea-2-Raw/
 Qwen-Image-2.1/
+flux-3-image-klein-base/
 
 
 download*.py

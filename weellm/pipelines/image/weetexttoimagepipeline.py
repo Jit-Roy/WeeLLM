@@ -47,6 +47,10 @@ class WeeTextToImagePipeline(WeeBasePipeline):
         ``PIL.Image.Image`` — the first generated image.
         """
         seed = kwargs.pop("seed", None)
+        guidance_scale = kwargs.pop("guidance_scale", None)
+        if guidance_scale is not None:
+            self._configure_guidance(guidance_scale)
+
         generator: Optional[torch.Generator] = None
         if seed is not None:
             device = getattr(self._pipeline, "device", torch.device("cpu"))
@@ -56,7 +60,7 @@ class WeeTextToImagePipeline(WeeBasePipeline):
             logger.warning("[WeeLLM] Prompt Enhancer (PE) is currently disabled for ErnieImagePipeline due to performance constraints.")
             kwargs["use_pe"] = False
 
-        out = self._pipeline(prompt=prompt, generator=generator, **kwargs)
+        out = self(prompt=prompt, generator=generator, **kwargs)
         if hasattr(out, "images"):
             return out.images[0]
         return out[0][0]
