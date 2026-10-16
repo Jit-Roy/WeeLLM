@@ -17,10 +17,21 @@ Also handles AdaLayerNorm output modulation chunk reordering:
   - Diffusers Flux3AdaLayerNorm chunks: [scale, shift]
 """
 
-from typing import Dict, List
+from typing import Any, Dict, List
 import torch
 
-_DEQUANT_SUFFIXES = (".weight_scale", ".weight_scale_2", ".input_scale")
+_DEQUANT_SUFFIXES = (
+    ".weight_scale",
+    ".weight_scale_2",
+    ".input_scale",
+    ".comfy_quant",
+    ".config",
+    ".weight_codebook",
+    ".weight_s_rel",
+    ".weight_s_channel",
+    ".svdq_l1",
+    ".svdq_l2",
+)
 
 
 class Flux3SafetensorsKeyMap:
@@ -65,14 +76,22 @@ class Flux3SafetensorsKeyMap:
         return key
 
     @classmethod
-    def build_remap(cls, keys: List[str]) -> Dict[str, str]:
-        remap: Dict[str, str] = {}
+    def build_remap(cls, keys: List[str]) -> Dict[str, Any]:
+        remap: Dict[str, Any] = {}
         for key in keys:
             # Exclude quantization side-tensors (.weight_scale, etc.) so they stay
             # as raw keys and can be consumed by the seeker dequantization pipeline.
-            if any(key.endswith(s) for s in _DEQUANT_SUFFIXES):
+            if any(key.endswith(s) for s in _DEQUANT_SUFFIXES) or ".comfy_attention" in key:
                 continue
-            remap[key] = cls._remap_key(key)
+            if ".qkv." in key:
+                base_mapped = cls._remap_key(key)
+                remap[key] = [
+                    (base_mapped.replace(".qkv.", ".attn.to_q."), (0, 3)),
+                    (base_mapped.replace(".qkv.", ".attn.to_k."), (1, 3)),
+                    (base_mapped.replace(".qkv.", ".attn.to_v."), (2, 3)),
+                ]
+            else:
+                remap[key] = cls._remap_key(key)
         return remap
 
     @staticmethod

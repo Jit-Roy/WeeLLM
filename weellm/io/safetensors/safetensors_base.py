@@ -9,7 +9,7 @@ and ensuring both implementations stay in sync.
 import json
 import struct
 from pathlib import Path
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Any
 
 import numpy as np
 
@@ -105,13 +105,18 @@ class SafetensorsBase:
             self._d2s = {k: k for k in raw_map}   # identity
         else:
             # Build remapped weight_map (diffusers keys → shard filename)
-            # and _d2s (diffusers key → original raw key)
+            # and _d2s (diffusers key → (original raw key, slice_info))
             new_map: Dict[str, str] = {}
-            d2s: Dict[str, str] = {}
+            d2s: Dict[str, Any] = {}
             for src_key, shard in raw_map.items():
-                dst_key = remap_fn(src_key)
-                new_map[dst_key] = shard
-                d2s[dst_key] = src_key
+                dst = remap_fn(src_key)
+                if isinstance(dst, list):
+                    for dst_key, slice_info in dst:
+                        new_map[dst_key] = shard
+                        d2s[dst_key] = (src_key, slice_info)
+                else:
+                    new_map[dst] = shard
+                    d2s[dst] = (src_key, None)
             self.weight_map = new_map
             self._d2s = d2s
 

@@ -21,6 +21,7 @@ from weellm.io.ggufs.keymaps.text_encoders.llama  import LlamaKeyMap
 from weellm.io.ggufs.keymaps.text_encoders.gemma4  import Gemma4KeyMap
 from weellm.io.ggufs.keymaps.transformers.flux   import FluxKeyMap
 from weellm.io.ggufs.keymaps.transformers.flux2  import Flux2KeyMap
+from weellm.io.ggufs.keymaps.transformers.flux3  import Flux3KeyMap
 from weellm.io.ggufs.keymaps.text_encoders.glm    import GLMKeyMap
 from weellm.io.ggufs.keymaps.transformers.sd3    import SD3KeyMap
 from weellm.io.ggufs.keymaps.transformers.sdxl   import SDXLKeyMap
@@ -49,6 +50,7 @@ _REGISTRY = [
     Gemma4KeyMap,   # multi_modal_projector.* + *.layer_scalar (already diffusers naming)
     LlamaKeyMap,    # blk.*
     Flux2KeyMap,    # Flux.2 Klein: 8 double + 24 single blocks
+    Flux3KeyMap,    # Flux.3 Image Klein: content_mode_blocks + single_blocks
     LongCatKeyMap,  # MUST come before FluxKeyMap: uses double_blocks.* but NO vec_in/guidance_in
     AuraFlowKeyMap, # double_layers.* + w2q naming
     FluxKeyMap,     # double_blocks.*
@@ -105,6 +107,7 @@ __all__ = [
     "GLMKeyMap",
     "FluxKeyMap",
     "Flux2KeyMap",
+    "Flux3KeyMap",
     "SD3KeyMap",
     "SDXLKeyMap",
     "SD15KeyMap",

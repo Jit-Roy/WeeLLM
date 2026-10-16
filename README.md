@@ -64,6 +64,7 @@ WeeLLM dynamically streams text encoder and transformer layers to the GPU for ma
 - Flux.1 Krea
 - Flux.2 Klein 4B
 - Flux.2 Klein 9B
+- Flux.3 Klein (Base + Distilled)
 - CogView 4
 - LongCat Image
 - Z-Image Turbo
@@ -91,6 +92,7 @@ WeeLLM dynamically streams text encoder and transformer layers to the GPU for ma
 - Flux.1 Fill Dev
 - Flux.2 Klein 4B
 - Flux.2 Klein 9B
+- Flux.3 Klein (Base + Distilled)
 - LongCat Image Edit
 - Qwen Image Edit
 - Qwen Image 2.1

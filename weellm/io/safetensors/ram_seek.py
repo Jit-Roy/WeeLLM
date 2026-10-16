@@ -111,10 +111,17 @@ class SafetensorsRAMSeeker(SafetensorsBase):
         from weellm.io.safetensors.comfy_dequant import expand_comfy_keys, process_comfy_tensors
 
         # Translate diffusers keys -> raw checkpoint keys (_d2s is identity when no keymap).
-        raw_keys = [self._d2s.get(k, k) for k in keys]
+        raw_keys = []
+        for k in keys:
+            entry = self._d2s.get(k, k)
+            raw_keys.append(entry[0] if isinstance(entry, (tuple, list)) else entry)
 
         # Build raw weight_map view for comfy expansion (needs original key names).
-        raw_weight_map = {v: self.weight_map[k] for k, v in self._d2s.items() if k in self.weight_map}
+        raw_weight_map = {}
+        for k, v in self._d2s.items():
+            if k in self.weight_map:
+                rk = v[0] if isinstance(v, (tuple, list)) else v
+                raw_weight_map[rk] = self.weight_map[k]
 
         # Expand raw keys to include comfy_quant / SVDQ side-tensors.
         raw_keys_expanded = expand_comfy_keys(raw_keys, raw_weight_map)
@@ -156,11 +163,29 @@ class SafetensorsRAMSeeker(SafetensorsBase):
         if self._keymap_cls is None:
             return raw_result
 
-        s2d = {v: k for k, v in self._d2s.items()}
         result: Dict[str, torch.Tensor] = {}
-        for raw_key, tensor in raw_result.items():
-            dst_key = s2d.get(raw_key, raw_key)
-            tensor  = self._keymap_cls.postprocess_tensor(dst_key, tensor, raw_key)
+        for dst_key in keys:
+            if dst_key not in self._d2s:
+                if dst_key in raw_result:
+                    result[dst_key] = raw_result[dst_key]
+                continue
+            entry = self._d2s[dst_key]
+            if isinstance(entry, (tuple, list)):
+                raw_key, slice_info = entry
+            else:
+                raw_key, slice_info = entry, None
+
+            if raw_key not in raw_result:
+                continue
+
+            tensor = raw_result[raw_key]
+            if slice_info is not None:
+                split_idx, total_splits = slice_info
+                chunk_size = tensor.shape[0] // total_splits
+                tensor = tensor[split_idx * chunk_size : (split_idx + 1) * chunk_size].clone()
+
+            if hasattr(self._keymap_cls, "postprocess_tensor"):
+                tensor = self._keymap_cls.postprocess_tensor(dst_key, tensor, raw_key)
             result[dst_key] = tensor
         return result
 

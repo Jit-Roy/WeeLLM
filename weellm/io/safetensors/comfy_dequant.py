@@ -71,7 +71,7 @@ def process_fp8_and_nvfp4_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, 
     """Dequantize per-channel scaled FP8 and packed E2M1 (NVFP4) tensors."""
     target_dtype = torch.bfloat16
     for tensor in result.values():
-        if tensor.is_floating_point() and tensor.dtype not in (
+        if isinstance(tensor, torch.Tensor) and tensor.is_floating_point() and tensor.dtype not in (
             torch.float8_e4m3fn,
             torch.float8_e5m2,
         ):
@@ -198,7 +198,7 @@ def process_svdq_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Ten
         # Infer target dtype from surrounding floating-point tensors
         target_dtype = torch.bfloat16
         for k, v in result.items():
-            if v.is_floating_point() and k not in (s_key, l1_key, l2_key):
+            if isinstance(v, torch.Tensor) and v.is_floating_point() and k not in (s_key, l1_key, l2_key):
                 target_dtype = v.dtype
                 break
 
@@ -257,7 +257,7 @@ def process_comfy_quant_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, to
         # Infer target dtype from other floating point tensors in result, default to bfloat16
         target_dtype = torch.bfloat16
         for k, v in result.items():
-            if v.is_floating_point() and not any(suffix in k for suffix in ["weight_scale", "weight_s_rel", "weight_s_channel", "weight_codebook"]):
+            if isinstance(v, torch.Tensor) and v.is_floating_point() and not any(suffix in k for suffix in ["weight_scale", "weight_s_rel", "weight_s_channel", "weight_codebook"]):
                 target_dtype = v.dtype
                 break
                 
@@ -355,6 +355,8 @@ def process_comfy_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Te
       2. Per-channel scaled FP8 and NVFP4 / E2M1 group-quantized weights
       3. ComfyUI comfy_quant metadata weights (NF4, asym_w4a8)
     """
+    if any(k.endswith(".gguf_meta") for k in result):
+        return result
     result = process_svdq_tensors(result)
     result = process_fp8_and_nvfp4_tensors(result)
     result = process_comfy_quant_tensors(result)
