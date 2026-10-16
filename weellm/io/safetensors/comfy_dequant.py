@@ -22,14 +22,16 @@ def generate_hadamard(n: int, device="cpu", dtype=torch.float32) -> torch.Tensor
 def expand_comfy_keys(keys: list[str], weight_map: Dict[str, str]) -> list[str]:
     """
     Given a list of requested keys, expands them to include all necessary
-    comfy_quant and svdq side-tensors if the requested tensor is quantized.
+    quantization side-tensors (comfy_quant, SVDQ, NVFP4, scaled FP8) if the
+    requested tensor is quantized.
     """
     expanded_keys = []
     for key in keys:
         expanded_keys.append(key)
         if key.endswith(".weight"):
-            prefix = key[:-7] # strip ".weight"
-            # ── comfy_quant format ────────────────────────────────────────
+            prefix = key[:-7]  # strip ".weight"
+
+            # ── comfy_quant format (NF4, asym_w4a8) ───────────────────────────
             meta_key = prefix + ".comfy_quant"
             if meta_key in weight_map:
                 expanded_keys.append(meta_key)
@@ -37,6 +39,7 @@ def expand_comfy_keys(keys: list[str], weight_map: Dict[str, str]) -> list[str]:
                     candidate = prefix + "." + suffix
                     if candidate in weight_map:
                         expanded_keys.append(candidate)
+
             # ── SVDQ format (gonzalomo-style nibble-packed 4-bit + low-rank) ──
             svdq_l1_key = prefix + ".svdq_l1"
             if svdq_l1_key in weight_map:
@@ -44,8 +47,84 @@ def expand_comfy_keys(keys: list[str], weight_map: Dict[str, str]) -> list[str]:
                     candidate = prefix + "." + suffix
                     if candidate in weight_map:
                         expanded_keys.append(candidate)
+
+            # ── NVFP4 / E2M1 group quantization (e.g. BFL / ModelOpt NVFP4) ───
+            if (prefix + ".weight_scale_2") in weight_map:
+                for suffix in ["weight_scale", "weight_scale_2", "input_scale"]:
+                    candidate = prefix + "." + suffix
+                    if candidate in weight_map:
+                        expanded_keys.append(candidate)
+
+            # ── Per-channel scaled FP8 (e.g. BFL / ComfyUI FP8) ───────────────
+            elif (
+                (prefix + ".weight_scale") in weight_map
+                and meta_key not in weight_map
+                and svdq_l1_key not in weight_map
+            ):
+                expanded_keys.append(prefix + ".weight_scale")
+
     # deduplicate but preserve order
     return list(dict.fromkeys(expanded_keys))
+
+
+def process_fp8_and_nvfp4_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """Dequantize per-channel scaled FP8 and packed E2M1 (NVFP4) tensors."""
+    target_dtype = torch.bfloat16
+    for tensor in result.values():
+        if tensor.is_floating_point() and tensor.dtype not in (
+            torch.float8_e4m3fn,
+            torch.float8_e5m2,
+        ):
+            target_dtype = tensor.dtype
+            break
+
+    for weight_key in list(result):
+        if not weight_key.endswith(".weight"):
+            continue
+        scale_key = weight_key[:-7] + ".weight_scale"
+        if scale_key not in result:
+            continue
+
+        weight = result[weight_key]
+        scales = result[scale_key]
+        prefix = weight_key[:-7]
+
+        # These are handled by the ComfyUI and SVDQ passes.
+        if prefix + ".comfy_quant" in result or prefix + ".svdq_l1" in result:
+            continue
+
+        # FP8 per-output-channel export (scale is 1D matching weight row count).
+        if weight.ndim == 2 and scales.ndim == 1 and scales.shape[0] == weight.shape[0]:
+            result[weight_key] = weight.to(target_dtype) * scales.to(target_dtype).unsqueeze(1)
+            del result[scale_key]
+            continue
+
+        # Packed E2M1 (NVFP4): 2 values per byte, group scale in weight_scale, global in weight_scale_2.
+        scale2_key = weight_key[:-7] + ".weight_scale_2"
+        if weight.ndim == 2 and weight.dtype == torch.uint8 and scales.ndim == 2 and scale2_key in result:
+            packed = weight
+            nibbles = torch.stack(
+                ((packed & 0x0F), (packed >> 4) & 0x0F), dim=-1
+            ).reshape(weight.shape[0], -1)
+            magnitude = torch.tensor(
+                [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0],
+                device=weight.device,
+                dtype=torch.float32,
+            )
+            values = magnitude[(nibbles & 0x07).long()]
+            values = torch.where(
+                (nibbles & 0x08) != 0, -values, values
+            )
+            group_scales = scales.to(torch.float32).view(weight.shape[0], -1, 1)
+            values = values.view(weight.shape[0], -1, 16)
+            result[weight_key] = (
+                values * group_scales * result[scale2_key].to(torch.float32).view(1, 1, 1)
+            ).reshape(weight.shape[0], -1).to(target_dtype)
+            del result[scale_key], result[scale2_key]
+            input_scale_key = weight_key[:-7] + ".input_scale"
+            result.pop(input_scale_key, None)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -60,8 +139,8 @@ def expand_comfy_keys(keys: list[str], weight_map: Dict[str, str]) -> list[str]:
 # Reconstruction:  W = unpack_nibbles(I8) * scale[:,None] + L1 @ L2
 # ---------------------------------------------------------------------------
 
-def _unpack_nibbles(packed: torch.Tensor) -> torch.Tensor:
-    """Unpack nibble-packed I8 (out, in//2) → float32 (out, in)."""
+def _unpack_int4_weights(packed: torch.Tensor) -> torch.Tensor:
+    """Unpack 4-bit signed integers (INT4, two 4-bit values per uint8 byte) -> float32 (out, in)."""
     u8 = packed.view(torch.uint8)
     lo_u = (u8 & 0x0F)
     hi_u = ((u8 >> 4) & 0x0F)
@@ -73,19 +152,6 @@ def _unpack_nibbles(packed: torch.Tensor) -> torch.Tensor:
     result[:, 0::2] = lo
     result[:, 1::2] = hi
     return result
-
-
-def _dequant_svdq(
-    weight: torch.Tensor,    # I8  (out, in//2)
-    scale: torch.Tensor,     # F32 (out,)
-    svdq_l1: torch.Tensor,   # BF16 (out, rank)
-    svdq_l2: torch.Tensor,   # BF16 (rank, in)
-    target_dtype: torch.dtype,
-) -> torch.Tensor:
-    """Reconstruct a full BF16/F32 matrix from SVDQ components."""
-    w_base = _unpack_nibbles(weight) * scale.float().unsqueeze(1)
-    w_lr   = svdq_l1.float() @ svdq_l2.float()
-    return (w_base + w_lr).to(target_dtype)
 
 
 def process_svdq_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -147,7 +213,7 @@ def process_svdq_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Ten
             # where H is the normalised Hadamard matrix of size rot_size.
             device = w.device
             H = generate_hadamard(rot_size, device=str(device), dtype=torch.float32)
-            w_unpacked = _unpack_nibbles(w)          # float32 (out, in)
+            w_unpacked = _unpack_int4_weights(w)          # float32 (out, in)
             w_scaled   = w_unpacked * scale.float().unsqueeze(1)  # (out, in)
             # Un-rotate in chunks to avoid building a huge intermediate tensor
             out_features, in_features = w_scaled.shape
@@ -158,7 +224,7 @@ def process_svdq_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Ten
             w_base = w_rot
         else:
             # Plain SVDQ: no rotation, direct scale + low-rank
-            w_base = _unpack_nibbles(w) * scale.float().unsqueeze(1)
+            w_base = _unpack_int4_weights(w) * scale.float().unsqueeze(1)
 
         w_lr = l1.float() @ l2.float()
         result[w_key] = (w_base + w_lr).to(target_dtype)
@@ -170,22 +236,16 @@ def process_svdq_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Ten
     return result
 
 
-def process_comfy_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+def process_comfy_quant_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """
-    Finds comfy_quant groups in the loaded tensors, dequantizes them into standard
-    .weight tensors, and removes the quantization metadata from the dictionary.
-    Also handles SVDQ groups (gonzalomo-style 4-bit + low-rank).
+    Finds comfy_quant groups (NF4, asym_w4a8) in the loaded tensors, dequantizes them
+    into standard .weight tensors, and removes the quantization metadata from the dictionary.
     """
-    # ── SVDQ pass (must run before comfy_quant pass) ──────────────────────────
-    result = process_svdq_tensors(result)
-
-    # ── Legacy comfy_quant pass ───────────────────────────────────────────────
-    # Find all comfy_quant prefixes
     prefixes = []
     for k in result.keys():
         if k.endswith(".comfy_quant"):
-            prefixes.append(k[:-12]) # strip ".comfy_quant"
-            
+            prefixes.append(k[:-12])  # strip ".comfy_quant"
+
     for prefix in prefixes:
         meta_bytes = result[prefix + ".comfy_quant"]
         if meta_bytes.dtype != torch.uint8:
@@ -284,4 +344,18 @@ def process_comfy_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Te
         del result[prefix + ".comfy_quant"]
         result[prefix + ".weight"] = out_tensor
 
+    return result
+
+
+def process_comfy_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """
+    Master dequantization pipeline for loaded checkpoint tensors.
+    Executes all format passes in order:
+      1. SVDQ (gonzalomo-style 4-bit + low-rank correction, optional Hadamard ConvRot)
+      2. Per-channel scaled FP8 and NVFP4 / E2M1 group-quantized weights
+      3. ComfyUI comfy_quant metadata weights (NF4, asym_w4a8)
+    """
+    result = process_svdq_tensors(result)
+    result = process_fp8_and_nvfp4_tensors(result)
+    result = process_comfy_quant_tensors(result)
     return result
