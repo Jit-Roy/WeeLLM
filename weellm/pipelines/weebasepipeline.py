@@ -16,6 +16,7 @@ wraps the diffusers pipeline.  The wrapper supports:
 
 import gc
 import importlib
+import importlib.util
 import json
 import logging
 import types
@@ -52,6 +53,7 @@ _TE_MAP = {
     "Mistral3Model":                          "weellm.models.text_encoders.mistral3_model",
     "Gemma4UnifiedForConditionalGeneration":  "weellm.models.text_encoders.gemma4_unified_for_conditional_generation",
     "LTX2TextConnectors":                     "weellm.models.transformers.ltx2_connectors",
+    "Qwen3_5Model":                           "weellm.models.text_encoders.qwen3_5_model",
 }
 
 # ---------------------------------------------------------------------------
@@ -89,6 +91,7 @@ _TR_MAP = {
     "Krea2Transformer2DModel":             "weellm.models.transformers.krea2_transformer_2d_model",
     "MiniMaxH3Transformer3DModel":         "weellm.models.transformers.minimax_h3_transformer_3d_model",
     "LTX2VideoTransformer3DModel":         "weellm.models.transformers.ltx2_video_transformer_3d_model",
+    "MOSSImageTransformer":                "weellm.models.transformers.moss_image_transformer_2d_model",
 }
 
 # ---------------------------------------------------------------------------
@@ -118,6 +121,16 @@ _VAE_MAP = {
     "MiniMaxH3AudioVAE": (
         "weellm.models.vaes.autoencoder_kl_minimax_h3",
         "AutoencoderKLMiniMaxH3Streamer",
+    ),
+}
+
+# ---------------------------------------------------------------------------
+# Custom Scheduler class -> module path and class name mapping
+# ---------------------------------------------------------------------------
+_SCHEDULER_MAP = {
+    "MOSSImageScheduler": (
+        "weellm.schedulers.moss_image_scheduler",
+        "MOSSImageScheduler",
     ),
 }
 
@@ -686,9 +699,14 @@ class WeeBasePipeline:
                     logger.warning("Failed to load %s: %s", key, e)
 
         if index.get("scheduler") is not None:
-            scheduler_cls = getattr(
-                importlib.import_module("diffusers"), index["scheduler"][1]
-            )
+            scheduler_class_name = index["scheduler"][1]
+            if scheduler_class_name in _SCHEDULER_MAP:
+                module_path, class_name = _SCHEDULER_MAP[scheduler_class_name]
+                scheduler_cls = getattr(importlib.import_module(module_path), class_name)
+            else:
+                scheduler_cls = getattr(
+                    importlib.import_module("diffusers"), scheduler_class_name
+                )
             out["scheduler"] = scheduler_cls.from_pretrained(str(model_dir), subfolder="scheduler")
 
     @staticmethod
