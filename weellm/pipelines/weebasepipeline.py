@@ -77,7 +77,7 @@ _TR_MAP = {
     "ZImageTransformer2DModel":            "weellm.models.transformers.z_image_transformer_2d_model",
     "SD3Transformer2DModel":               "weellm.models.transformers.sd3_transformer_2d_model",
     "QwenImageTransformer2DModel":         "weellm.models.transformers.qwen_image_transformer_2d_model",
-    "QwenImage21Transformer2DModel":       "weellm.models.transformers.qwen_image_2_1_transformer_2d_model",
+    "QwenImage21Transformer2DModel":       "weellm.models.transformers.qwen_image_21_transformer_2d_model",
     "CogView4Transformer2DModel":          "weellm.models.transformers.cogview4_transformer_2d_model",
     "Lumina2Transformer2DModel":           "weellm.models.transformers.lumina2_transformer_2d_model",
     "AuraFlowTransformer2DModel":          "weellm.models.transformers.auraflow_transformer_2d_model",

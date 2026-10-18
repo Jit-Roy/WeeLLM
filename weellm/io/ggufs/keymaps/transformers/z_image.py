@@ -1,5 +1,5 @@
 """
-zimage.py -- GGUF key map for Z-Image format.
+z_image.py -- GGUF key map for Z-Image format.
 
 Detected by: keys starting with "context_refiner." or "noise_refiner.".
 Uses imperative remapping because Z-Image keys are already in Diffusers-like

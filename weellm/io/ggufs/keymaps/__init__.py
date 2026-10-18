@@ -27,7 +27,7 @@ from weellm.io.ggufs.keymaps.transformers.sd3    import SD3GGUFKeyMap
 from weellm.io.ggufs.keymaps.transformers.sdxl   import SDXLGGUFKeyMap
 from weellm.io.ggufs.keymaps.transformers.sd15   import SD15GGUFKeyMap
 from weellm.io.ggufs.keymaps.transformers.krea2  import Krea2GGUFKeyMap
-from weellm.io.ggufs.keymaps.transformers.zimage import ZImageGGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.z_image import ZImageGGUFKeyMap
 from weellm.io.ggufs.keymaps.transformers.minimax_h3 import MiniMaxH3GGUFKeyMap
 from weellm.io.ggufs.keymaps.text_encoders.qwen3vl import Qwen3VLGGUFKeyMap
 from weellm.io.ggufs.keymaps.transformers.ltx25 import LTX25GGUFKeyMap

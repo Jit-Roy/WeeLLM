@@ -1,5 +1,5 @@
 """
-qwen_image_2_1_transformer_2d_model.py -- Hook-based layer-streaming for QwenImage21Transformer2DModel.
+qwen_image_21_transformer_2d_model.py -- Hook-based layer-streaming for QwenImage21Transformer2DModel.
 
 Architecture (Qwen-Image-2.1):
   - 32 joint transformer blocks (transformer_blocks.0..31)
