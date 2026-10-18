@@ -4,9 +4,9 @@ Registry of all LoRA key-map plugins.
 import logging
 from typing import Set, List, Tuple, Any, Callable
 
-from weellm.models.loras.lora_keymaps.ltx2 import LTX2LoRAKeyMap
-from weellm.models.loras.lora_keymaps.diffusers_fallback import DiffusersFallbackLoRAKeyMap
-from weellm.models.loras.lora_keymaps.minimax import MiniMaxH3LoRAKeyMap
+from weellm.io.loras.keymaps.ltx2 import LTX2LoRAKeyMap
+from weellm.io.loras.keymaps.diffusers_fallback import DiffusersFallbackLoRAKeyMap
+from weellm.io.loras.keymaps.minimax import MiniMaxH3LoRAKeyMap
 
 logger = logging.getLogger("weellm")
 
