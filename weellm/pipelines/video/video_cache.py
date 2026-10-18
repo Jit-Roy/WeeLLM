@@ -1,6 +1,6 @@
 """
-weellm/helpers/video_cache.py
-=============================
+weellm/pipelines/video/video_cache.py
+=====================================
 Generic video inference cache for WeeLLM.
 
 Video models can take hours to run.  This module provides a two-level cache:

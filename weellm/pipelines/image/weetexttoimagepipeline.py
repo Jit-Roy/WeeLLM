@@ -65,6 +65,3 @@ class WeeTextToImagePipeline(WeeBasePipeline):
             return out.images[0]
         return out[0][0]
 
-
-# Backward-compat alias so any code still importing WeePipeline doesn't break.
-WeePipeline = WeeTextToImagePipeline

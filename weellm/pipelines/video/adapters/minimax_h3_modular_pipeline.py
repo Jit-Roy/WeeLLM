@@ -1,6 +1,6 @@
 """
-weellm.pipelines.video.minimax_h3_modular_pipeline
-==================================================
+weellm.pipelines.video.adapters.minimax_h3_modular_pipeline
+===========================================================
 WeeLLM adapter for the MiniMax-H3 Modular Pipeline.
 
 Follows the same pattern as inference.py:

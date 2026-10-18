@@ -1,6 +1,6 @@
 """
-weellm.pipelines.video.ltx2
-===========================
+weellm.pipelines.video.adapters.ltx2_pipeline
+=============================================
 Custom patched adapter for LTX-2.5 Video Pipeline.
 Handles 8k+1 frame math and dummy audio injection.
 """

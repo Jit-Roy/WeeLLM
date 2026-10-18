@@ -223,6 +223,5 @@ class Qwen3ForCausalLMStreamer(BaseLazyDecoderStreamer):
         )
 
 
-# Aliases kept for backwards compatibility
-Qwen3ModelStreamer       = Qwen3ForCausalLMStreamer
-Qwen2ForCausalLMStreamer = Qwen3ForCausalLMStreamer
+# Required for ZImagePipeline whose model_index.json references "Qwen3Model"
+Qwen3ModelStreamer = Qwen3ForCausalLMStreamer

@@ -28,9 +28,6 @@ __all__ = [
     "WeeTextToImagePipeline",
     "WeeImageToImagePipeline",
     "WeeVideoPipeline",
-    # Backward-compat aliases
-    "WeePipeline",
-    "WeeImagePipeline",
     # IO — memory & placement
     "place_tensors",
     "evict_module",
@@ -76,6 +73,7 @@ __all__ = [
     "Mistral3ModelStreamer",
     "Qwen2_5_VLForConditionalGenerationStreamer",
     "Qwen3ForCausalLMStreamer",
+    "Qwen3ModelStreamer",
     "Qwen3VLForConditionalGenerationStreamer",
     "Qwen3VLModelStreamer",
     "Qwen3_5ModelStreamer",
@@ -90,8 +88,8 @@ __all__ = [
 logging.getLogger("weellm").addHandler(logging.NullHandler())
 
 from .pipelines.weebasepipeline import WeeBasePipeline  # noqa: E402
-from .pipelines.image.weetexttoimagepipeline import WeeTextToImagePipeline, WeePipeline  # noqa: E402
-from .pipelines.image.weeimagetoimagepipeline import WeeImageToImagePipeline, WeeImagePipeline  # noqa: E402
+from .pipelines.image.weetexttoimagepipeline import WeeTextToImagePipeline  # noqa: E402
+from .pipelines.image.weeimagetoimagepipeline import WeeImageToImagePipeline  # noqa: E402
 from .pipelines.video.weevideopipeline import WeeVideoPipeline  # noqa: E402
 
 # IO — memory & tensor placement 
@@ -138,7 +136,7 @@ from .models.text_encoders.llama_for_causal_lm import LlamaForCausalLMStreamer  
 from .models.text_encoders.mistral3_for_conditional_generation import Mistral3ForConditionalGenerationStreamer  # noqa: E402
 from .models.text_encoders.mistral3_model import Mistral3ModelStreamer  # noqa: E402
 from .models.text_encoders.qwen2_5_vl_for_conditional_generation import Qwen2_5_VLForConditionalGenerationStreamer  # noqa: E402
-from .models.text_encoders.qwen3_for_causal_lm import Qwen3ForCausalLMStreamer  # noqa: E402
+from .models.text_encoders.qwen3_for_causal_lm import Qwen3ForCausalLMStreamer, Qwen3ModelStreamer  # noqa: E402
 from .models.text_encoders.qwen3_vl_for_conditional_generation import Qwen3VLForConditionalGenerationStreamer  # noqa: E402
 from .models.text_encoders.qwen3_vl_model import Qwen3VLModelStreamer  # noqa: E402
 from .models.text_encoders.qwen3_5_model import Qwen3_5ModelStreamer  # noqa: E402

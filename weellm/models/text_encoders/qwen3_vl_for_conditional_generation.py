@@ -1,5 +1,5 @@
 """
-minimax_h3_qwen3_vl_hf_encoder.py -- Hook-based layer-streaming for the MiniMaxH3Qwen3VLHFEncoder.
+qwen3_vl_for_conditional_generation.py -- Hook-based layer-streaming for Qwen3VLForConditionalGeneration.
 
 Uses single-stream live buffering to stream both language layers and vision blocks
 directly from the SSD to prevent OOM on the massive weights.

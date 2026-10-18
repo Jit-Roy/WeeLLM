@@ -23,13 +23,6 @@ from diffusers.pipelines.hidream_image.pipeline_output import HiDreamImagePipeli
 import logging
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()  # Ensure output goes to console
-    ]
-)
 
 EXAMPLE_DOC_STRING = """
     Examples:
