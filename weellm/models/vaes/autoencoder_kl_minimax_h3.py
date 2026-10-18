@@ -14,7 +14,7 @@ from accelerate import init_empty_weights
 
 from weellm.io.seeker import get_seeker
 from weellm.io.utils import default_dtype, clean_memory, report_memory
-from .base_vae_streamer import BaseVAEStreamer
+from weellm.models.vaes.base_vae_streamer import BaseVAEStreamer
 
 logger = logging.getLogger("weellm")
 

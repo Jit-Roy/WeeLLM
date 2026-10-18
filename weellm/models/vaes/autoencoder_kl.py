@@ -28,7 +28,7 @@ from accelerate.utils.modeling import set_module_tensor_to_device
 
 from weellm.io.seeker import get_seeker
 from weellm.io.utils import clean_memory, report_memory
-from .base_vae_streamer import BaseVAEStreamer
+from weellm.models.vaes.base_vae_streamer import BaseVAEStreamer
 
 logger = logging.getLogger("weellm")
 

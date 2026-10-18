@@ -819,7 +819,7 @@ class WeeBasePipeline:
             else:
                 te_path = str(local_te_path)
 
-            from ..io.seeker import override_weights_path
+            from weellm.io.seeker import override_weights_path
             
             with override_weights_path(override_path, subfolder=key):
                 if "Qwen" in hf_cls_name or "Mistral" in hf_cls_name or "Llama" in hf_cls_name:
@@ -893,7 +893,7 @@ class WeeBasePipeline:
         module                   = importlib.import_module(module_path)
         transformer_cls_streamer = getattr(module, transformer_class_name + "Streamer")
 
-        from ..io.seeker import override_weights_path
+        from weellm.io.seeker import override_weights_path
 
         with override_weights_path(transformer_path_override, subfolder=transformer_key):
             if transformer_key == "unet":
