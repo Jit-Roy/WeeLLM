@@ -37,7 +37,7 @@ EXAMPLE_DOC_STRING = """
         >>> import torch
         >>> from transformers import PreTrainedTokenizerFast, LlamaForCausalLM
         >>> from diffusers import UniPCMultistepScheduler
-        >>> from pipeline_hidream_image_editing import HiDreamImageEditingPipeline
+        >>> from weellm.pipelines.image.adapters.hidream_image_editing_pipeline import HiDreamImageEditingPipeline
         >>> from PIL import Image
 
 
