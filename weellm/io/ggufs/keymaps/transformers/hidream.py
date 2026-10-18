@@ -11,7 +11,7 @@ HiDream is NOT present in that function, confirming native diffusers naming.
 from typing import Any, Dict, List
 
 
-class HiDreamKeyMap:
+class HiDreamGGUFKeyMap:
     """
     Strips the ComfyUI "model.diffusion_model." prefix from HiDream GGUF files.
     """

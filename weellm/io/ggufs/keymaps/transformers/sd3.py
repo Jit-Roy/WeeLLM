@@ -11,7 +11,7 @@ _SWAP_SCALE_SHIFT_GGUF_KEYS = frozenset({
 })
 
 
-class SD3KeyMap:
+class SD3GGUFKeyMap:
     NAME = "sd3"
 
     @staticmethod

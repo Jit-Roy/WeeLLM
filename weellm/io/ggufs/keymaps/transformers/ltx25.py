@@ -10,7 +10,7 @@ and avoids falling back to the "unknown architecture" warning.
 
 from typing import Any, Dict, List
 
-class LTX25KeyMap:
+class LTX25GGUFKeyMap:
     NAME = "ltxv"
 
     @staticmethod

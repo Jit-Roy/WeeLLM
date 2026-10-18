@@ -11,7 +11,7 @@ Lumina2 is NOT present in that function, confirming native diffusers naming.
 from typing import Any, Dict, List
 
 
-class Lumina2KeyMap:
+class Lumina2GGUFKeyMap:
     """
     Strips the ComfyUI "model.diffusion_model." prefix from Lumina2 GGUF files.
     """

@@ -2,10 +2,10 @@
 
 from typing import Any, Dict, List
 
-from weellm.io.ggufs.keymaps.transformers.flux import FluxKeyMap
+from weellm.io.ggufs.keymaps.transformers.flux import FluxGGUFKeyMap
 
 
-class Flux2KeyMap(FluxKeyMap):
+class Flux2GGUFKeyMap(FluxGGUFKeyMap):
     NAME = "flux2-klein"
 
     @staticmethod
@@ -33,7 +33,7 @@ class Flux2KeyMap(FluxKeyMap):
 
     @staticmethod
     def build_remap(gguf_keys: List[str]) -> Dict[str, Any]:
-        remap = FluxKeyMap.build_remap(gguf_keys)
+        remap = FluxGGUFKeyMap.build_remap(gguf_keys)
         for entries in remap.values():
             for index, (target, slice_info) in enumerate(entries):
                 entries[index] = (target.replace("time_text_embed.", "time_guidance_embed."), slice_info)

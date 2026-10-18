@@ -30,7 +30,7 @@ from accelerate.utils.modeling import set_module_tensor_to_device
 logger = logging.getLogger("weellm")
 
 
-class Qwen3VLKeyMap:
+class Qwen3VLGGUFKeyMap:
     NAME = "qwen3vl"
 
     @staticmethod
@@ -62,7 +62,7 @@ class Qwen3VLKeyMap:
     def build_remap(gguf_keys: List[str]) -> Dict[str, Any]:
         remap: Dict[str, Any] = {}
         for gguf_key in gguf_keys:
-            mapped_key = Qwen3VLKeyMap._remap_key(gguf_key)
+            mapped_key = Qwen3VLGGUFKeyMap._remap_key(gguf_key)
             remap[gguf_key] = [(mapped_key, None)]
         return remap
 

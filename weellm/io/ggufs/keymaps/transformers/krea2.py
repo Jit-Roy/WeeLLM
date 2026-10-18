@@ -79,7 +79,7 @@ _KREA2_KEY_MAP = {
 }
 
 
-class Krea2KeyMap:
+class Krea2GGUFKeyMap:
     NAME = "krea2-minimax"
 
     @staticmethod

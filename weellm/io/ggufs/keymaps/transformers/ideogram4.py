@@ -11,7 +11,7 @@ Ideogram4 is NOT present in that function, confirming native diffusers naming.
 from typing import Any, Dict, List
 
 
-class Ideogram4KeyMap:
+class Ideogram4GGUFKeyMap:
     """
     Strips the ComfyUI "model.diffusion_model." prefix from Ideogram4 GGUF files.
     """

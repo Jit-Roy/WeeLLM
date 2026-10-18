@@ -11,7 +11,7 @@ CogView4 is NOT present in that function, confirming native diffusers naming.
 from typing import Any, Dict, List
 
 
-class CogView4KeyMap:
+class CogView4GGUFKeyMap:
     """
     Strips the ComfyUI "model.diffusion_model." prefix from CogView4 GGUF files.
     """

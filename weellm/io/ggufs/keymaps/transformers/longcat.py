@@ -17,7 +17,7 @@ from typing import Any, Dict, List
 
 # Tensors stored as [shift | scale] in the ComfyUI/BFL checkpoint but Diffusers'
 # AdaLayerNormContinuous.forward() reads them as [scale | shift].
-# We must swap the two halves, matching the same logic used by FluxKeyMap.
+# We must swap the two halves, matching the same logic used by FluxGGUFKeyMap.
 _SWAP_SCALE_SHIFT_GGUF_KEYS: frozenset = frozenset({
     "final_layer.adaLN_modulation.1.weight",
     "final_layer.adaLN_modulation.1.bias",
@@ -163,7 +163,7 @@ def _build_full_map(n_double: int = 10, n_single: int = 20) -> dict:
 _FULL_MAP = _build_full_map(10, 20)
 
 
-class LongCatKeyMap:
+class LongCatGGUFKeyMap:
     """
     Translates ComfyUI LongCat GGUF tensor names (FLUX-style) back to
     Hugging Face Diffusers LongCatImageTransformer2DModel names.

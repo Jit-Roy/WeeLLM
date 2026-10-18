@@ -8,7 +8,7 @@ naming but with a few structural differences (fused QKV, renamed prefixes).
 from typing import Any, Dict, List
 
 
-class ZImageKeyMap:
+class ZImageGGUFKeyMap:
     NAME = "z-image"
 
     @staticmethod
@@ -22,7 +22,7 @@ class ZImageKeyMap:
     def build_remap(gguf_keys: List[str]) -> Dict[str, Any]:
         remap: Dict[str, Any] = {}
         for name in gguf_keys:
-            entries = ZImageKeyMap._remap_one(name)
+            entries = ZImageGGUFKeyMap._remap_one(name)
             remap[name] = entries
         return remap
 

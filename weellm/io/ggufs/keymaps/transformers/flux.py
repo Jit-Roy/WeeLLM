@@ -94,7 +94,7 @@ _FLUX_KEY_MAP = {
 }
 
 
-class FluxKeyMap:
+class FluxGGUFKeyMap:
     NAME = "flux"
 
     @staticmethod

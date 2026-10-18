@@ -130,7 +130,7 @@ def _expand_unet_blocks(base_map: Dict, blocks: list) -> Dict[str, str]:
     return remap
 
 
-class SDXLKeyMap:
+class SDXLGGUFKeyMap:
     NAME = "sdxl"
 
     @staticmethod

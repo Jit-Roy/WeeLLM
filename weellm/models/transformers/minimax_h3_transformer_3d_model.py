@@ -238,7 +238,7 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
             elif ".mlp.fc2." in dk:
                 dk = dk.replace(".mlp.fc2.", ".ff.net.2.")
             else:
-                # GGUF: MiniMaxH3KeyMap renamed fc1->ff.net.0.proj; still need gate/value swap
+                # GGUF: MiniMaxH3GGUFKeyMap renamed fc1->ff.net.0.proj; still need gate/value swap
                 if ".ff.net.0.proj." in dk and tensor.dim() >= 1 and tensor.shape[0] > 1:
                     if self.seeker.__class__.__name__ == "GGUFSeeker":
                         # Swap on CPU to avoid VRAM fragmentation OOM (294 MiB torch.cat peak)

@@ -1,5 +1,5 @@
 """
-weellm/gguf_keymaps/__init__.py -- Registry of all GGUF key-map plugins.
+weellm/io/ggufs/keymaps/__init__.py -- Registry of all GGUF key-map plugins.
 
 Adding a new architecture:
   1. Create a new file in this directory (e.g. myarch.py).
@@ -16,59 +16,59 @@ more-general ones to avoid false matches.
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
-from weellm.io.ggufs.keymaps.text_encoders.t5     import T5KeyMap
-from weellm.io.ggufs.keymaps.text_encoders.llama  import LlamaKeyMap
-from weellm.io.ggufs.keymaps.text_encoders.gemma4  import Gemma4KeyMap
-from weellm.io.ggufs.keymaps.transformers.flux   import FluxKeyMap
-from weellm.io.ggufs.keymaps.transformers.flux2  import Flux2KeyMap
-from weellm.io.ggufs.keymaps.transformers.flux3  import Flux3KeyMap
-from weellm.io.ggufs.keymaps.text_encoders.glm    import GLMKeyMap
-from weellm.io.ggufs.keymaps.transformers.sd3    import SD3KeyMap
-from weellm.io.ggufs.keymaps.transformers.sdxl   import SDXLKeyMap
-from weellm.io.ggufs.keymaps.transformers.sd15   import SD15KeyMap
-from weellm.io.ggufs.keymaps.transformers.krea2  import Krea2KeyMap
-from weellm.io.ggufs.keymaps.transformers.zimage import ZImageKeyMap
-from weellm.io.ggufs.keymaps.transformers.minimax_h3 import MiniMaxH3KeyMap
-from weellm.io.ggufs.keymaps.text_encoders.qwen3vl import Qwen3VLKeyMap
-from weellm.io.ggufs.keymaps.transformers.ltx25 import LTX25KeyMap
-from weellm.io.ggufs.keymaps.transformers.qwen_image_21 import QwenImage21KeyMap
-from weellm.io.ggufs.keymaps.transformers.longcat import LongCatKeyMap
-from weellm.io.ggufs.keymaps.transformers.auraflow import AuraFlowKeyMap
-from weellm.io.ggufs.keymaps.transformers.cogview4 import CogView4KeyMap
-from weellm.io.ggufs.keymaps.transformers.ernie_image import ErnieImageKeyMap
-from weellm.io.ggufs.keymaps.transformers.hidream import HiDreamKeyMap
-from weellm.io.ggufs.keymaps.transformers.ideogram4 import Ideogram4KeyMap
-from weellm.io.ggufs.keymaps.transformers.lumina2 import Lumina2KeyMap
-from weellm.io.ggufs.keymaps.transformers.qwen_image import QwenImageKeyMap
+from weellm.io.ggufs.keymaps.text_encoders.t5     import T5GGUFKeyMap
+from weellm.io.ggufs.keymaps.text_encoders.llama  import LlamaGGUFKeyMap
+from weellm.io.ggufs.keymaps.text_encoders.gemma4  import Gemma4GGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.flux   import FluxGGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.flux2  import Flux2GGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.flux3  import Flux3GGUFKeyMap
+from weellm.io.ggufs.keymaps.text_encoders.glm    import GLMGGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.sd3    import SD3GGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.sdxl   import SDXLGGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.sd15   import SD15GGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.krea2  import Krea2GGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.zimage import ZImageGGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.minimax_h3 import MiniMaxH3GGUFKeyMap
+from weellm.io.ggufs.keymaps.text_encoders.qwen3vl import Qwen3VLGGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.ltx25 import LTX25GGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.qwen_image_21 import QwenImage21GGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.longcat import LongCatGGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.auraflow import AuraFlowGGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.cogview4 import CogView4GGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.ernie_image import ErnieImageGGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.hidream import HiDreamGGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.ideogram4 import Ideogram4GGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.lumina2 import Lumina2GGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.qwen_image import QwenImageGGUFKeyMap
 
 logger = logging.getLogger("weellm")
 
 # Ordered: first match wins.  Put more-specific detectors at the top.
 _REGISTRY = [
-    T5KeyMap,       # enc.blk.*  — must come before llama (no overlap, but explicit ordering)
-    GLMKeyMap,      # GLM text encoder: token_embd + blk.* + ffn_gate
-    Gemma4KeyMap,   # multi_modal_projector.* + *.layer_scalar (already diffusers naming)
-    LlamaKeyMap,    # blk.*
-    Flux2KeyMap,    # Flux.2 Klein: 8 double + 24 single blocks
-    Flux3KeyMap,    # Flux.3 Image Klein: content_mode_blocks + single_blocks
-    LongCatKeyMap,  # MUST come before FluxKeyMap: uses double_blocks.* but NO vec_in/guidance_in
-    AuraFlowKeyMap, # double_layers.* + w2q naming
-    FluxKeyMap,     # double_blocks.*
-    SD3KeyMap,      # joint_blocks.*
-    SDXLKeyMap,     # model.diffusion_model.* + label_emb / transformer_blocks.9
-    SD15KeyMap,     # model.diffusion_model.* (no SDXL markers)
-    Krea2KeyMap,    # txtfusion.* or blocks.0.attn.qknorm.*
-    ZImageKeyMap,   # context_refiner.* / noise_refiner.*
-    Qwen3VLKeyMap,  # visual.blocks.* + model.layers.* (unsloth Qwen3VL TE GGUF)
-    MiniMaxH3KeyMap,# blocks.* (MiniMax H3 checkpoint convention)
-    LTX25KeyMap,    # ltxv native keys
-    QwenImage21KeyMap,
-    CogView4KeyMap,
-    ErnieImageKeyMap,
-    HiDreamKeyMap,
-    Ideogram4KeyMap,
-    Lumina2KeyMap,
-    QwenImageKeyMap,
+    T5GGUFKeyMap,       # enc.blk.*  — must come before llama (no overlap, but explicit ordering)
+    GLMGGUFKeyMap,      # GLM text encoder: token_embd + blk.* + ffn_gate
+    Gemma4GGUFKeyMap,   # multi_modal_projector.* + *.layer_scalar (already diffusers naming)
+    LlamaGGUFKeyMap,    # blk.*
+    Flux2GGUFKeyMap,    # Flux.2 Klein: 8 double + 24 single blocks
+    Flux3GGUFKeyMap,    # Flux.3 Image Klein: content_mode_blocks + single_blocks
+    LongCatGGUFKeyMap,  # MUST come before FluxGGUFKeyMap: uses double_blocks.* but NO vec_in/guidance_in
+    AuraFlowGGUFKeyMap, # double_layers.* + w2q naming
+    FluxGGUFKeyMap,     # double_blocks.*
+    SD3GGUFKeyMap,      # joint_blocks.*
+    SDXLGGUFKeyMap,     # model.diffusion_model.* + label_emb / transformer_blocks.9
+    SD15GGUFKeyMap,     # model.diffusion_model.* (no SDXL markers)
+    Krea2GGUFKeyMap,    # txtfusion.* or blocks.0.attn.qknorm.*
+    ZImageGGUFKeyMap,   # context_refiner.* / noise_refiner.*
+    Qwen3VLGGUFKeyMap,  # visual.blocks.* + model.layers.* (unsloth Qwen3VL TE GGUF)
+    MiniMaxH3GGUFKeyMap,# blocks.* (MiniMax H3 checkpoint convention)
+    LTX25GGUFKeyMap,    # ltxv native keys
+    QwenImage21GGUFKeyMap,
+    CogView4GGUFKeyMap,
+    ErnieImageGGUFKeyMap,
+    HiDreamGGUFKeyMap,
+    Ideogram4GGUFKeyMap,
+    Lumina2GGUFKeyMap,
+    QwenImageGGUFKeyMap,
 ]
 
 
@@ -101,28 +101,28 @@ def build_remap_fn(gguf_keys: List[str], arch: str = "unknown") -> tuple[Callabl
 
 __all__ = [
     "build_remap_fn",
-    "T5KeyMap",
-    "LlamaKeyMap",
-    "Gemma4KeyMap",
-    "GLMKeyMap",
-    "FluxKeyMap",
-    "Flux2KeyMap",
-    "Flux3KeyMap",
-    "SD3KeyMap",
-    "SDXLKeyMap",
-    "SD15KeyMap",
-    "Krea2KeyMap",
-    "ZImageKeyMap",
-    "Qwen3VLKeyMap",
-    "MiniMaxH3KeyMap",
-    "LTX25KeyMap",
-    "QwenImage21KeyMap",
-    "LongCatKeyMap",
-    "AuraFlowKeyMap",
-    "CogView4KeyMap",
-    "ErnieImageKeyMap",
-    "HiDreamKeyMap",
-    "Ideogram4KeyMap",
-    "Lumina2KeyMap",
-    "QwenImageKeyMap",
+    "T5GGUFKeyMap",
+    "LlamaGGUFKeyMap",
+    "Gemma4GGUFKeyMap",
+    "GLMGGUFKeyMap",
+    "FluxGGUFKeyMap",
+    "Flux2GGUFKeyMap",
+    "Flux3GGUFKeyMap",
+    "SD3GGUFKeyMap",
+    "SDXLGGUFKeyMap",
+    "SD15GGUFKeyMap",
+    "Krea2GGUFKeyMap",
+    "ZImageGGUFKeyMap",
+    "Qwen3VLGGUFKeyMap",
+    "MiniMaxH3GGUFKeyMap",
+    "LTX25GGUFKeyMap",
+    "QwenImage21GGUFKeyMap",
+    "LongCatGGUFKeyMap",
+    "AuraFlowGGUFKeyMap",
+    "CogView4GGUFKeyMap",
+    "ErnieImageGGUFKeyMap",
+    "HiDreamGGUFKeyMap",
+    "Ideogram4GGUFKeyMap",
+    "Lumina2GGUFKeyMap",
+    "QwenImageGGUFKeyMap",
 ]

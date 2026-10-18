@@ -8,7 +8,7 @@ where <rest> matches the GGUF Krea2 key convention (blocks.{i}.attn.wq.weight,
 txtfusion.layerwise_blocks.{i}.*, etc.).
 
 This keymap strips the outer "model.diffusion_model." prefix so that the
-resulting keys are identical to what the GGUF Krea2KeyMap produces — and
+resulting keys are identical to what the GGUF Krea2GGUFKeyMap produces — and
 therefore identical to diffusers convention.
 
 Detection:  any key starts with "model.diffusion_model."

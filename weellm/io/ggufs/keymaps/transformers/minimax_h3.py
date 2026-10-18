@@ -183,7 +183,7 @@ def _build_block_entries(gguf_key: str, diffusers_key: str) -> list:
     return [(diffusers_key, None)]
 
 
-class MiniMaxH3KeyMap:
+class MiniMaxH3GGUFKeyMap:
     NAME = "minimax-h3"
 
     @staticmethod

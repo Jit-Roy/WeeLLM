@@ -11,7 +11,7 @@ Ernie Image is NOT present in that function, confirming native diffusers naming.
 from typing import Any, Dict, List
 
 
-class ErnieImageKeyMap:
+class ErnieImageGGUFKeyMap:
     """
     Strips the ComfyUI "model.diffusion_model." prefix from Ernie Image GGUF files.
     """

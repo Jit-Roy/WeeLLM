@@ -24,7 +24,7 @@ _T5_KEY_MAP = {
 }
 
 
-class T5KeyMap:
+class T5GGUFKeyMap:
     NAME = "t5-encoder"
 
     @staticmethod

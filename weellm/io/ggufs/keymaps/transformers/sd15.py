@@ -76,7 +76,7 @@ _SD15_BASE_MAP = {
 }
 
 
-class SD15KeyMap:
+class SD15GGUFKeyMap:
     NAME = "sd15"
 
     @staticmethod

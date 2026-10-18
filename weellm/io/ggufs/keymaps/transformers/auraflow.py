@@ -71,7 +71,7 @@ def _build_full_map(n_double: int, n_single: int) -> dict:
     return m
 
 
-class AuraFlowKeyMap:
+class AuraFlowGGUFKeyMap:
     """
     Translates ComfyUI AuraFlow GGUF tensor names back to
     Hugging Face Diffusers AuraFlowTransformer2DModel names.

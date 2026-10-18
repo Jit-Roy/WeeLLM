@@ -17,7 +17,7 @@ from typing import Any, Dict, List
 import torch
 
 
-class Flux3KeyMap:
+class Flux3GGUFKeyMap:
     NAME = "flux3"
 
     @staticmethod

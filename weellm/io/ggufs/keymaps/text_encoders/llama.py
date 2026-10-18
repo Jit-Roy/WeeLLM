@@ -27,7 +27,7 @@ _LLAMA_KEY_MAP = {
 }
 
 
-class LlamaKeyMap:
+class LlamaGGUFKeyMap:
     NAME = "llama-gguf"
 
     @staticmethod

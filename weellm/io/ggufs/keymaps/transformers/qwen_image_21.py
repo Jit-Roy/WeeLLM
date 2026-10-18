@@ -7,7 +7,7 @@ Uses imperative passthrough because the keys are already perfectly aligned with 
 from typing import Any, Dict, List
 
 
-class QwenImage21KeyMap:
+class QwenImage21GGUFKeyMap:
     NAME = "qwen21"
 
     @staticmethod

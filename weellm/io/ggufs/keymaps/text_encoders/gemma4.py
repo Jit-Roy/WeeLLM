@@ -26,7 +26,7 @@ Detected by: presence of "multi_modal_projector.embedding_projection.weight"
 from typing import Any, Dict, List
 
 
-class Gemma4KeyMap:
+class Gemma4GGUFKeyMap:
     NAME = "gemma4-ltx25-te"
 
     @staticmethod

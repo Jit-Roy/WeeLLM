@@ -3,7 +3,7 @@
 from typing import Any, Dict, List
 
 
-class GLMKeyMap:
+class GLMGGUFKeyMap:
     NAME = "glm"
 
     @staticmethod

@@ -11,7 +11,7 @@ Qwen Image is NOT present in that function, confirming native diffusers naming.
 from typing import Any, Dict, List
 
 
-class QwenImageKeyMap:
+class QwenImageGGUFKeyMap:
     """
     Strips the ComfyUI "model.diffusion_model." prefix from Qwen Image GGUF files.
     """
