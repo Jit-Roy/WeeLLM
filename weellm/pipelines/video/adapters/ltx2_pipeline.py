@@ -63,10 +63,10 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
             
             if "connectors" in index and "connectors" not in kwargs:
                 try:
-                    from weellm.models.transformers.ltx2_connectors import LTX2ConnectorsStreamer
+                    from weellm.models.transformers.ltx2_connectors import LTX2TextConnectorsStreamer
                     cache_to_ram = kwargs.get("cache_to_ram", False)
                     
-                    conn = LTX2ConnectorsStreamer.from_pretrained(
+                    conn = LTX2TextConnectorsStreamer.from_pretrained(
                         model_dir_path / "connectors", device=device, dtype=dtype, cache_to_ram=cache_to_ram
                     )
                     conn_model = getattr(conn, "model", getattr(conn, "_model", conn))

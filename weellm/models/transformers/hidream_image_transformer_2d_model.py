@@ -1,5 +1,5 @@
 """
-hidream_transformer_2d_model.py -- Hook-based layer streaming for HiDreamImageTransformer2DModel.
+hidream_image_transformer_2d_model.py -- Hook-based layer streaming for HiDreamImageTransformer2DModel.
 
 Streams `double_stream_blocks` and `single_stream_blocks`.
 Keeps embeddings and final layers resident on GPU.

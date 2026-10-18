@@ -1,7 +1,7 @@
 from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
 from .base_transformer_streamer import BaseTransformerStreamer
 
-class LTX2ConnectorsStreamer(BaseTransformerStreamer):
+class LTX2TextConnectorsStreamer(BaseTransformerStreamer):
     def _get_model_cls(self):
         return LTX2TextConnectors
 

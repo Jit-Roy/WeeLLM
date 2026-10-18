@@ -1,5 +1,5 @@
 """
-longcat_transformer_2d_model.py -- Hook-based layer-streaming for LongCatImageTransformer2DModel.
+longcat_image_transformer_2d_model.py -- Hook-based layer-streaming for LongCatImageTransformer2DModel.
 
 Architecture (LongCat-Image):
   - 10 joint transformer blocks (transformer_blocks.0..9)

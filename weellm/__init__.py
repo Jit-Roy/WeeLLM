@@ -61,7 +61,7 @@ __all__ = [
     "ErnieImageTransformer2DModelStreamer",
     "Krea2Transformer2DModelStreamer",
     "LongCatImageTransformer2DModelStreamer",
-    "LTX2ConnectorsStreamer",
+    "LTX2TextConnectorsStreamer",
     "LTX2VideoTransformer3DModelStreamer",
     "MiniMaxH3Transformer3DModelStreamer",
     "MOSSImageTransformerStreamer",
@@ -115,15 +115,15 @@ from .models.transformers.z_image_transformer_2d_model   import ZImageTransforme
 from .models.transformers.sd3_transformer_2d_model        import SD3Transformer2DModelStreamer  # noqa: E402
 from .models.transformers.auraflow_transformer_2d_model  import AuraFlowTransformer2DModelStreamer  # noqa: E402
 from .models.transformers.cogview4_transformer_2d_model  import CogView4Transformer2DModelStreamer  # noqa: E402
-from .models.transformers.hidream_transformer_2d_model   import HiDreamImageTransformer2DModelStreamer  # noqa: E402
+from .models.transformers.hidream_image_transformer_2d_model import HiDreamImageTransformer2DModelStreamer  # noqa: E402
 from .models.transformers.lumina2_transformer_2d_model   import Lumina2Transformer2DModelStreamer  # noqa: E402
 from .models.transformers.qwen_image_transformer_2d_model import QwenImageTransformer2DModelStreamer  # noqa: E402
 from .models.transformers.qwen_image_2_1_transformer_2d_model import QwenImage21Transformer2DModelStreamer  # noqa: E402
 from .models.transformers.ideogram4_transformer_2d_model import Ideogram4Transformer2DModelStreamer  # noqa: E402
 from .models.transformers.ernie_image_transformer_2d_model import ErnieImageTransformer2DModelStreamer  # noqa: E402
 from .models.transformers.krea2_transformer_2d_model import Krea2Transformer2DModelStreamer  # noqa: E402
-from .models.transformers.longcat_transformer_2d_model import LongCatImageTransformer2DModelStreamer  # noqa: E402
-from .models.transformers.ltx2_connectors import LTX2ConnectorsStreamer  # noqa: E402
+from .models.transformers.longcat_image_transformer_2d_model import LongCatImageTransformer2DModelStreamer  # noqa: E402
+from .models.transformers.ltx2_connectors import LTX2TextConnectorsStreamer  # noqa: E402
 from .models.transformers.ltx2_video_transformer_3d_model import LTX2VideoTransformer3DModelStreamer  # noqa: E402
 from .models.transformers.minimax_h3_transformer_3d_model import MiniMaxH3Transformer3DModelStreamer  # noqa: E402
 from .models.transformers.moss_image_transformer_2d_model import MOSSImageTransformerStreamer  # noqa: E402
