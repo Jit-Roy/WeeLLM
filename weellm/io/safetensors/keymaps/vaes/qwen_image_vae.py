@@ -161,7 +161,7 @@ def _translate_key(key: str) -> str:
     return _gamma_beta(k)
 
 
-class QwenImageVAEKeyMap:
+class QwenImageVAESafetensorsKeyMap:
     NAME = "qwen-image-vae-original"
 
     @staticmethod

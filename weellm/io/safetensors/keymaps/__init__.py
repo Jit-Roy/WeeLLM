@@ -22,13 +22,13 @@ logger = logging.getLogger("weellm")
 
 from weellm.io.safetensors.keymaps.transformers.flux3 import Flux3SafetensorsKeyMap
 from weellm.io.safetensors.keymaps.transformers.krea2 import Krea2SafetensorsKeyMap
-from weellm.io.safetensors.keymaps.vaes.qwen_image_vae import QwenImageVAEKeyMap
+from weellm.io.safetensors.keymaps.vaes.qwen_image_vae import QwenImageVAESafetensorsKeyMap
 
 # Ordered: first match wins. Place more-specific detectors first.
 _REGISTRY = [
     Flux3SafetensorsKeyMap,  # FLUX.3 DiT and variant exports (fp8r, nvfp4, etc.)
     Krea2SafetensorsKeyMap,   # model.diffusion_model.* (gonzalomo ComfyUI)
-    QwenImageVAEKeyMap,        # conv1/conv2 + decoder.upsamples.* (original Wan/Qwen VAE)
+    QwenImageVAESafetensorsKeyMap,  # conv1/conv2 + decoder.upsamples.* (original Wan/Qwen VAE)
 ]
 
 
@@ -65,5 +65,5 @@ __all__ = [
     "build_remap_fn",
     "Flux3SafetensorsKeyMap",
     "Krea2SafetensorsKeyMap",
-    "QwenImageVAEKeyMap",
+    "QwenImageVAESafetensorsKeyMap",
 ]

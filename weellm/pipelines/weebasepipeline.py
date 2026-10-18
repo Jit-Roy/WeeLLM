@@ -83,7 +83,7 @@ _TR_MAP = {
     "Lumina2Transformer2DModel":           "weellm.models.transformers.lumina2_transformer_2d_model",
     "AuraFlowTransformer2DModel":          "weellm.models.transformers.auraflow_transformer_2d_model",
     "HiDreamImageTransformer2DModel":      "weellm.models.transformers.hidream_transformer_2d_model",
-    "Ideogram4Transformer2DModel":         "weellm.models.transformers.ideogram4_transformer",
+    "Ideogram4Transformer2DModel":         "weellm.models.transformers.ideogram4_transformer_2d_model",
     "WanTransformer3DModel":               "weellm.models.transformers.wan_transformer_3d_model",
     "UNet2DConditionModel":                "weellm.models.unets.unet_2d_condition_model",
     "ErnieImageTransformer2DModel":        "weellm.models.transformers.ernie_image_transformer_2d_model",

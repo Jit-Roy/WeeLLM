@@ -119,7 +119,7 @@ from .models.transformers.hidream_transformer_2d_model   import HiDreamImageTran
 from .models.transformers.lumina2_transformer_2d_model   import Lumina2Transformer2DModelStreamer  # noqa: E402
 from .models.transformers.qwen_image_transformer_2d_model import QwenImageTransformer2DModelStreamer  # noqa: E402
 from .models.transformers.qwen_image_2_1_transformer_2d_model import QwenImage21Transformer2DModelStreamer  # noqa: E402
-from .models.transformers.ideogram4_transformer          import Ideogram4Transformer2DModelStreamer  # noqa: E402
+from .models.transformers.ideogram4_transformer_2d_model import Ideogram4Transformer2DModelStreamer  # noqa: E402
 from .models.transformers.ernie_image_transformer_2d_model import ErnieImageTransformer2DModelStreamer  # noqa: E402
 from .models.transformers.krea2_transformer_2d_model import Krea2Transformer2DModelStreamer  # noqa: E402
 from .models.transformers.longcat_transformer_2d_model import LongCatImageTransformer2DModelStreamer  # noqa: E402

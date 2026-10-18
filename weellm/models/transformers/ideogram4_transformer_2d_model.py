@@ -1,5 +1,5 @@
 """
-ideogram4_transformer.py -- Hook-based layer-streaming for Ideogram 4 diffusion transformer.
+ideogram4_transformer_2d_model.py -- Hook-based layer-streaming for Ideogram 4 diffusion transformer.
 
 Uses the Double-Stream buffer overlap to load the massive 34 FP8 blocks directly from the SSD
 while maintaining under 4.0 GB VRAM footprint.

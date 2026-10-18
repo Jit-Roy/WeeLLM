@@ -1,5 +1,5 @@
 """
-lazy_vae.py -- Memory-efficient VAE streamer for WeeLLM.
+autoencoder_kl.py -- Memory-efficient VAE streamer for WeeLLM.
 
 Strategy
 --------
