@@ -99,6 +99,7 @@ WeeLLM dynamically streams text encoder and transformer layers to the GPU for ma
 - Qwen Image Edit
 - Qwen Image 2.1
 - HiDream E1 Full
+- JoyAI Image Edit
 
 ## Video Generation Models
 

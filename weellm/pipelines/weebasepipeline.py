@@ -89,6 +89,7 @@ _TR_MAP = {
     "MiniMaxH3Transformer3DModel":         "weellm.models.transformers.minimax_h3_transformer_3d_model",
     "LTX2VideoTransformer3DModel":         "weellm.models.transformers.ltx2_video_transformer_3d_model",
     "MOSSImageTransformer":                "weellm.models.transformers.moss_image_transformer_2d_model",
+    "JoyImageEditTransformer3DModel":      "weellm.models.transformers.joy_image_edit_transformer_3d_model",
 }
 
 # ---------------------------------------------------------------------------
@@ -288,7 +289,8 @@ class WeeBasePipeline:
         # ----------------------------------
         
         try:
-            return self._pipeline(*args, **kwargs)
+            with torch.inference_mode():
+                return self._pipeline(*args, **kwargs)
         except torch.cuda.OutOfMemoryError:
             transformer = getattr(self._pipeline, "transformer", None)
             if transformer is None:
@@ -1205,13 +1207,36 @@ class WeeBasePipeline:
                 return result
             pipeline._encode_vae_image = types.MethodType(safe_encode_vae, pipeline)
 
+        # In pipelines that implement prepare_latents (e.g. JoyImageEditPipeline),
+        # if VAE is float32, image_latents from vae.encode is float32, which promotes
+        # latents to float32 and crashes the bfloat16 transformer.
+        # We patch prepare_latents to cast returned latents to the transformer's dtype.
+        if hasattr(pipeline, "prepare_latents"):
+            orig_prepare_latents = pipeline.prepare_latents
+            def safe_prepare_latents(self_obj, *args, **kwargs):
+                res = orig_prepare_latents(*args, **kwargs)
+                tr = getattr(self_obj, "transformer", getattr(self_obj, "unet", None))
+                tr_dtype = getattr(tr, "dtype", None)
+                if tr_dtype is None and hasattr(tr, "_weellm_streamer"):
+                    tr_dtype = getattr(tr._weellm_streamer, "dtype", None)
+                if tr_dtype is not None:
+                    if isinstance(res, tuple):
+                        res = tuple(
+                            (t.to(tr_dtype) if torch.is_tensor(t) and t.is_floating_point() and t.dtype != tr_dtype else t)
+                            for t in res
+                        )
+                    elif torch.is_tensor(res) and res.is_floating_point() and res.dtype != tr_dtype:
+                        res = res.to(tr_dtype)
+                return res
+            pipeline.prepare_latents = types.MethodType(safe_prepare_latents, pipeline)
+
         def _evict_module_to_meta(module, label: str) -> None:
             if module is None or not isinstance(module, torch.nn.Module):
                 return
             evicted = evict_module(module)
             if cuda_available:
                 torch.cuda.empty_cache()
-            logger.debug("[WeeLLM Offload] Evicted %d tensors to meta (%s).", evicted, label)
+            logger.info("[WeeLLM Offload] Evicted %d tensors to meta (%s).", evicted, label)
 
         # TE eviction hook: runs on FIRST forward of transformer/unet
         def _evict_te_before_unet(module, args):

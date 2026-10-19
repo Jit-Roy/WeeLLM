@@ -36,6 +36,7 @@ to eliminate disk I/O on future steps).
 
 from __future__ import annotations
 
+import gc
 import logging
 import threading
 import time
@@ -47,6 +48,9 @@ import torch
 import torch.nn as nn
 from accelerate.utils import set_module_tensor_to_device
 from weellm.io.memory import place_tensors, evict_module
+from weellm.io.utils import clean_memory
+from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
+from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
 
 logger = logging.getLogger("weellm")
 
@@ -488,8 +492,6 @@ class BaseTransformerStreamer(ABC):
                         new_sd[k] = v
                     if isinstance(v, torch.Tensor):
                         del v
-                from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
-                from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
                 new_sd = process_comfy_tensors(new_sd)
                 new_sd = process_gguf_tensors(new_sd)
         else:
@@ -501,11 +503,8 @@ class BaseTransformerStreamer(ABC):
                     new_sd[k] = v
                 if isinstance(v, torch.Tensor):
                     del v
-            from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
-            from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
             new_sd = process_comfy_tensors(new_sd)
             new_sd = process_gguf_tensors(new_sd)
-                
         return new_sd
 
     def _pre_hook(self, module: nn.Module, args):
@@ -558,8 +557,6 @@ class BaseTransformerStreamer(ABC):
                                 sd[k] = v.to(self.device)
                             else:
                                 sd[k] = v
-                        from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
-                        from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
                         sd = process_comfy_tensors(sd)
                         sd = process_gguf_tensors(sd)
 
@@ -608,11 +605,18 @@ class BaseTransformerStreamer(ABC):
         # Launch background operations for upcoming blocks
         # ------------------------------------------------------------------
         if self.prefetch and self._disk_executor is not None:
+            n_total = len(self._shard_order)
+            disk_kwargs = (
+                {"process_gguf": False}
+                if "ggufs" in self.seeker.__module__
+                else {"process_comfy": False}
+            )
+
             # 1. Queue H2D transfer for exactly the NEXT block (pos + 1)
             # ONLY if we have proven it's safe during calibration
             if self._db_calibration_done and self._double_buffering_enabled:
                 next_pos = pos + 1
-                if next_pos < len(self._shard_order):
+                if next_pos < n_total:
                     next_name, _ = self._shard_order[next_pos]
                     if next_name not in self._pinned_blocks:
                         with self._lock:
@@ -621,11 +625,11 @@ class BaseTransformerStreamer(ABC):
                                 self._h2d_futures[next_name] = self._h2d_executor.submit(
                                     self._do_h2d, next_name, nkeys
                                 )
-            
-            # 2. Queue Disk reads for up to prefetch_depth blocks
+
+            # 2. Queue Disk reads for up to prefetch_depth blocks ahead
             for ahead in range(1, self._prefetch_depth + 1):
                 npos = pos + ahead
-                if npos >= len(self._shard_order):
+                if npos >= n_total:
                     break
                 ahead_name, _ = self._shard_order[npos]
                 if ahead_name in self._pinned_blocks:
@@ -634,7 +638,8 @@ class BaseTransformerStreamer(ABC):
                     if ahead_name not in self._disk_futures:
                         akeys = self._get_layer_keys(ahead_name)
                         self._disk_futures[ahead_name] = self._disk_executor.submit(
-                            self.seeker.get_tensors, akeys, "cpu", self.dtype, False
+                            self.seeker.get_tensors, akeys, "cpu", self.dtype,
+                            **disk_kwargs
                         )
 
         return args
@@ -656,15 +661,17 @@ class BaseTransformerStreamer(ABC):
         # Dynamic Double-Buffering Calibration (End of Block 0)
         # ------------------------------------------------------------------
         if not self._db_calibration_done and torch.cuda.is_available():
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.reset_peak_memory_stats(self.device)
             max_reserved = torch.cuda.max_memory_reserved(self.device)
             global_vram_budget_gb = getattr(self.__class__, "_global_vram_budget_gb", None)
             if global_vram_budget_gb is not None:
                 total_vram = global_vram_budget_gb * 1024**3
             else:
-                _, total_vram = torch.cuda.mem_get_info(self.device)
+                free_vram, total_vram_raw = torch.cuda.mem_get_info(self.device)
+                non_pytorch_vram = max(
+                    0,
+                    total_vram_raw - free_vram - torch.cuda.memory_reserved(self.device),
+                )
+                total_vram = max(0, total_vram_raw - non_pytorch_vram)
             
             block_size = sum(
                 p.numel() * p.element_size()

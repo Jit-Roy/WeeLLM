@@ -62,6 +62,7 @@ __all__ = [
     "LTX2VideoTransformer3DModelStreamer",
     "MiniMaxH3Transformer3DModelStreamer",
     "MOSSImageTransformerStreamer",
+    "JoyImageEditTransformer3DModelStreamer",
     # Text Encoders
     "ChatGLMModelStreamer",
     "CLIPTextModelStreamer",
@@ -125,6 +126,7 @@ from .models.transformers.ltx2_connectors import LTX2TextConnectorsStreamer  # n
 from .models.transformers.ltx2_video_transformer_3d_model import LTX2VideoTransformer3DModelStreamer  # noqa: E402
 from .models.transformers.minimax_h3_transformer_3d_model import MiniMaxH3Transformer3DModelStreamer  # noqa: E402
 from .models.transformers.moss_image_transformer_2d_model import MOSSImageTransformerStreamer  # noqa: E402
+from .models.transformers.joy_image_edit_transformer_3d_model import JoyImageEditTransformer3DModelStreamer  # noqa: E402
 
 # Text Encoders
 from .models.text_encoders.chatglm_model import ChatGLMModelStreamer  # noqa: E402

@@ -99,7 +99,9 @@ class FluxGGUFKeyMap:
 
     @staticmethod
     def detect(gguf_keys: List[str], arch: str) -> bool:
-        return any(k.startswith("double_blocks.") for k in gguf_keys)
+        return any(k.startswith("double_blocks.") for k in gguf_keys) and any(
+            k.startswith("single_blocks.") for k in gguf_keys
+        )
 
     @staticmethod
     def build_remap(gguf_keys: List[str]) -> Dict[str, Any]:

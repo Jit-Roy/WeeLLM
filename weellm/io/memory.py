@@ -20,6 +20,7 @@ No other code should import ``set_module_tensor_to_device`` directly.
 
 from __future__ import annotations
 
+import itertools
 from typing import Dict
 
 import torch
@@ -160,16 +161,23 @@ def evict_module(module: nn.Module) -> int:
     int — number of tensors evicted.
     """
     evicted = 0
+    seen_ids: set = set()
 
-    for name, tensor in list(module.named_parameters(recurse=True)) + list(module.named_buffers(recurse=True)):
+    for name, tensor in itertools.chain(
+        module.named_parameters(recurse=True),
+        module.named_buffers(recurse=True),
+    ):
+        tid = id(tensor)
+        if tid in seen_ids:
+            continue
         dev = getattr(tensor, "device", None)
         if dev is not None and dev.type != "meta":
             try:
                 set_module_tensor_to_device(module, name, "meta")
                 evicted += 1
+                seen_ids.add(tid)
             except Exception:
                 pass
-
 
     return evicted
 

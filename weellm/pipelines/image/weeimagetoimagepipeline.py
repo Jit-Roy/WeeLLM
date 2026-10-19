@@ -21,6 +21,7 @@ IMG2IMG_MAPPING = {
     "Flux2KleinPipeline": "Flux2KleinPipeline", 
     "FluxFillPipeline": "FluxFillPipeline",
     "QwenImage21Pipeline": "QwenImage21Pipeline",
+    "JoyImageEditPipeline": "JoyImageEditPipeline",
 }
 
 class WeeImageToImagePipeline(WeeBasePipeline):

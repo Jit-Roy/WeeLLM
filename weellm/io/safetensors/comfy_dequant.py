@@ -49,34 +49,68 @@ def expand_comfy_keys(keys: list[str], weight_map: Dict[str, str]) -> list[str]:
                         expanded_keys.append(candidate)
 
             # ── NVFP4 / E2M1 group quantization (e.g. BFL / ModelOpt NVFP4) ───
-            if (prefix + ".weight_scale_2") in weight_map:
+            if (
+                (prefix + ".weight_scale_2") in weight_map
+                and meta_key not in weight_map
+                and svdq_l1_key not in weight_map
+            ):
                 for suffix in ["weight_scale", "weight_scale_2", "input_scale"]:
                     candidate = prefix + "." + suffix
                     if candidate in weight_map:
                         expanded_keys.append(candidate)
 
-            # ── Per-channel scaled FP8 (e.g. BFL / ComfyUI FP8) ───────────────
+            # ── Scaled FP8 (e.g. BFL / ComfyUI FP8) ───────────────
             elif (
                 (prefix + ".weight_scale") in weight_map
                 and meta_key not in weight_map
                 and svdq_l1_key not in weight_map
             ):
                 expanded_keys.append(prefix + ".weight_scale")
+                if (prefix + ".input_scale") in weight_map:
+                    expanded_keys.append(prefix + ".input_scale")
 
     # deduplicate but preserve order
     return list(dict.fromkeys(expanded_keys))
 
 
+def _unswizzle_cublas_scales(blocked_tensor: torch.Tensor, original_rows: int, original_cols: int) -> torch.Tensor:
+    """
+    Unswizzle 2D scales stored in cuBLAS 128x4 tiled block layout back to (original_rows, original_cols).
+    cuBLASLt NVFP4 scales are stored in blocks of 128 rows x 4 cols, with internal (32, 16) layout.
+    """
+    n_row_blocks = (original_rows + 127) // 128
+    n_col_blocks = (original_cols + 3) // 4
+    required_numel = n_row_blocks * n_col_blocks * 32 * 16
+    if blocked_tensor.numel() != required_numel:
+        return blocked_tensor.reshape(original_rows, original_cols)
+    rearranged = blocked_tensor.contiguous().view(n_row_blocks * n_col_blocks, 32, 16)
+    temp = rearranged.reshape(n_row_blocks * n_col_blocks, 32, 4, 4).transpose(1, 2)
+    blocks = temp.reshape(n_row_blocks, n_col_blocks, 128, 4)
+    padded = blocks.permute(0, 2, 1, 3).reshape(n_row_blocks * 128, n_col_blocks * 4)
+    return padded[:original_rows, :original_cols]
+
+
 def process_fp8_and_nvfp4_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """Dequantize per-channel scaled FP8 and packed E2M1 (NVFP4) tensors."""
     target_dtype = torch.bfloat16
-    for tensor in result.values():
-        if isinstance(tensor, torch.Tensor) and tensor.is_floating_point() and tensor.dtype not in (
-            torch.float8_e4m3fn,
-            torch.float8_e5m2,
+    # Priority: find a floating-point model weight or bias (not a scale metadata tensor)
+    for k, tensor in result.items():
+        if (
+            isinstance(tensor, torch.Tensor)
+            and tensor.is_floating_point() and tensor.dtype not in (torch.float8_e4m3fn, torch.float8_e5m2)
+            and not any(k.endswith(s) for s in (".weight_scale", ".weight_scale_2", ".input_scale"))
         ):
             target_dtype = tensor.dtype
             break
+    else:
+        for tensor in result.values():
+            if (
+                isinstance(tensor, torch.Tensor)
+                and tensor.is_floating_point()
+                and tensor.dtype not in (torch.float8_e4m3fn, torch.float8_e5m2)
+            ):
+                target_dtype = tensor.dtype
+                break
 
     for weight_key in list(result):
         if not weight_key.endswith(".weight"):
@@ -93,36 +127,64 @@ def process_fp8_and_nvfp4_tensors(result: Dict[str, torch.Tensor]) -> Dict[str, 
         if prefix + ".comfy_quant" in result or prefix + ".svdq_l1" in result:
             continue
 
-        # FP8 per-output-channel export (scale is 1D matching weight row count).
-        if weight.ndim == 2 and scales.ndim == 1 and scales.shape[0] == weight.shape[0]:
-            result[weight_key] = weight.to(target_dtype) * scales.to(target_dtype).unsqueeze(1)
+        # FP8 per-output-channel export (scale row count matches weight row count; supports 1D, 2D column, or N-D Conv weights).
+        if weight.ndim >= 2 and scales.numel() == weight.shape[0]:
+            scale_view = scales.to(target_dtype).view(-1, *([1] * (weight.ndim - 1)))
+            result[weight_key] = weight.to(target_dtype) * scale_view
             del result[scale_key]
+            result.pop(weight_key[:-7] + ".input_scale", None)
+            continue
+
+        # FP8 per-tensor scalar scale (scale is 0D or 1-element).
+        if scales.numel() == 1:
+            result[weight_key] = weight.to(target_dtype) * scales.to(target_dtype)
+            del result[scale_key]
+            result.pop(weight_key[:-7] + ".input_scale", None)
             continue
 
         # Packed E2M1 (NVFP4): 2 values per byte, group scale in weight_scale, global in weight_scale_2.
         scale2_key = weight_key[:-7] + ".weight_scale_2"
-        if weight.ndim == 2 and weight.dtype == torch.uint8 and scales.ndim == 2 and scale2_key in result:
-            packed = weight
-            nibbles = torch.stack(
-                ((packed & 0x0F), (packed >> 4) & 0x0F), dim=-1
-            ).reshape(weight.shape[0], -1)
-            magnitude = torch.tensor(
-                [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0],
+        if weight.ndim == 2 and weight.dtype == torch.uint8 and scale2_key in result:
+            out_rows = weight.shape[0]
+            out_cols = weight.shape[1] * 2
+            block_size = 16
+            num_blocks_per_row = out_cols // block_size
+
+            # NVFP4 packing format has high nibble first (bits 7..4), then low nibble (bits 3..0)
+            hi = (weight >> 4) & 0x0F
+            lo = weight & 0x0F
+            nibbles = torch.stack((hi, lo), dim=-1).reshape(out_rows, out_cols)
+
+            lut = torch.tensor(
+                [
+                    0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,
+                    -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
+                ],
                 device=weight.device,
                 dtype=torch.float32,
             )
-            values = magnitude[(nibbles & 0x07).long()]
-            values = torch.where(
-                (nibbles & 0x08) != 0, -values, values
-            )
-            group_scales = scales.to(torch.float32).view(weight.shape[0], -1, 1)
-            values = values.view(weight.shape[0], -1, 16)
-            result[weight_key] = (
-                values * group_scales * result[scale2_key].to(torch.float32).view(1, 1, 1)
-            ).reshape(weight.shape[0], -1).to(target_dtype)
-            del result[scale_key], result[scale2_key]
-            input_scale_key = weight_key[:-7] + ".input_scale"
-            result.pop(input_scale_key, None)
+            values = lut[nibbles.long()]
+            del nibbles, hi, lo
+
+            # Unswizzle cuBLAS 128x4 tiled scale layout (supports both 2D and 1D flattened scales)
+            scales_2d = scales.view(out_rows, num_blocks_per_row) if scales.ndim == 1 else scales
+            try:
+                unswizzled_scales = _unswizzle_cublas_scales(scales_2d, out_rows, num_blocks_per_row)
+            except Exception:
+                unswizzled_scales = scales_2d.reshape(out_rows, num_blocks_per_row)
+
+            global_scale = result[scale2_key].to(torch.float32)
+            if global_scale.numel() == 1:
+                global_scale = global_scale.reshape(1, 1)
+            elif global_scale.numel() == out_rows:
+                global_scale = global_scale.reshape(out_rows, 1)
+
+            total_scales = (unswizzled_scales.to(torch.float32) * global_scale).unsqueeze(-1)
+            dequantized = (values.view(out_rows, num_blocks_per_row, block_size) * total_scales).reshape(out_rows, out_cols)
+            result[weight_key] = dequantized.to(target_dtype)
+            del values, total_scales, dequantized, result[scale_key], result[scale2_key]
+            result.pop(weight_key[:-7] + ".input_scale", None)
+            continue
 
     return result
 
