@@ -97,7 +97,7 @@ class GenericLazyLoRALoader:
         # ----------------------------------------------------------------
         # Build lora_pairs:  (A_file_key, B_file_key, targets)
         # ----------------------------------------------------------------
-        from weellm.io.loras.keymaps import build_lora_pairs
+        from weellm.io.safetensors.keymaps.loras import build_lora_pairs
         self.lora_pairs, _ = build_lora_pairs(self.keys)
 
         logger.info(
