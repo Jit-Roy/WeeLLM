@@ -26,6 +26,7 @@ from weellm.io.utils import default_dtype, clean_memory, report_memory
 
 logger = logging.getLogger("weellm")
 
+# Safetensors diffusers naming (also applies to GGUF after WanGGUFKeyMap remaps transformer_blocks.N.* -> blocks.N.*)
 _CKPT_STREAMING_PREFIX = "blocks."
 
 
@@ -33,6 +34,7 @@ class WanTransformer3DModelStreamer(BaseTransformerStreamer):
     """
     Hook-based layer streamer for WanTransformer3DModel.
     Streams transformer blocks sequentially during the denoising forward pass.
+    Supports both safetensors (blocks.N.*) and GGUF (transformer_blocks.N.*) weight naming.
     """
 
     def _get_shard_order(self) -> List[Tuple[str, nn.Module]]:

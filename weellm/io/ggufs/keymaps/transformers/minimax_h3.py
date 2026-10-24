@@ -191,7 +191,7 @@ class MiniMaxH3GGUFKeyMap:
         # Match by architecture string or by MiniMax checkpoint key prefix.
         # 'wan' is the arch tag used by ComfyUI-packaged GGUFs of MiniMax-H3
         # (general.architecture=wan) — same key structure as minimax-h3.
-        if arch in ("minimax-h3", "minimax_h3", "minimax", "wan"):
+        if arch in ("minimax-h3", "minimax_h3", "minimax"):
             return True
         # Original checkpoint keys use "blocks.N." prefix
         return any(k.startswith("blocks.") for k in gguf_keys)

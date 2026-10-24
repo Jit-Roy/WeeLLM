@@ -105,6 +105,7 @@ WeeLLM dynamically streams text encoder and transformer layers to the GPU for ma
 
 - MiniMax-H3 (FL2VA)
 - LTX 2.5 (Text To Video + Image To Video)
+- Wan2.2-TI2V-5B (Text To Video + Image To Video)
 
 ---
 

@@ -40,6 +40,7 @@ from weellm.io.ggufs.keymaps.transformers.hidream import HiDreamGGUFKeyMap
 from weellm.io.ggufs.keymaps.transformers.ideogram4 import Ideogram4GGUFKeyMap
 from weellm.io.ggufs.keymaps.transformers.lumina2 import Lumina2GGUFKeyMap
 from weellm.io.ggufs.keymaps.transformers.qwen_image import QwenImageGGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.wan import WanGGUFKeyMap
 
 logger = logging.getLogger("weellm")
 
@@ -60,6 +61,7 @@ _REGISTRY = [
     Krea2GGUFKeyMap,    # txtfusion.* or blocks.0.attn.qknorm.*
     ZImageGGUFKeyMap,   # context_refiner.* / noise_refiner.*
     Qwen3VLGGUFKeyMap,  # visual.blocks.* + model.layers.* (unsloth Qwen3VL TE GGUF)
+    WanGGUFKeyMap,      # transformer_blocks.* (Wan2.1/Wan2.2 GGUF — must come before MiniMaxH3)
     MiniMaxH3GGUFKeyMap,# blocks.* (MiniMax H3 checkpoint convention)
     LTX25GGUFKeyMap,    # ltxv native keys
     QwenImage21GGUFKeyMap,
@@ -114,6 +116,7 @@ __all__ = [
     "Krea2GGUFKeyMap",
     "ZImageGGUFKeyMap",
     "Qwen3VLGGUFKeyMap",
+    "WanGGUFKeyMap",
     "MiniMaxH3GGUFKeyMap",
     "LTX25GGUFKeyMap",
     "QwenImage21GGUFKeyMap",
