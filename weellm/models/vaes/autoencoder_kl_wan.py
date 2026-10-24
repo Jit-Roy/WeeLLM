@@ -64,8 +64,32 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
         self._patch_encode()
         self.model.decode = self.decode
         self.model.tiled_decode = self.decode
-        if not getattr(self.model, "use_tiling", False):
-            self.model.enable_tiling(tile_sample_min_height=256, tile_sample_min_width=256)
+        # Wan VAE in float32 uses ~2.4 GB resident weights on GPU.
+        # Tile at 192 px (stride 128 px): peak VRAM is ~3.67 GB, leaving >600 MB headroom on 4 GB GPUs,
+        # while taking only 28 tiles (~3.5 min decode vs 45 tiles / 8-10 min at 128 px) and
+        # preventing spatial/temporal edge distortion.
+        orig_enable_tiling = self.model.enable_tiling
+        def _safe_enable_tiling(
+            tile_sample_min_height: int | None = None,
+            tile_sample_min_width: int | None = None,
+            tile_sample_stride_height: float | None = None,
+            tile_sample_stride_width: float | None = None,
+        ) -> None:
+            min_h = tile_sample_min_height or 192
+            min_w = tile_sample_min_width or 192
+            stride_h = tile_sample_stride_height or (128 if min_h <= 192 else min_h * 3 // 4)
+            stride_w = tile_sample_stride_width or (128 if min_w <= 192 else min_w * 3 // 4)
+            # Ensure stride is strictly less than tile size to prevent gap artifacts
+            stride_h = min(stride_h, min_h * 3 // 4)
+            stride_w = min(stride_w, min_w * 3 // 4)
+            orig_enable_tiling(
+                tile_sample_min_height=min_h,
+                tile_sample_min_width=min_w,
+                tile_sample_stride_height=stride_h,
+                tile_sample_stride_width=stride_w,
+            )
+        self.model.enable_tiling = _safe_enable_tiling
+        self.model.enable_tiling()
 
     @property
     def decoder_streaming_prefixes(self) -> tuple:
@@ -109,7 +133,6 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
 
     def _load_decoder(self) -> None:
         decoder_keys = self._get_decoder_keys()
-        logger.info("    [WeeLLM Wan VAE] Loading %d decoder tensors (~1.05 GB) to %s ...", len(decoder_keys), self.device)
         import sys
         sys.stdout.flush()
         t0 = time.time()
@@ -129,69 +152,88 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
     def _tiled_decode(self, z: torch.Tensor, return_dict: bool = True):
         import sys
         m = self.model
-        _, _, num_frames, height, width = z.shape
+        _, C_lat, num_frames, height, width = z.shape
         sample_height = height * m.spatial_compression_ratio
-        sample_width = width * m.spatial_compression_ratio
+        sample_width  = width  * m.spatial_compression_ratio
 
         tile_latent_min_height = m.tile_sample_min_height // m.spatial_compression_ratio
-        tile_latent_min_width = m.tile_sample_min_width // m.spatial_compression_ratio
-        tile_latent_stride_height = m.tile_sample_stride_height // m.spatial_compression_ratio
-        tile_latent_stride_width = m.tile_sample_stride_width // m.spatial_compression_ratio
-        tile_sample_stride_height = m.tile_sample_stride_height
-        tile_sample_stride_width = m.tile_sample_stride_width
+        tile_latent_min_width  = m.tile_sample_min_width  // m.spatial_compression_ratio
+        tile_latent_stride_h   = m.tile_sample_stride_height // m.spatial_compression_ratio
+        tile_latent_stride_w   = m.tile_sample_stride_width  // m.spatial_compression_ratio
+        tile_stride_h_px       = m.tile_sample_stride_height
+        tile_stride_w_px       = m.tile_sample_stride_width
 
         if getattr(m.config, "patch_size", None) is not None:
-            sample_height = sample_height // m.config.patch_size
-            sample_width = sample_width // m.config.patch_size
-            tile_sample_stride_height = tile_sample_stride_height // m.config.patch_size
-            tile_sample_stride_width = tile_sample_stride_width // m.config.patch_size
-            blend_height = m.tile_sample_min_height // m.config.patch_size - tile_sample_stride_height
-            blend_width = m.tile_sample_min_width // m.config.patch_size - tile_sample_stride_width
+            ps = m.config.patch_size
+            sample_height    //= ps
+            sample_width     //= ps
+            tile_stride_h_px //= ps
+            tile_stride_w_px //= ps
+            blend_h = m.tile_sample_min_height // ps - tile_stride_h_px
+            blend_w = m.tile_sample_min_width  // ps - tile_stride_w_px
         else:
-            blend_height = m.tile_sample_min_height - tile_sample_stride_height
-            blend_width = m.tile_sample_min_width - tile_sample_stride_width
+            ps = None
+            blend_h = m.tile_sample_min_height - tile_stride_h_px
+            blend_w = m.tile_sample_min_width  - tile_stride_w_px
 
-        h_range = list(range(0, height, tile_latent_stride_height))
-        w_range = list(range(0, width, tile_latent_stride_width))
+        h_range = list(range(0, height, tile_latent_stride_h))
+        w_range = list(range(0, width,  tile_latent_stride_w))
         total_tiles = len(h_range) * len(w_range)
 
         logger.info(
-            "    [WeeLLM Wan VAE] Tiled GPU Decode started: %d spatial tiles (%dx%d grid), %d latent frames.",
-            total_tiles, len(h_range), len(w_range), num_frames
+            "    [WeeLLM Wan VAE] Tiled GPU Decode started: %d spatial tiles (%dx%d grid), "
+            "%d latent frames, tile size %dx%d px (stride %dx%d px).",
+            total_tiles, len(h_range), len(w_range),
+            num_frames, m.tile_sample_min_height, m.tile_sample_min_width,
+            m.tile_sample_stride_height, m.tile_sample_stride_width
         )
         sys.stdout.flush()
         t_decode_start = time.time()
 
-        rows = []
         tile_idx = 0
         with torch.no_grad():
+            rows = []
             for r_idx, i in enumerate(h_range):
                 row = []
                 for c_idx, j in enumerate(w_range):
                     tile_idx += 1
                     t_tile_0 = time.time()
                     m.clear_cache()
-                    time_frames = []
+                    tile_frames = []
                     for k in range(num_frames):
                         m._conv_idx = [0]
-                        tile = z[:, :, k : k + 1, i : i + tile_latent_min_height, j : j + tile_latent_min_width].to(self.device, dtype=self.dtype)
+                        tile = z[:, :, k:k+1,
+                                 i : i + tile_latent_min_height,
+                                 j : j + tile_latent_min_width].to(self.device, dtype=self.dtype)
                         tile = m.post_quant_conv(tile)
                         decoded = m.decoder(
-                            tile, feat_cache=m._feat_map, feat_idx=m._conv_idx, first_chunk=(k == 0)
+                            tile,
+                            feat_cache=m._feat_map,
+                            feat_idx=m._conv_idx,
+                            first_chunk=(k == 0)
                         )
-                        time_frames.append(decoded)
-                    row.append(torch.cat(time_frames, dim=2))
+                        tile_frames.append(decoded.cpu().float())
+                        del tile, decoded
+                    m.clear_cache()
+                    torch.cuda.empty_cache()
+
+                    row.append(torch.cat(tile_frames, dim=2))
+                    del tile_frames
+
                     tile_dur = time.time() - t_tile_0
-                    elapsed = time.time() - t_decode_start
-                    pct = (tile_idx / total_tiles) * 100.0
-                    eta = (elapsed / tile_idx) * (total_tiles - tile_idx)
-                    vram_mb = torch.cuda.memory_allocated() / 1e6 if torch.cuda.is_available() else 0.0
+                    elapsed  = time.time() - t_decode_start
+                    pct      = (tile_idx / total_tiles) * 100.0
+                    eta      = (elapsed / tile_idx) * (total_tiles - tile_idx)
+                    vram_mb  = torch.cuda.memory_allocated() / 1e6 if torch.cuda.is_available() else 0.0
                     logger.info(
-                        "    [WeeLLM Wan VAE] Tile %d/%d (%.1f%%) | Grid [%d,%d] | Step: %.2fs | Elapsed: %.1fs | ETA: %.1fs | VRAM: %.1f MB",
-                        tile_idx, total_tiles, pct, r_idx + 1, c_idx + 1, tile_dur, elapsed, eta, vram_mb
+                        "    [WeeLLM Wan VAE] Tile %d/%d (%.1f%%) | Grid [%d,%d] | "
+                        "Step: %.2fs | Elapsed: %.1fs | ETA: %.1fs | VRAM: %.1f MB",
+                        tile_idx, total_tiles, pct, r_idx + 1, c_idx + 1,
+                        tile_dur, elapsed, eta, vram_mb
                     )
                     sys.stdout.flush()
                 rows.append(row)
+
             m.clear_cache()
 
             # Blend tiles
@@ -200,18 +242,19 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
                 result_row = []
                 for j, tile in enumerate(row):
                     if i > 0:
-                        tile = m.blend_v(rows[i - 1][j], tile, blend_height)
+                        tile = m.blend_v(rows[i - 1][j], tile, blend_h)
                     if j > 0:
-                        tile = m.blend_h(row[j - 1], tile, blend_width)
-                    result_row.append(tile[:, :, :, :tile_sample_stride_height, :tile_sample_stride_width])
+                        tile = m.blend_h(row[j - 1], tile, blend_w)
+                    result_row.append(tile[:, :, :, :tile_stride_h_px, :tile_stride_w_px])
                 result_rows.append(torch.cat(result_row, dim=-1))
             dec = torch.cat(result_rows, dim=3)[:, :, :, :sample_height, :sample_width]
 
-            if getattr(m.config, "patch_size", None) is not None:
-                from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
-                dec = unpatchify(dec, patch_size=m.config.patch_size)
+        if getattr(m.config, "patch_size", None) is not None:
+            from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
+            dec = unpatchify(dec, patch_size=m.config.patch_size)
 
-            dec = torch.clamp(dec, min=-1.0, max=1.0)
+        dec = torch.clamp(dec, min=-1.0, max=1.0)
+        dec = dec.to(dtype=self.dtype, device=self.device)
 
         total_elapsed = time.time() - t_decode_start
         logger.info(
