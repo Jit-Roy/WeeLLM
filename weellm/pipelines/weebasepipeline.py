@@ -90,6 +90,7 @@ _TR_MAP = {
     "LTX2VideoTransformer3DModel":         "weellm.models.transformers.ltx2_video_transformer_3d_model",
     "MOSSImageTransformer":                "weellm.models.transformers.moss_image_transformer_2d_model",
     "JoyImageEditTransformer3DModel":      "weellm.models.transformers.joy_image_edit_transformer_3d_model",
+    "WanTransformer3DModel":               "weellm.models.transformers.wan_transformer_3d_model",
 }
 
 # ---------------------------------------------------------------------------
@@ -99,6 +100,10 @@ _VAE_MAP = {
     "AutoencoderKL": (
         "weellm.models.vaes.autoencoder_kl",
         "AutoencoderKL",
+    ),
+    "AutoencoderKLWan": (
+        "weellm.models.vaes.autoencoder_kl_wan",
+        "AutoencoderKLWanStreamer",
     ),
     "AutoencoderKLMiniMaxH3": (
         "weellm.models.vaes.autoencoder_kl_minimax_h3",

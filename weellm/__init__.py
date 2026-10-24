@@ -41,6 +41,7 @@ __all__ = [
     "dequantize_tensor",
     # VAE
     "AutoencoderKL",
+    "AutoencoderKLWanStreamer",
     "AutoencoderKLMiniMaxH3Streamer",
     # Transformers
     "FluxTransformer2DModelStreamer",
@@ -61,6 +62,7 @@ __all__ = [
     "LTX2TextConnectorsStreamer",
     "LTX2VideoTransformer3DModelStreamer",
     "MiniMaxH3Transformer3DModelStreamer",
+    "WanTransformer3DModelStreamer",
     "MOSSImageTransformerStreamer",
     "JoyImageEditTransformer3DModelStreamer",
     # Text Encoders
@@ -104,6 +106,7 @@ from .io.ggufs.gguf_dequant import dequantize_tensor  # noqa: E402
 
 # VAE
 from .models.vaes.autoencoder_kl import AutoencoderKL  # noqa: E402
+from .models.vaes.autoencoder_kl_wan import AutoencoderKLWanStreamer  # noqa: E402
 from .models.vaes.autoencoder_kl_minimax_h3 import AutoencoderKLMiniMaxH3Streamer  # noqa: E402
 
 # Transformers
@@ -125,6 +128,7 @@ from .models.transformers.longcat_image_transformer_2d_model import LongCatImage
 from .models.transformers.ltx2_connectors import LTX2TextConnectorsStreamer  # noqa: E402
 from .models.transformers.ltx2_video_transformer_3d_model import LTX2VideoTransformer3DModelStreamer  # noqa: E402
 from .models.transformers.minimax_h3_transformer_3d_model import MiniMaxH3Transformer3DModelStreamer  # noqa: E402
+from .models.transformers.wan_transformer_3d_model import WanTransformer3DModelStreamer  # noqa: E402
 from .models.transformers.moss_image_transformer_2d_model import MOSSImageTransformerStreamer  # noqa: E402
 from .models.transformers.joy_image_edit_transformer_3d_model import JoyImageEditTransformer3DModelStreamer  # noqa: E402
 

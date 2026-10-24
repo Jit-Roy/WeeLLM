@@ -10,6 +10,8 @@ import torch
 import inspect
 import logging
 import importlib
+from PIL import Image
+import numpy as np
 
 from weellm.pipelines.weebasepipeline import WeeBasePipeline
 
@@ -21,7 +23,7 @@ logger = logging.getLogger("weellm")
 _VIDEO_MAP = {
     "LTX2Pipeline":("weellm.pipelines.video.adapters.ltx2_pipeline","WeeLTX2Pipeline"),
     "MiniMaxH3ModularPipeline":("weellm.pipelines.video.adapters.minimax_h3_modular_pipeline","WeeMiniMaxPipeline"),
-    "WanPipeline":("weellm.pipelines.video.weevideopipeline","WeeVideoPipeline"),
+    "WanPipeline":("weellm.pipelines.video.adapters.wan_pipeline","WeeWanPipeline"),
     "CogVideoXPipeline":("weellm.pipelines.video.weevideopipeline","WeeVideoPipeline"),
 }
 
@@ -34,17 +36,44 @@ class WeeVideoResult:
         # Un-nest if it's a list of lists (e.g. batch size 1 list of frames)
         while isinstance(frames, list) and len(frames) > 0 and isinstance(frames[0], list):
             frames = frames[0]
-            
-        # Unbatch if it's a 5D tensor [B, C, F, H, W] -> [C, F, H, W]
+        # Unbatch if it's a 5D tensor [B, C, F, H, W] or [B, F, H, W, C]
         if isinstance(frames, torch.Tensor):
             if frames.dim() == 5:
                 frames = frames[0]
-            # Convert [C, F, H, W] to list of numpy arrays [F, H, W, C] for export
             if frames.dim() == 4:
-                import numpy as np
-                frames = frames.permute(1, 2, 3, 0).cpu().float().numpy()
-                frames = [np.clip(f * 255.0, 0, 255).astype(np.uint8) if f.max() <= 1.0 else f for f in frames]
-                
+                # If channels-first: [C, F, H, W] -> permute to [F, H, W, C]
+                if frames.shape[0] in [1, 3, 4] and frames.shape[1] > 4:
+                    frames = frames.permute(1, 2, 3, 0)
+                frames = frames.cpu().float().numpy()
+
+        # Handle np.ndarray [B, F, H, W, C] or [F, H, W, C]
+        if isinstance(frames, np.ndarray):
+            if frames.ndim == 5:
+                frames = frames[0]
+            if frames.ndim == 4:
+                # If channels-first: [C, F, H, W] -> transpose to [F, H, W, C]
+                if frames.shape[0] in [1, 3, 4] and frames.shape[1] > 4:
+                    frames = np.transpose(frames, (1, 2, 3, 0))
+                frame_list = []
+                for f in frames:
+                    if f.dtype != np.uint8 and f.max() <= 1.0:
+                        f = np.clip(f * 255.0, 0, 255).astype(np.uint8)
+                    elif f.dtype != np.uint8:
+                        f = np.clip(f, 0, 255).astype(np.uint8)
+                    frame_list.append(Image.fromarray(f))
+                frames = frame_list
+
+        # If it's a list of numpy arrays, convert to PIL.Image so export_to_video won't multiply uint8 by 255
+        if isinstance(frames, list) and len(frames) > 0 and isinstance(frames[0], np.ndarray):
+            frame_list = []
+            for f in frames:
+                if f.dtype != np.uint8 and f.max() <= 1.0:
+                    f = np.clip(f * 255.0, 0, 255).astype(np.uint8)
+                elif f.dtype != np.uint8:
+                    f = np.clip(f, 0, 255).astype(np.uint8)
+                frame_list.append(Image.fromarray(f))
+            frames = frame_list
+
         self.frames = frames
         self.audio = audio
         self.default_fps = default_fps
@@ -148,7 +177,7 @@ class WeeVideoPipeline(WeeBasePipeline):
                 
         return latents
 
-    def _setup_cache(self, prompt, height, width, num_frames, steps, seed, save_every=1, cache_root=None, lora_weights=None):
+    def _setup_cache(self, prompt, height, width, num_frames, steps, seed, negative_prompt=None, save_every=1, cache_root=None, lora_weights=None):
         from weellm.pipelines.video.video_cache import VideoStepCache
         if cache_root is None:
             cache_root = os.path.join(
@@ -161,6 +190,7 @@ class WeeVideoPipeline(WeeBasePipeline):
             num_frames=num_frames,
             steps=steps,
             seed=seed,
+            negative_prompt=negative_prompt,
             lora_weights=lora_weights,
             save_every=save_every,
             cache_root=cache_root,
@@ -255,7 +285,9 @@ class WeeVideoPipeline(WeeBasePipeline):
             return super().__call__(**kwargs)
 
         _video_cache = self._setup_cache(
-            prompt, height, width, num_frames, steps, seed, save_every=cache_every, lora_weights=lora_weights
+            prompt, height, width, num_frames, steps, seed,
+            negative_prompt=kwargs.get("negative_prompt"),
+            save_every=cache_every, lora_weights=lora_weights
         )
         if fresh:
             _video_cache.clear_run()
@@ -389,7 +421,8 @@ class WeeVideoPipeline(WeeBasePipeline):
 
         # Ensure output_type="latent" if supported
         _pipe_call = getattr(_underlying, "__call__", None) or _underlying.__class__.__call__
-        if "output_type" in inspect.signature(_pipe_call).parameters:
+        _sig_params = inspect.signature(_pipe_call).parameters
+        if "output_type" in _sig_params:
             kwargs.setdefault("output_type", "latent")
             
         if lora_weights is not None:

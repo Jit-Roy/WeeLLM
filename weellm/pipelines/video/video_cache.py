@@ -93,8 +93,11 @@ class VideoStepCache:
     Parameters
     ----------
     prompt:
-        The text prompt.  Used as the sole key for the embeds cache so the
-        same embeds are reused across different resolutions / step counts.
+        The text prompt.
+    negative_prompt:
+        Optional negative prompt.  Together with *prompt* this forms the
+        embed cache key so that changing the negative prompt properly busts
+        the cached embeddings.
     height, width, num_frames, steps, seed, lora_weights:
         Together with *prompt* these form the run key; any change busts the
         denoising cache (but not the embeds cache).
@@ -113,6 +116,7 @@ class VideoStepCache:
         num_frames: int,
         steps: int,
         seed: int,
+        negative_prompt: Optional[str] = None,
         lora_weights: Optional[str] = None,
         save_every: int = 1,
         cache_root: Optional[str] = None,
@@ -120,7 +124,10 @@ class VideoStepCache:
         self.save_every = max(1, int(save_every))
         root = Path(cache_root or os.path.join(os.getcwd(), ".weellm_cache"))
 
-        prompt_hash = _sha1(prompt)
+        # Embed key includes both positive and negative prompt so that
+        # changing the negative prompt properly invalidates cached embeddings.
+        neg = negative_prompt or ""
+        prompt_hash = _sha1(prompt, neg)
         run_hash    = _sha1(
             prompt,
             str(height), str(width), str(num_frames), str(steps), str(seed), str(lora_weights),

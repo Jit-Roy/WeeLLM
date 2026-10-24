@@ -79,7 +79,7 @@ Qwen-Image-2.1/
 flux-3-image-klein-base/
 MOSS-Image-SFT/
 JoyAI-Image-Edit/
-
+Wan2.2-TI2V-5B-Diffusers/
 
 download*.py
 test_flux2.py
