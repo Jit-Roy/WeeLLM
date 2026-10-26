@@ -77,11 +77,11 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
         ) -> None:
             min_h = tile_sample_min_height or 192
             min_w = tile_sample_min_width or 192
-            stride_h = tile_sample_stride_height or (128 if min_h <= 192 else min_h * 3 // 4)
-            stride_w = tile_sample_stride_width or (128 if min_w <= 192 else min_w * 3 // 4)
-            # Ensure stride is strictly less than tile size to prevent gap artifacts
-            stride_h = min(stride_h, min_h * 3 // 4)
-            stride_w = min(stride_w, min_w * 3 // 4)
+            stride_h = tile_sample_stride_height or (160 if min_h <= 192 else min_h * 5 // 6)
+            stride_w = tile_sample_stride_width or (160 if min_w <= 192 else min_w * 5 // 6)
+            # Ensure stride is strictly less than tile size to prevent gap artifacts (32px overlap)
+            stride_h = min(stride_h, min_h - 16)
+            stride_w = min(stride_w, min_w - 16)
             orig_enable_tiling(
                 tile_sample_min_height=min_h,
                 tile_sample_min_width=min_w,
@@ -190,6 +190,11 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
         sys.stdout.flush()
         t_decode_start = time.time()
 
+        if torch.cuda.is_available():
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
+
         tile_idx = 0
         with torch.no_grad():
             rows = []
@@ -200,22 +205,27 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
                     t_tile_0 = time.time()
                     m.clear_cache()
                     tile_frames = []
+
+                    # Pre-project full tile latent across all frames at once (1 kernel launch vs 13)
+                    tile_full = z[:, :, :,
+                                  i : i + tile_latent_min_height,
+                                  j : j + tile_latent_min_width].to(self.device, dtype=self.dtype)
+                    tile_full = m.post_quant_conv(tile_full)
+
                     for k in range(num_frames):
                         m._conv_idx = [0]
-                        tile = z[:, :, k:k+1,
-                                 i : i + tile_latent_min_height,
-                                 j : j + tile_latent_min_width].to(self.device, dtype=self.dtype)
-                        tile = m.post_quant_conv(tile)
+                        tile_k = tile_full[:, :, k:k+1]
                         decoded = m.decoder(
-                            tile,
+                            tile_k,
                             feat_cache=m._feat_map,
                             feat_idx=m._conv_idx,
                             first_chunk=(k == 0)
                         )
                         tile_frames.append(decoded.cpu().float())
-                        del tile, decoded
+                        del tile_k, decoded
+
+                    del tile_full
                     m.clear_cache()
-                    torch.cuda.empty_cache()
 
                     row.append(torch.cat(tile_frames, dim=2))
                     del tile_frames
