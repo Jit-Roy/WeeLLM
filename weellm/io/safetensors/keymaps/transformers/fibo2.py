@@ -33,9 +33,9 @@ class Fibo2SafetensorsKeyMap:
     def build_remap(cls, keys: List[str]) -> Dict[str, Any]:
         remap: Dict[str, Any] = {}
         for key in keys:
-            # Exclude quantization side-tensors (.weight_scale, etc.) so they stay
-            # as raw keys and can be consumed by the seeker dequantization pipeline.
-            if any(key.endswith(s) for s in _DEQUANT_SUFFIXES):
+            # Exclude quantization side-tensors (.weight_scale, etc.) and ComfyUI config metadata
+            if any(key.endswith(s) for s in _DEQUANT_SUFFIXES) or ".comfy_attention" in key or key.endswith(".config"):
+                remap[key] = None
                 continue
 
             # 1. Self-attention fused QKV -> individual projections (to_q, to_k, to_v)

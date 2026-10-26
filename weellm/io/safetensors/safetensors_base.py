@@ -91,6 +91,7 @@ class SafetensorsBase:
                     if k != "__metadata__"
                 }
 
+        self._raw_weight_map = raw_map
         self._apply_keymap(raw_map)
 
     def _apply_keymap(self, raw_map: Dict[str, str]) -> None:
@@ -110,6 +111,8 @@ class SafetensorsBase:
             d2s: Dict[str, Any] = {}
             for src_key, shard in raw_map.items():
                 dst = remap_fn(src_key)
+                if dst is None:
+                    continue
                 if isinstance(dst, list):
                     for dst_key, slice_info in dst:
                         new_map[dst_key] = shard

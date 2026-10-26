@@ -313,6 +313,8 @@ class BaseTransformerStreamer(ABC):
         state_dict = self.seeker.get_tensors(keys, device=self.device, dtype=self.dtype)
         self.apply_state_dict(state_dict)
         self._resident_loaded = True
+        if getattr(self, "lora_loader", None) is not None:
+            self.lora_loader.apply_to_module(self.model, "transformer")
 
     def release_resident(self) -> int:
         """Evict connector weights while another pipeline component runs."""
@@ -388,6 +390,7 @@ class BaseTransformerStreamer(ABC):
             "[LoRA] Attached '%s' (scale=%.2f) to %s.",
             lora_path, lora_scale, type(self).__name__,
         )
+        self.lora_loader.apply_to_module(self.model, "transformer")
 
     def _get_layer_keys(self, shard_name: str) -> List[str]:
         keys = [

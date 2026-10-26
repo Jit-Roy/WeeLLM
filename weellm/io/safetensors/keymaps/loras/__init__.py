@@ -4,6 +4,7 @@ Registry of all LoRA key-map plugins.
 import logging
 from typing import Set, List, Tuple, Any, Callable
 
+from weellm.io.safetensors.keymaps.loras.fibo2 import Fibo2LoRAKeyMap
 from weellm.io.safetensors.keymaps.loras.ltx2 import LTX2LoRAKeyMap
 from weellm.io.safetensors.keymaps.loras.diffusers_fallback import DiffusersFallbackLoRAKeyMap
 from weellm.io.safetensors.keymaps.loras.minimax import MiniMaxH3LoRAKeyMap
@@ -19,6 +20,7 @@ LoRAPair = Tuple[str, str, List[LoRATarget]]
 
 # Ordered: first match wins. Put more-specific detectors at the top.
 _REGISTRY = [
+    Fibo2LoRAKeyMap,
     MiniMaxH3LoRAKeyMap,
     LTX2LoRAKeyMap,
     DiffusersFallbackLoRAKeyMap,  # Always keep fallback at the bottom

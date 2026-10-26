@@ -116,12 +116,15 @@ class SafetensorsRAMSeeker(SafetensorsBase):
             entry = self._d2s.get(k, k)
             raw_keys.append(entry[0] if isinstance(entry, (tuple, list)) else entry)
 
-        # Build raw weight_map view for comfy expansion (needs original key names).
-        raw_weight_map = {}
-        for k, v in self._d2s.items():
-            if k in self.weight_map:
-                rk = v[0] if isinstance(v, (tuple, list)) else v
-                raw_weight_map[rk] = self.weight_map[k]
+        # Use the underlying raw weight map so dequantization side-tensors (.comfy_quant,
+        # .weight_scale, etc.) are always discoverable, even if stripped from Diffusers weight_map.
+        raw_weight_map = getattr(self, "_raw_weight_map", None)
+        if raw_weight_map is None:
+            raw_weight_map = {}
+            for k, v in self._d2s.items():
+                if k in self.weight_map:
+                    rk = v[0] if isinstance(v, (tuple, list)) else v
+                    raw_weight_map[rk] = self.weight_map[k]
 
         # Expand raw keys to include comfy_quant / SVDQ side-tensors.
         raw_keys_expanded = expand_comfy_keys(raw_keys, raw_weight_map)

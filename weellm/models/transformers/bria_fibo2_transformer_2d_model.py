@@ -76,6 +76,7 @@ class BriaFibo2Transformer2DModelStreamer(BaseTransformerStreamer):
         resident_keys = streamer._get_resident_keys()
         resident_sd   = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
         streamer.apply_state_dict(resident_sd)
+        streamer._resident_loaded = True
         del resident_sd
         clean_memory(device)
         report_memory("After resident load")

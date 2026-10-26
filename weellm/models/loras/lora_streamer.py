@@ -159,11 +159,11 @@ class GenericLazyLoRALoader:
                      "transformer_blocks.47"
                      "transformer.transformer_blocks.47"
         """
-        # Normalise shard prefix – strip leading "transformer." so it matches
-        # the normalised lora_map keys.
         prefix = shard_name
-        if prefix.startswith("transformer."):
-            prefix = prefix[len("transformer."):]
+        if prefix == "transformer" or prefix.startswith("transformer."):
+            prefix = prefix[len("transformer"):]
+            if prefix.startswith("."):
+                prefix = prefix[1:]
         if prefix and not prefix.endswith("."):
             prefix += "."
 
@@ -176,8 +176,11 @@ class GenericLazyLoRALoader:
                 # Does this LoRA entry belong to the requested shard?
                 matching_targets = []
                 for t_key, slice_info in targets:
-                    if t_key.startswith(prefix):
-                        matching_targets.append((t_key[len(prefix):], slice_info))
+                    clean_t_key = t_key
+                    if clean_t_key.startswith("transformer."):
+                        clean_t_key = clean_t_key[len("transformer."):]
+                    if clean_t_key.startswith(prefix):
+                        matching_targets.append((clean_t_key[len(prefix):], slice_info))
 
                 if not matching_targets:
                     continue
@@ -194,6 +197,8 @@ class GenericLazyLoRALoader:
                             )
                             self._skipped_keys.add(local_key)
                         skipped_count += 1
+                    elif param.device.type == "meta":
+                        continue
                     else:
                         valid_targets.append((param, local_key, slice_info))
 
@@ -201,25 +206,38 @@ class GenericLazyLoRALoader:
                     continue
 
                 try:
-                    a_t = self._read_tensor(f, a_key, valid_targets[0][0].device)   # float32 on GPU
-                    b_t = self._read_tensor(f, b_key, valid_targets[0][0].device)   # float32 on GPU
-
+                    target_dev = valid_targets[0][0].device
                     with torch.no_grad():
-                        alpha = None
-                        alpha_key = a_key.rsplit('.lora_A', 1)[0] + '.alpha'
-                        if alpha_key in self._header:
-                            alpha_t = self._read_tensor(f, alpha_key, valid_targets[0][0].device)
-                            alpha = alpha_t.item()
-                            del alpha_t
+                        if b_key is None:
+                            diff_t = self._read_tensor(f, a_key, target_dev)
+                            delta = self.scale * diff_t
+                            del diff_t
+                        else:
+                            a_t = self._read_tensor(f, a_key, target_dev)   # float32 on GPU
+                            b_t = self._read_tensor(f, b_key, target_dev)   # float32 on GPU
 
-                        rank = a_t.size(0)
-                        
-                        scale = self.scale
-                        if alpha is not None:
-                            scale = scale * (alpha / rank)
-                            
-                        delta = scale * (b_t @ a_t)
-                        
+                            alpha = None
+                            alpha_key = None
+                            for sfx in ('.lora_A.weight', '.lora_A', '.lora_down.weight', '.lora_down'):
+                                if sfx in a_key:
+                                    candidate = a_key.rsplit(sfx, 1)[0] + '.alpha'
+                                    if candidate in self._header:
+                                        alpha_key = candidate
+                                        break
+                            if alpha_key is not None:
+                                alpha_t = self._read_tensor(f, alpha_key, target_dev)
+                                alpha = alpha_t.item()
+                                del alpha_t
+
+                            rank = a_t.size(0)
+
+                            scale = self.scale
+                            if alpha is not None:
+                                scale = scale * (alpha / rank)
+
+                            delta = scale * (b_t @ a_t)
+                            del a_t, b_t
+
                         for param, local_key, slice_info in valid_targets:
                             # Apply slicing if necessary
                             if slice_info is not None:
@@ -234,12 +252,18 @@ class GenericLazyLoRALoader:
                                     sub_delta = chunks[split_idx]
                             else:
                                 sub_delta = delta
-                                
+
+                            # Handle zero padding trimming (e.g. 9728 -> 9536)
+                            if sub_delta.shape != param.shape and sub_delta.dim() == param.dim():
+                                if all(d_s >= p_s for d_s, p_s in zip(sub_delta.shape, param.shape)):
+                                    slices = tuple(slice(0, s) for s in param.shape)
+                                    sub_delta = sub_delta[slices]
+
                             param.data.add_(sub_delta.to(dtype=param.dtype))
                             applied_count += 1
 
                     # Release GPU memory immediately – do not accumulate across pairs
-                    del a_t, b_t, delta
+                    del delta
                     if 'sub_delta' in locals():
                         del sub_delta
 
