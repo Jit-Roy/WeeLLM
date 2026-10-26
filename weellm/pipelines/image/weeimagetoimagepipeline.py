@@ -22,6 +22,7 @@ IMG2IMG_MAPPING = {
     "FluxFillPipeline": "FluxFillPipeline",
     "QwenImage21Pipeline": "QwenImage21Pipeline",
     "JoyImageEditPipeline": "JoyImageEditPipeline",
+    "BriaFibo2Pipeline": "BriaFibo2Pipeline",
 }
 
 class WeeImageToImagePipeline(WeeBasePipeline):
@@ -103,7 +104,8 @@ class WeeImageToImagePipeline(WeeBasePipeline):
         seed = kwargs.pop("seed", None)
         guidance_scale = kwargs.pop("guidance_scale", None)
         if guidance_scale is not None:
-            self._configure_guidance(guidance_scale)
+            if not self._configure_guidance(guidance_scale):
+                kwargs["guidance_scale"] = guidance_scale
 
         generator: Optional[torch.Generator] = None
         if seed is not None:

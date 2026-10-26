@@ -81,6 +81,7 @@ WeeLLM dynamically streams text encoder and transformer layers to the GPU for ma
 - Hidream I1 Full
 - Auraflow
 - MOSS-Image
+- Fibo 2.0 Dev
 
 ## Image Edit Models
 
@@ -100,6 +101,7 @@ WeeLLM dynamically streams text encoder and transformer layers to the GPU for ma
 - Qwen Image 2.1
 - HiDream E1 Full
 - JoyAI Image Edit
+- Fibo 2.0 Edit Turbo
 
 ## Video Generation Models
 

@@ -22,6 +22,7 @@ from weellm.io.ggufs.keymaps.text_encoders.gemma4  import Gemma4GGUFKeyMap
 from weellm.io.ggufs.keymaps.transformers.flux   import FluxGGUFKeyMap
 from weellm.io.ggufs.keymaps.transformers.flux2  import Flux2GGUFKeyMap
 from weellm.io.ggufs.keymaps.transformers.flux3  import Flux3GGUFKeyMap
+from weellm.io.ggufs.keymaps.transformers.fibo2  import Fibo2GGUFKeyMap
 from weellm.io.ggufs.keymaps.text_encoders.glm    import GLMGGUFKeyMap
 from weellm.io.ggufs.keymaps.transformers.sd3    import SD3GGUFKeyMap
 from weellm.io.ggufs.keymaps.transformers.sdxl   import SDXLGGUFKeyMap
@@ -50,6 +51,7 @@ _REGISTRY = [
     GLMGGUFKeyMap,      # GLM text encoder: token_embd + blk.* + ffn_gate
     Gemma4GGUFKeyMap,   # multi_modal_projector.* + *.layer_scalar (already diffusers naming)
     LlamaGGUFKeyMap,    # blk.*
+    Fibo2GGUFKeyMap,    # perceiver.layers.* + layers.0.* (must precede Flux due to arch="flux" in Comfy GGUF)
     Flux2GGUFKeyMap,    # Flux.2 Klein: 8 double + 24 single blocks
     Flux3GGUFKeyMap,    # Flux.3 Image Klein: content_mode_blocks + single_blocks
     LongCatGGUFKeyMap,  # MUST come before FluxGGUFKeyMap: uses double_blocks.* but NO vec_in/guidance_in
@@ -110,6 +112,7 @@ __all__ = [
     "FluxGGUFKeyMap",
     "Flux2GGUFKeyMap",
     "Flux3GGUFKeyMap",
+    "Fibo2GGUFKeyMap",
     "SD3GGUFKeyMap",
     "SDXLGGUFKeyMap",
     "SD15GGUFKeyMap",

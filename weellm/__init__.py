@@ -65,6 +65,7 @@ __all__ = [
     "WanTransformer3DModelStreamer",
     "MOSSImageTransformerStreamer",
     "JoyImageEditTransformer3DModelStreamer",
+    "BriaFibo2Transformer2DModelStreamer",
     # Text Encoders
     "ChatGLMModelStreamer",
     "CLIPTextModelStreamer",
@@ -131,6 +132,7 @@ from .models.transformers.minimax_h3_transformer_3d_model import MiniMaxH3Transf
 from .models.transformers.wan_transformer_3d_model import WanTransformer3DModelStreamer  # noqa: E402
 from .models.transformers.moss_image_transformer_2d_model import MOSSImageTransformerStreamer  # noqa: E402
 from .models.transformers.joy_image_edit_transformer_3d_model import JoyImageEditTransformer3DModelStreamer  # noqa: E402
+from .models.transformers.bria_fibo2_transformer_2d_model import BriaFibo2Transformer2DModelStreamer  # noqa: E402
 
 # Text Encoders
 from .models.text_encoders.chatglm_model import ChatGLMModelStreamer  # noqa: E402

@@ -91,6 +91,7 @@ _TR_MAP = {
     "MOSSImageTransformer":                "weellm.models.transformers.moss_image_transformer_2d_model",
     "JoyImageEditTransformer3DModel":      "weellm.models.transformers.joy_image_edit_transformer_3d_model",
     "WanTransformer3DModel":               "weellm.models.transformers.wan_transformer_3d_model",
+    "BriaFibo2Transformer2DModel":         "weellm.models.transformers.bria_fibo2_transformer_2d_model",
 }
 
 # ---------------------------------------------------------------------------
@@ -420,7 +421,7 @@ class WeeBasePipeline:
         if "processor" in index:
             from transformers import AutoTokenizer, AutoProcessor
             try:
-                if "tokenizer" not in diffusers_kwargs:
+                if "tokenizer" in index and "tokenizer" not in diffusers_kwargs:
                     tokenizer = AutoTokenizer.from_pretrained(model_dir_path / "processor")
                     diffusers_kwargs["tokenizer"] = tokenizer
             except Exception as e:
