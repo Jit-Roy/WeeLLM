@@ -28,6 +28,15 @@ try:
 except Exception:
     pass
 
+# Default Wan motion-inducing negative prompt (mandated by official Wan2.2 training)
+DEFAULT_WAN_NEG_PROMPT = (
+    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，"
+    "整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，"
+    "画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，"
+    "静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走, "
+    "static, still image, motionless, frozen, blurry, ugly, low quality"
+)
+
 
 class WeeWanPipeline(WeeVideoPipeline):
     """
@@ -219,14 +228,6 @@ class WeeWanPipeline(WeeVideoPipeline):
             num_frames = kwargs.get("num_frames", 81)
             steps = kwargs.get("num_inference_steps", 10)
 
-            # Default Wan motion-inducing negative prompt (mandated by official Wan2.2 training)
-            DEFAULT_WAN_NEG_PROMPT = (
-                "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，"
-                "整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，"
-                "画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，"
-                "静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走, "
-                "static, still image, motionless, frozen, blurry, ugly, low quality"
-            )
             neg_prompt = kwargs.get("negative_prompt") or DEFAULT_WAN_NEG_PROMPT
 
             _video_cache = None
@@ -420,4 +421,7 @@ class WeeWanPipeline(WeeVideoPipeline):
         # WanPipeline.__call__ does not accept 'fps' — pop it before delegating.
         kwargs.pop("fps", None)
         kwargs.pop("frame_rate", None)
+        if not kwargs.get("negative_prompt"):
+            kwargs["negative_prompt"] = DEFAULT_WAN_NEG_PROMPT
+            logger.info("[WeeLLM/Wan] Injected official Wan motion-inducing negative prompt for T2V.")
         return super().__call__(**kwargs)
