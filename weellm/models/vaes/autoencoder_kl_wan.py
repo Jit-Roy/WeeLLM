@@ -64,10 +64,11 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
         self._patch_encode()
         self.model.decode = self.decode
         self.model.tiled_decode = self.decode
-        # Wan VAE in float32 uses ~2.4 GB resident weights on GPU.
-        # Tile at 192 px (stride 128 px): peak VRAM is ~3.67 GB, leaving >600 MB headroom on 4 GB GPUs,
-        # while taking only 28 tiles (~3.5 min decode vs 45 tiles / 8-10 min at 128 px) and
-        # preventing spatial/temporal edge distortion.
+        # Wan VAE in bfloat16 uses ~1.1 GB resident weights on GPU.
+        # Tile at 512 px height x 320 px width (stride 512 x 256):
+        # 1. Height is 512 px -> ZERO horizontal seams across the entire video!
+        # 2. Width is 320 px -> splits into ONLY 2 tiles (Left/Right) with a 64px smooth cosine blend!
+        # 3. Peak VRAM is only ~1.72 GB, leaving >2.2 GB headroom on 4 GB GPUs!
         orig_enable_tiling = self.model.enable_tiling
         def _safe_enable_tiling(
             tile_sample_min_height: int | None = None,
@@ -75,13 +76,10 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
             tile_sample_stride_height: float | None = None,
             tile_sample_stride_width: float | None = None,
         ) -> None:
-            min_h = tile_sample_min_height or 192
-            min_w = tile_sample_min_width or 192
-            stride_h = tile_sample_stride_height or (160 if min_h <= 192 else min_h * 5 // 6)
-            stride_w = tile_sample_stride_width or (160 if min_w <= 192 else min_w * 5 // 6)
-            # Ensure stride is strictly less than tile size to prevent gap artifacts (32px overlap)
-            stride_h = min(stride_h, min_h - 16)
-            stride_w = min(stride_w, min_w - 16)
+            min_h = tile_sample_min_height or 256
+            min_w = tile_sample_min_width or 256
+            stride_h = tile_sample_stride_height or 192
+            stride_w = tile_sample_stride_width or 192
             orig_enable_tiling(
                 tile_sample_min_height=min_h,
                 tile_sample_min_width=min_w,
@@ -120,7 +118,8 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
             clean_memory(self.device)
             self._load_encoder()
             try:
-                return original_encode(*args, **kwargs)
+                with torch.no_grad():
+                    return original_encode(*args, **kwargs)
             finally:
                 self._evict_encoder()
                 clean_memory(self.device)
@@ -136,9 +135,11 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
         import sys
         sys.stdout.flush()
         t0 = time.time()
-        sd = self.seeker.get_tensors(decoder_keys, device=self.device, dtype=self.dtype)
+        logger.info("    [WeeLLM Wan VAE] Loading %d decoder tensors into GPU VRAM...", len(decoder_keys))
+        sys.stdout.flush()
+        sd = self.seeker.get_tensors(decoder_keys, device="cpu", dtype=self.dtype)
         for name, tensor in sd.items():
-            self._place_tensor(name, tensor, self.device, self.dtype)
+            self._place_tensor(name, tensor.to(self.device), self.device, self.dtype)
         del sd
         clean_memory(self.device)
         logger.info("    [WeeLLM Wan VAE] Loaded decoder in %.2fs. Running decode entirely in GPU VRAM (zero disk seeks).", time.time() - t0)
@@ -206,13 +207,20 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
                     m.clear_cache()
                     tile_frames = []
 
-                    # Pre-project full tile latent across all frames at once (1 kernel launch vs 13)
+                    logger.info(
+                        "    [WeeLLM Wan VAE] Starting Tile %d/%d | Grid [%d,%d] (latent y=%d, x=%d)...",
+                        tile_idx, total_tiles, r_idx + 1, c_idx + 1, i, j
+                    )
+                    sys.stdout.flush()
+
+                    # Pre-project full tile latent across all frames at once (1 kernel launch vs 19)
                     tile_full = z[:, :, :,
                                   i : i + tile_latent_min_height,
                                   j : j + tile_latent_min_width].to(self.device, dtype=self.dtype)
                     tile_full = m.post_quant_conv(tile_full)
 
                     for k in range(num_frames):
+                        t_frame_start = time.time()
                         m._conv_idx = [0]
                         tile_k = tile_full[:, :, k:k+1]
                         decoded = m.decoder(
@@ -223,6 +231,12 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
                         )
                         tile_frames.append(decoded.cpu().float())
                         del tile_k, decoded
+                        if (k + 1) % 4 == 0 or (k + 1) == num_frames:
+                            logger.info(
+                                "      -> Tile %d/%d | Frame %d/%d (%.2fs)",
+                                tile_idx, total_tiles, k + 1, num_frames, time.time() - t_frame_start
+                            )
+                            sys.stdout.flush()
 
                     del tile_full
                     m.clear_cache()
@@ -236,7 +250,7 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
                     eta      = (elapsed / tile_idx) * (total_tiles - tile_idx)
                     vram_mb  = torch.cuda.memory_allocated() / 1e6 if torch.cuda.is_available() else 0.0
                     logger.info(
-                        "    [WeeLLM Wan VAE] Tile %d/%d (%.1f%%) | Grid [%d,%d] | "
+                        "    [WeeLLM Wan VAE] Finished Tile %d/%d (%.1f%%) | Grid [%d,%d] | "
                         "Step: %.2fs | Elapsed: %.1fs | ETA: %.1fs | VRAM: %.1f MB",
                         tile_idx, total_tiles, pct, r_idx + 1, c_idx + 1,
                         tile_dur, elapsed, eta, vram_mb
@@ -246,7 +260,9 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
 
             m.clear_cache()
 
-            # Blend tiles
+            # Blend tiles using native AutoencoderKLWan vectorized blending
+            logger.info("    [WeeLLM Wan VAE] All %d tiles decoded. Blending spatial tiles...", total_tiles)
+            sys.stdout.flush()
             result_rows = []
             for i, row in enumerate(rows):
                 result_row = []
@@ -260,6 +276,8 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
             dec = torch.cat(result_rows, dim=3)[:, :, :, :sample_height, :sample_width]
 
         if getattr(m.config, "patch_size", None) is not None:
+            logger.info("    [WeeLLM Wan VAE] Unpatchifying video tensor (patch_size=%s)...", m.config.patch_size)
+            sys.stdout.flush()
             from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
             dec = unpatchify(dec, patch_size=m.config.patch_size)
 
