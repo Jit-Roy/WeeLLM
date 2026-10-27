@@ -219,11 +219,21 @@ class WeeWanPipeline(WeeVideoPipeline):
             num_frames = kwargs.get("num_frames", 81)
             steps = kwargs.get("num_inference_steps", 10)
 
+            # Default Wan motion-inducing negative prompt (mandated by official Wan2.2 training)
+            DEFAULT_WAN_NEG_PROMPT = (
+                "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，"
+                "整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，"
+                "画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，"
+                "静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走, "
+                "static, still image, motionless, frozen, blurry, ugly, low quality"
+            )
+            neg_prompt = kwargs.get("negative_prompt") or DEFAULT_WAN_NEG_PROMPT
+
             _video_cache = None
             if not no_cache:
                 _video_cache = self._setup_cache(
                     prompt, height, width, num_frames, steps, seed,
-                    negative_prompt=kwargs.get("negative_prompt"),
+                    negative_prompt=neg_prompt,
                     save_every=cache_every, lora_weights=lora_weights
                 )
                 if fresh:
@@ -344,16 +354,11 @@ class WeeWanPipeline(WeeVideoPipeline):
                     i2v_kwargs["callback_on_step_end"] = _cache_cb
                 i2v_kwargs["callback_on_step_end_tensor_inputs"] = ["latents"]
 
-            # Default Wan motion-inducing negative prompt (mandated by official Wan2.2 training)
-            DEFAULT_WAN_NEG_PROMPT = (
-                "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，"
-                "整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，"
-                "画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，"
-                "静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走, "
-                "static, still image, motionless, frozen, blurry, ugly, low quality"
-            )
-            if not i2v_kwargs.get("negative_prompt"):
-                i2v_kwargs["negative_prompt"] = DEFAULT_WAN_NEG_PROMPT
+                # Intercept encode_prompt for prompt embeddings caching
+                _video_cache.wrap_pipeline_encode_prompt(self._i2v_pipeline, device=str(real_dev))
+
+            i2v_kwargs["negative_prompt"] = neg_prompt
+            if not kwargs.get("negative_prompt"):
                 logger.info("[WeeLLM/Wan] Injected official Wan motion-inducing negative prompt.")
 
             logger.info("[WeeLLM/Wan] Running I2V: %d frames, %dx%d, output_type=%s, flow_shift=%s",

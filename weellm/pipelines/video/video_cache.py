@@ -296,7 +296,9 @@ class VideoStepCache:
             )
             return False
 
-        _orig_ep   = pipeline.encode_prompt   # bound method — self is captured
+        _orig_ep = getattr(pipeline, "_unwrapped_encode_prompt", pipeline.encode_prompt)
+        if not hasattr(pipeline, "_unwrapped_encode_prompt"):
+            pipeline._unwrapped_encode_prompt = _orig_ep
         _cache     = self
         _dev       = device
 
