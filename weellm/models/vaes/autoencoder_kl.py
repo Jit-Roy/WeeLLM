@@ -119,7 +119,7 @@ class AutoencoderKL(BaseVAEStreamer):
             block.register_forward_pre_hook(self._block_pre_hook)
             block.register_forward_hook(self._block_post_hook)
 
-        logger.info(
+        logger.debug(
             "      -> [WeeLLM VAE] Installed streaming hooks on %d decoder blocks (%s).",
             len(streaming_blocks),
             ", ".join(p for p, _ in streaming_blocks),
@@ -137,7 +137,7 @@ class AutoencoderKL(BaseVAEStreamer):
         t2 = time.time()
         module._vae_loaded_keys = keys
         
-        logger.info(
+        logger.debug(
             "    [VAE Streamer] %s: Disk/Wait=%.3fs | H2D+Apply=%.3fs",
             shard_prefix, t1 - t0, t2 - t1,
         )
@@ -149,7 +149,7 @@ class AutoencoderKL(BaseVAEStreamer):
         t_end = time.time()
         t_start = getattr(module, "_weellm_t_compute_start", t_end)
         shard_prefix = getattr(module, "_vae_shard_prefix", "unknown")
-        logger.info("    [VAE Streamer] %s: GPU Compute=%.3fs (Offloading...)", shard_prefix, t_end - t_start)
+        logger.debug("    [VAE Streamer] %s: GPU Compute=%.3fs (Offloading...)", shard_prefix, t_end - t_start)
         
         self._evict_keys(getattr(module, "_vae_loaded_keys", []))
         module._vae_loaded_keys = []
@@ -193,11 +193,11 @@ class AutoencoderKL(BaseVAEStreamer):
         diffusers  = importlib.import_module("diffusers")
         vae_cls    = getattr(diffusers, class_name)
 
-        logger.info("  Step 1/3 -- Initialising LiveSeeker on VAE weights (%s) ...", class_name)
+        logger.debug("  Step 1/3 -- Initialising LiveSeeker on VAE weights (%s) ...", class_name)
         seeker = get_seeker(vae_dir, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d VAE tensors across shards.", len(seeker.weight_map))
+        logger.debug("  Found %d VAE tensors across shards.", len(seeker.weight_map))
 
-        logger.info("  Step 2/3 -- Instantiating %s on meta device ...", class_name)
+        logger.debug("  Step 2/3 -- Instantiating %s on meta device ...", class_name)
         with default_dtype(dtype), init_empty_weights():
             cfg   = vae_cls.load_config(str(config_path))
             model = vae_cls.from_config(cfg)
@@ -205,7 +205,7 @@ class AutoencoderKL(BaseVAEStreamer):
 
         streamer = cls(model, seeker, device, dtype)
 
-        logger.info("  Step 3/3 -- Loading VAE resident tensors to GPU ...")
+        logger.debug("  Step 3/3 -- Loading VAE resident tensors to GPU ...")
         resident_keys = streamer._get_resident_keys()
         resident_sd   = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
         for name, tensor in resident_sd.items():
@@ -215,7 +215,7 @@ class AutoencoderKL(BaseVAEStreamer):
         # Flux2-family VAEs have a BatchNorm layer accessed BEFORE decode() is called.
         # Load bn buffers eagerly on CPU so they are not meta tensors.
         if hasattr(model, "bn"):
-            logger.info("  Eagerly loading VAE BN layers (CPU) to preserve contrast ...")
+            logger.debug("  Eagerly loading VAE BN layers (CPU) to preserve contrast ...")
             bn_keys = [k for k in seeker.weight_map if "bn." in k]
             bn_sd   = seeker.get_tensors(bn_keys, device="cpu", dtype=torch.float32)
             for name, tensor in bn_sd.items():
@@ -224,5 +224,5 @@ class AutoencoderKL(BaseVAEStreamer):
 
         clean_memory(device)
         report_memory("After VAE resident load")
-        logger.info("  AutoencoderKL ready (%d resident keys, decoder blocks streamed).", len(resident_keys))
+        logger.debug("  AutoencoderKL ready (%d resident keys, decoder blocks streamed).", len(resident_keys))
         return streamer

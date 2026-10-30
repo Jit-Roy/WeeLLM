@@ -62,18 +62,18 @@ class Lumina2Transformer2DModelStreamer(BaseTransformerStreamer):
 
         model_dir = Path(model_dir)
 
-        logger.info("Initializing SafetensorsLiveSeeker on Lumina2 weights ...")
+        logger.debug("Initializing SafetensorsLiveSeeker on Lumina2 weights ...")
         seeker = get_seeker(model_dir, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d tensors across HF shards.", len(seeker.weight_map))
+        logger.debug("  Found %d tensors across HF shards.", len(seeker.weight_map))
 
-        logger.info("Instantiating Lumina2Transformer2DModel on meta device ...")
+        logger.debug("Instantiating Lumina2Transformer2DModel on meta device ...")
         with default_dtype(dtype), init_empty_weights():
             model = Lumina2Transformer2DModel.from_config(
                 str(model_dir), trust_remote_code=True
             )
         model.eval()
 
-        logger.info("Step 3/3 -- Loading resident transformer tensors to GPU ...")
+        logger.debug("Step 3/3 -- Loading resident transformer tensors to GPU ...")
         streamer = cls(model=model, seeker=seeker, device=device, dtype=dtype, prefetch=prefetch)
         
         # Load non-meta buffers
@@ -88,9 +88,9 @@ class Lumina2Transformer2DModelStreamer(BaseTransformerStreamer):
         clean_memory(device)
         report_memory("After resident load")
 
-        logger.info(
+        logger.debug(
             "Installed %d transformer blocks for streaming.",
             len(model.context_refiner) + len(model.noise_refiner) + len(model.layers)
         )
-        logger.info("Lumina2Transformer2DModelStreamer ready. Mode: Live Seek from original shards")
+        logger.debug("Lumina2Transformer2DModelStreamer ready. Mode: Live Seek from original shards")
         return streamer

@@ -265,9 +265,9 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
     ) -> "MiniMaxH3Transformer3DModelStreamer":
         transformer_dir = Path(transformer_dir)
 
-        logger.info("Step 1/3 -- Initializing LiveSeeker on MiniMax-H3 transformer weights ...")
+        logger.debug("Step 1/3 -- Initializing LiveSeeker on MiniMax-H3 transformer weights ...")
         seeker = get_seeker(transformer_dir, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d tensors across HF shards.", len(seeker.weight_map))
+        logger.debug("  Found %d tensors across HF shards.", len(seeker.weight_map))
 
         # Step 2: Instantiate the model skeleton on meta device using from_config.
         # diffusers uses its own internal attribute names (proj_in, transformer_blocks, etc.)
@@ -275,7 +275,7 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
         from diffusers import MiniMaxH3Transformer3DModel
         from accelerate import init_empty_weights
         from weellm.io.utils import default_dtype
-        logger.info("  Instantiating MiniMaxH3Transformer3DModel on meta device ...")
+        logger.debug("  Instantiating MiniMaxH3Transformer3DModel on meta device ...")
         cfg = MiniMaxH3Transformer3DModel.load_config(str(transformer_dir))
         with init_empty_weights(), default_dtype(dtype):
             model = MiniMaxH3Transformer3DModel.from_config(cfg)
@@ -288,7 +288,7 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
         # shapes match.
         _is_pruned = "adaln_t_table" in seeker.weight_map
         if _is_pruned:
-            logger.info("  Detected pruned GGUF (adaln_t_table present) — "
+            logger.debug("  Detected pruned GGUF (adaln_t_table present) — "
                         "reinitialising adaln_proj.linear in_features: 2688 → 8 on all blocks ...")
             # Reinitialise adaln_proj.linear to accept 8-dim input (matching the table output dim)
             # Must be done on CPU (not meta) so GGUF weights can be loaded in.
@@ -302,7 +302,7 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
                     dtype=dtype,
                 )
                 blk.adaln_proj.linear = new_lin
-            logger.info("  adaln_proj.linear reinitialised on %d blocks.", len(model.transformer_blocks))
+            logger.debug("  adaln_proj.linear reinitialised on %d blocks.", len(model.transformer_blocks))
 
             # norm_out.linear also uses temb in the same AdaLN pattern (from
             # final_layer.adaln_proj.linear in the GGUF) — patch it too.
@@ -315,7 +315,7 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
                     device="cpu",
                     dtype=dtype,
                 )
-                logger.info("  norm_out.linear reinitialised to in_features=8.")
+                logger.debug("  norm_out.linear reinitialised to in_features=8.")
 
             # ── Patch adaln_proj and norm_out to skip SiLU ────────────────────
             # Diffusers hardcodes nn.functional.silu() before every adaln linear.
@@ -356,13 +356,13 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
 
                 model.norm_out.forward = _norm_out_no_silu
 
-            logger.info(
+            logger.debug(
                 "  Patched adaln_proj (×%d) and norm_out to skip SiLU "
                 "(pruned GGUF: apply_silu=False).",
                 len(model.transformer_blocks),
             )
 
-        logger.info("Step 3/3 -- Loading resident transformer tensors to device=%s ...", device)
+        logger.debug("Step 3/3 -- Loading resident transformer tensors to device=%s ...", device)
         streamer = cls(model=model, seeker=seeker, device=device, dtype=dtype, prefetch=prefetch, prefetch_device=prefetch_device)
         resident_ckpt_keys = streamer._get_resident_ckpt_keys()
 
@@ -372,7 +372,7 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
             adaln_table = table_tensor["adaln_t_table"]  # [1025, 8]
             embedder = AdalNTableEmbedder(adaln_table)
             model.time_embedder = embedder
-            logger.info("  Installed AdalNTableEmbedder (table shape %s) — pruned mode.",
+            logger.debug("  Installed AdalNTableEmbedder (table shape %s) — pruned mode.",
                         tuple(adaln_table.shape))
 
             # Register a model-level forward_pre_hook to capture raw timestep.
@@ -389,14 +389,14 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
                 if t is not None:
                     _emb_ref._raw_t = t
                     if not getattr(_emb_ref, "_t_logged", False):
-                        logger.info("  [adaln_t_debug] first timestep = %s  dtype=%s  values=%s",
+                        logger.debug("  [adaln_t_debug] first timestep = %s  dtype=%s  values=%s",
                                     tuple(t.shape), t.dtype,
                                     t.flatten()[:4].tolist())
                         _emb_ref._t_logged = True
                 return None  # do not modify args/kwargs
 
             model.register_forward_pre_hook(_cache_raw_timestep, with_kwargs=True)
-            logger.info("  Registered raw-timestep pre-hook on transformer.")
+            logger.debug("  Registered raw-timestep pre-hook on transformer.")
 
         if resident_ckpt_keys:
             # Load tensors using checkpoint key names, then apply prefix remapping
@@ -435,7 +435,7 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
             model_keys = {n for n, _ in model.named_parameters()}
             skipped = [k for k in remapped_sd if k not in model_keys]
             if skipped:
-                logger.info("  Skipping %d unmapped resident keys (e.g. fused attention): %s ...",
+                logger.debug("  Skipping %d unmapped resident keys (e.g. fused attention): %s ...",
                             len(skipped), skipped[:3])
             streamer.apply_state_dict(remapped_sd, skip_errors=True)
             del remapped_sd
@@ -454,7 +454,7 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
             and not any(n.startswith(pfx) for pfx in streaming_prefixes)
         ]
         if meta_names:
-            logger.info(
+            logger.debug(
                 "  Initialising %d non-streaming meta params missing from GGUF: %s ...",
                 len(meta_names), meta_names[:3],
             )
@@ -471,9 +471,9 @@ class MiniMaxH3Transformer3DModelStreamer(BaseTransformerStreamer):
                     else:
                         torch.nn.init.zeros_(new_t)
                     set_module_tensor_to_device(model, pname, device, value=new_t, dtype=dtype)
-            logger.info("  Meta-param init done.")
+            logger.debug("  Meta-param init done.")
 
         block_count = len(streamer._get_shard_order())
-        logger.info("Installed %d blocks for streaming.", block_count)
-        logger.info("MiniMaxH3Transformer3DModelStreamer ready. Mode: Live Seek from original shards")
+        logger.debug("Installed %d blocks for streaming.", block_count)
+        logger.debug("MiniMaxH3Transformer3DModelStreamer ready. Mode: Live Seek from original shards")
         return streamer

@@ -26,7 +26,7 @@ class GGUFSeeker:
         if not self.gguf_path.is_file():
             raise FileNotFoundError(f"GGUF file not found: {self.gguf_path}")
 
-        logger.info("[GGUFSeeker] Opening %s ...", self.gguf_path.name)
+        logger.debug("[GGUFSeeker] Opening %s ...", self.gguf_path.name)
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="The given NumPy array is not writable")
@@ -58,7 +58,7 @@ class GGUFSeeker:
         # Clear the reader to ensure memmap is closed and OS can free pages
         self._reader = None
         self.weight_map: Dict[str, str] = {k: self.gguf_path.name for k in self._tensor_meta}
-        logger.info("[GGUFSeeker] Loaded %d tensors (arch=%s)", len(self._tensor_meta), arch)
+        logger.debug("[GGUFSeeker] Loaded %d tensors (arch=%s)", len(self._tensor_meta), arch)
 
     def patch_model(self, model: torch.nn.Module, config, device: str, dtype: torch.dtype) -> None:
         """Allow the detected keymap to perform any GGUF-specific structural patches or tensor injections."""

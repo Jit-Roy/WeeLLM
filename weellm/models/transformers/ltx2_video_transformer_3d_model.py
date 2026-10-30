@@ -96,14 +96,14 @@ class LTX2VideoTransformer3DModelStreamer(BaseTransformerStreamer):
     ) -> "LTX2VideoTransformer3DModelStreamer":
         transformer_dir = Path(transformer_dir)
 
-        logger.info("Step 1/3 -- Initializing LiveSeeker on LTX-2.5 transformer weights ...")
+        logger.debug("Step 1/3 -- Initializing LiveSeeker on LTX-2.5 transformer weights ...")
         seeker = get_seeker(transformer_dir, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d tensors across HF shards.", len(seeker.weight_map))
+        logger.debug("  Found %d tensors across HF shards.", len(seeker.weight_map))
 
         from diffusers import LTX2VideoTransformer3DModel
         from accelerate import init_empty_weights
         
-        logger.info("  Instantiating LTX2VideoTransformer3DModel on meta device ...")
+        logger.debug("  Instantiating LTX2VideoTransformer3DModel on meta device ...")
         
         # Load the full config from the local checkpoint directory.
         # Previously we used a hardcoded partial config which caused shape mismatches.
@@ -112,7 +112,7 @@ class LTX2VideoTransformer3DModelStreamer(BaseTransformerStreamer):
             model = LTX2VideoTransformer3DModel.from_config(config)
         model.eval()
 
-        logger.info("Step 3/3 -- Loading resident transformer tensors to device=%s ...", device)
+        logger.debug("Step 3/3 -- Loading resident transformer tensors to device=%s ...", device)
         streamer = cls(model=model, seeker=seeker, device=device, dtype=dtype, prefetch=prefetch, prefetch_device=prefetch_device)
         resident_ckpt_keys = streamer._get_resident_ckpt_keys()
 
@@ -126,6 +126,6 @@ class LTX2VideoTransformer3DModelStreamer(BaseTransformerStreamer):
         report_memory("After resident load")
 
         block_count = len(streamer._get_shard_order())
-        logger.info("Installed %d blocks for streaming.", block_count)
-        logger.info("LTX2VideoTransformer3DModelStreamer ready. Mode: Live Seek from original shards")
+        logger.debug("Installed %d blocks for streaming.", block_count)
+        logger.debug("LTX2VideoTransformer3DModelStreamer ready. Mode: Live Seek from original shards")
         return streamer

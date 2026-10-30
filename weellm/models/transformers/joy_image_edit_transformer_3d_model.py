@@ -60,13 +60,13 @@ class JoyImageEditTransformer3DModelStreamer(BaseTransformerStreamer):
 
         transformer_dir = Path(transformer_dir)
 
-        logger.info("Step 1/3 -- Initializing LiveSeeker on JoyImageEdit transformer weights ...")
+        logger.debug("Step 1/3 -- Initializing LiveSeeker on JoyImageEdit transformer weights ...")
         seeker = get_seeker(transformer_dir, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d tensors across shards.", len(seeker.weight_map))
+        logger.debug("  Found %d tensors across shards.", len(seeker.weight_map))
 
         model = cls._load_model_on_meta(JoyImageEditTransformer3DModel, transformer_dir, device, dtype, seeker)
 
-        logger.info("Step 3/3 -- Loading resident JoyImageEdit transformer tensors to GPU ...")
+        logger.debug("Step 3/3 -- Loading resident JoyImageEdit transformer tensors to GPU ...")
         streamer = cls(model=model, seeker=seeker, device=device, dtype=dtype, prefetch=prefetch)
         resident_keys = streamer._get_resident_keys()
         resident_sd   = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
@@ -75,7 +75,7 @@ class JoyImageEditTransformer3DModelStreamer(BaseTransformerStreamer):
         clean_memory(device)
         report_memory("After resident load")
 
-        logger.info(
+        logger.debug(
             "Installed %d double transformer blocks for streaming.", len(model.double_blocks)
         )
 
@@ -90,5 +90,5 @@ class JoyImageEditTransformer3DModelStreamer(BaseTransformerStreamer):
 
         model.register_forward_pre_hook(_cast_hidden_states, with_kwargs=True)
 
-        logger.info("JoyImageEditTransformer3DModelStreamer ready. Mode: Live Seek from original shards")
+        logger.debug("JoyImageEditTransformer3DModelStreamer ready. Mode: Live Seek from original shards")
         return streamer

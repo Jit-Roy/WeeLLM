@@ -94,11 +94,11 @@ class Ideogram4Transformer2DModelStreamer(BaseTransformerStreamer):
 
         model_dir = Path(model_dir)
 
-        logger.info("Step 1/3 -- Initializing LiveSeeker on Ideogram4 Transformer weights ...")
+        logger.debug("Step 1/3 -- Initializing LiveSeeker on Ideogram4 Transformer weights ...")
         seeker = get_seeker(model_dir, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d tensors across HF shards.", len(seeker.weight_map))
+        logger.debug("  Found %d tensors across HF shards.", len(seeker.weight_map))
 
-        logger.info("Instantiating Ideogram4Transformer2DModel on meta device ...")
+        logger.debug("Instantiating Ideogram4Transformer2DModel on meta device ...")
         from accelerate import init_empty_weights
         from weellm.io.utils import default_dtype
         config = diffusers.Ideogram4Transformer2DModel.load_config(str(model_dir))
@@ -106,7 +106,7 @@ class Ideogram4Transformer2DModelStreamer(BaseTransformerStreamer):
             model = diffusers.Ideogram4Transformer2DModel.from_config(config)
         model.eval()
 
-        logger.info("Step 3/3 -- Loading resident transformer tensors to GPU ...")
+        logger.debug("Step 3/3 -- Loading resident transformer tensors to GPU ...")
         streamer = cls(model=model, seeker=seeker, device=device, dtype=dtype, prefetch=prefetch)
         
         for name, buf in list(model.named_buffers()):
@@ -123,9 +123,9 @@ class Ideogram4Transformer2DModelStreamer(BaseTransformerStreamer):
         clean_memory(device)
         report_memory("After resident load")
 
-        logger.info(
+        logger.debug(
             "Installed %d transformer blocks for streaming.",
             len(streamer._get_shard_order())
         )
-        logger.info("Ideogram4Transformer2DModelStreamer ready. Mode: Live Seek from original shards")
+        logger.debug("Ideogram4Transformer2DModelStreamer ready. Mode: Live Seek from original shards")
         return streamer

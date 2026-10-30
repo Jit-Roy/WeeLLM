@@ -61,13 +61,13 @@ class SD3Transformer2DModelStreamer(BaseTransformerStreamer):
 
         transformer_dir = Path(transformer_dir)
 
-        logger.info("Step 1/3 -- Initializing LiveSeeker on SD3.5 transformer weights ...")
+        logger.debug("Step 1/3 -- Initializing LiveSeeker on SD3.5 transformer weights ...")
         seeker = get_seeker(transformer_dir, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d tensors.", len(seeker.weight_map))
+        logger.debug("  Found %d tensors.", len(seeker.weight_map))
 
         model = cls._load_model_on_meta(SD3Transformer2DModel, transformer_dir, device, dtype, seeker)
 
-        logger.info("Step 3/3 -- Loading resident SD3.5 transformer tensors to GPU ...")
+        logger.debug("Step 3/3 -- Loading resident SD3.5 transformer tensors to GPU ...")
         streamer = cls(model=model, seeker=seeker, device=device, dtype=dtype, prefetch=prefetch)
         resident_keys = streamer._get_resident_keys()
         resident_sd   = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
@@ -76,9 +76,9 @@ class SD3Transformer2DModelStreamer(BaseTransformerStreamer):
         clean_memory(device)
         report_memory("After resident load")
 
-        logger.info(
+        logger.debug(
             "Installed %d joint transformer blocks for streaming.",
             len(model.transformer_blocks),
         )
-        logger.info("SD3Transformer2DModelStreamer ready. Mode: Live Seek from original shard")
+        logger.debug("SD3Transformer2DModelStreamer ready. Mode: Live Seek from original shard")
         return streamer

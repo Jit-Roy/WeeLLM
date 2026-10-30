@@ -40,7 +40,7 @@ class WeeImageToImagePipeline(WeeBasePipeline):
         if base_class_name in IMG2IMG_MAPPING:
             mapped_class = IMG2IMG_MAPPING[base_class_name]
             if mapped_class != base_class_name:
-                logger.info("  [WeeLLM] Mapping base pipeline '%s' to native image pipeline '%s'", base_class_name, mapped_class)
+                logger.debug("  [WeeLLM] Mapping base pipeline '%s' to native image pipeline '%s'", base_class_name, mapped_class)
             return mapped_class
             
         if any(kw in base_class_name for kw in ["Img2Img", "Fill", "Inpaint", "Edit"]):

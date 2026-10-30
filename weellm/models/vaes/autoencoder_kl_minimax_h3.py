@@ -213,17 +213,17 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
         cache_file = os.path.join(cache_dir, f"vae_decode_cache_{cache_id}.pt")
 
         if os.path.exists(cache_file):
-            logger.info("    [VAE Streamer] Loading cached decoded video from %s ...", cache_file)
+            logger.debug("    [VAE Streamer] Loading cached decoded video from %s ...", cache_file)
             result = torch.load(cache_file, map_location=latents.device)
-            logger.info("    [VAE Streamer] Cached decode loaded: %s", tuple(result.shape))
+            logger.debug("    [VAE Streamer] Cached decode loaded: %s", tuple(result.shape))
         else:
             with torch.no_grad():
                 report_memory("Before VAE decode")
                 result = self._stream_decode(latents.to(self.dtype))
                 report_memory("After VAE decode")
-                logger.info("    [VAE Streamer] decode done: %s", tuple(result.shape))
+                logger.debug("    [VAE Streamer] decode done: %s", tuple(result.shape))
 
-            logger.info("    [VAE Streamer] Saving video decode cache to %s ...", cache_file)
+            logger.debug("    [VAE Streamer] Saving video decode cache to %s ...", cache_file)
             torch.save(result.cpu(), cache_file)
             result = result.to(latents.device)
 
@@ -354,16 +354,16 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
         # RAM cache depth: number of blocks to prefetch into CPU RAM
         max_ram_cache = max(1, min(6, int(free_ram / BLOCK_BYTES)))
 
-        logger.info(
+        logger.debug(
             "    [VAE Streamer] Dynamic Budget: VRAM Free=%.2fGB, RAM Free=%.2fGB | tile_bytes=%.1fMB",
             free_vram / 1e9, free_ram / 1e9, TILE_BYTES / 1e6,
         )
-        logger.info(
+        logger.debug(
             "    [VAE Streamer] Decided Buffers: GPU Slots=%d blocks | RAM Cache Depth=%d blocks | "
             "Micro-batch MAX=%d/%d tiles",
             gpu_blocks_capacity, max_ram_cache, MAX_MICROBATCH, num_tiles_total,
         )
-        logger.info(
+        logger.debug(
             "    [VAE Streamer] Streaming %d blocks over %d tile-clips ...",
             len(dec.transformer_blocks), num_tiles_total,
         )
@@ -496,7 +496,7 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
 
                     used = torch.cuda.memory_allocated() / 1e9
                     resv = torch.cuda.memory_reserved() / 1e9
-                    logger.info(
+                    logger.debug(
                         "    [VAE Streamer] Block %02d/%d | Disk: %4.0fms | H2D: %4.0fms | "
                         "Compute: %4.0fms | GPU Idle: %3.0fms | GPU Blocks: %d | "
                         "CPU Blocks: %d/%d | VRAM: %.2fGB / Resv: %.2fGB",
@@ -520,7 +520,7 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
                 b._forward_pre_hooks = pre
                 b._forward_hooks     = post
 
-        logger.info(
+        logger.debug(
             "    [VAE Streamer] All %d blocks finished | Total GPU Starvation/Idle Time: %.0fms",
             len(dec.transformer_blocks), total_gpu_idle * 1000,
         )
@@ -615,11 +615,11 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
         if is_audio:
             diffusers = importlib.import_module("diffusers")
             vae_cls = getattr(diffusers, class_name)
-            logger.info("  Step 1/3 -- Initialising LiveSeeker on Audio VAE weights (%s) ...", class_name)
+            logger.debug("  Step 1/3 -- Initialising LiveSeeker on Audio VAE weights (%s) ...", class_name)
             seeker = get_seeker(str(vae_dir), cache_to_ram=cache_to_ram)
-            logger.info("  Found %d VAE tensors across shards.", len(seeker.weight_map))
+            logger.debug("  Found %d VAE tensors across shards.", len(seeker.weight_map))
 
-            logger.info("  Step 2/3 -- Instantiating %s on meta device ...", class_name)
+            logger.debug("  Step 2/3 -- Instantiating %s on meta device ...", class_name)
             with default_dtype(dtype), init_empty_weights():
                 cfg = vae_cls.load_config(str(config_path))
                 model = vae_cls.from_config(cfg)
@@ -638,18 +638,18 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
                     full_key = f"decoder.{param_name}"
                     if param.device.type == "meta" and full_key not in seeker.weight_map:
                         set_module_tensor_to_device(model.decoder, param_name, device, value=torch.ones_like(param, device=device, dtype=dtype))
-                        logger.info("    [VAE] Initialized missing meta parameter '%s' to ones on %s", param_name, device)
+                        logger.debug("    [VAE] Initialized missing meta parameter '%s' to ones on %s", param_name, device)
 
-            logger.info("  Step 3/3 -- Audio VAE initialized on meta device (0 resident keys).")
+            logger.debug("  Step 3/3 -- Audio VAE initialized on meta device (0 resident keys).")
             return streamer
         else:
             from diffusers.models.autoencoders.autoencoder_kl_minimax_h3 import AutoencoderKLMiniMaxH3
-            logger.info("  Step 1/3 -- Initialising LiveSeeker on MiniMax VAE weights ...")
+            logger.debug("  Step 1/3 -- Initialising LiveSeeker on MiniMax VAE weights ...")
             source_path = vae_dir / config["source_path"] if "source_path" in config else vae_dir
             seeker = get_seeker(str(source_path), cache_to_ram=cache_to_ram)
-            logger.info("  Found %d VAE tensors across shards.", len(seeker.weight_map))
+            logger.debug("  Found %d VAE tensors across shards.", len(seeker.weight_map))
 
-            logger.info("  Step 2/3 -- Instantiating AutoencoderKLMiniMaxH3 on meta device ...")
+            logger.debug("  Step 2/3 -- Instantiating AutoencoderKLMiniMaxH3 on meta device ...")
             init_cfg = {k: v for k, v in config.items() if not k.startswith("_")}
             with init_empty_weights():
                 model = AutoencoderKLMiniMaxH3(**init_cfg)
@@ -663,7 +663,7 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
             }
             streamer = cls(model, seeker, device, dtype, config_extras=config_extras)
 
-            logger.info("  Step 3/3 -- Loading VAE resident tensors to GPU ...")
+            logger.debug("  Step 3/3 -- Loading VAE resident tensors to GPU ...")
             resident_keys = streamer._get_resident_keys()
             resident_sd   = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
             for name, tensor in resident_sd.items():
@@ -675,9 +675,9 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
                 for buf_name, buf in list(_decoder.named_buffers()):
                     if buf.device.type == "cpu":
                         buf.data = buf.data.to(device)
-                        logger.info("    [VAE] Moved decoder buffer '%s' -> %s", buf_name, device)
+                        logger.debug("    [VAE] Moved decoder buffer '%s' -> %s", buf_name, device)
 
             clean_memory(device)
             report_memory("After VAE resident load")
-            logger.info("  MiniMaxVAEStreamer ready (%d resident keys, decoder blocks streamed).", len(resident_keys))
+            logger.debug("  MiniMaxVAEStreamer ready (%d resident keys, decoder blocks streamed).", len(resident_keys))
             return streamer

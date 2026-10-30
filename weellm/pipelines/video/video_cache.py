@@ -225,7 +225,7 @@ class VideoStepCache:
         self._embeds_path = self.embeds_dir / "embeds.pt"
         self._final_path  = self.run_dir    / "final.pt"
 
-        logger.info(
+        logger.debug(
             "[VideoCache] cache_root=%s | prompt_hash=%s | run_hash=%s "
             "(first_frame=%s, last_frame=%s)",
             root, prompt_hash, run_hash, ff_hash, lf_hash,
@@ -239,7 +239,7 @@ class VideoStepCache:
         The returned tensors are on CPU; move them to the target device yourself.
         """
         if self._embeds_path.exists():
-            logger.info(
+            logger.debug(
                 "[VideoCache] Prompt-embeds cache HIT (%s) — skipping text encoder",
                 self._embeds_path.name,
             )
@@ -269,7 +269,7 @@ class VideoStepCache:
             for k, v in data.items()
         }
         torch.save(cpu_data, str(self._embeds_path))
-        logger.info("[VideoCache] Prompt-embeds saved → %s", self._embeds_path)
+        logger.debug("[VideoCache] Prompt-embeds saved → %s", self._embeds_path)
 
     # ── Final-latents cache ───────────────────────────────────────────────────
 
@@ -285,7 +285,7 @@ class VideoStepCache:
         """
         if not self._final_path.exists():
             raise FileNotFoundError(f"No final cache at {self._final_path}")
-        logger.info(
+        logger.debug(
             "[VideoCache] Final-latents cache HIT (%s) — skipping denoising loop",
             self._final_path.name,
         )
@@ -301,7 +301,7 @@ class VideoStepCache:
             for k, v in data.items()
         }
         torch.save(cpu_data, str(self._final_path))
-        logger.info("[VideoCache] Final latents saved → %s", self._final_path)
+        logger.debug("[VideoCache] Final latents saved → %s", self._final_path)
 
     # ── Per-step callback ─────────────────────────────────────────────────────
 
@@ -322,7 +322,7 @@ class VideoStepCache:
         def _step_callback(pipe, step_index: int, timestep, callback_kwargs: dict):
             if resume_step is not None and resume_latents is not None:
                 if step_index == resume_step:
-                    logger.info("[VideoCache] Injecting preserved latents at step %d", step_index)
+                    logger.debug("[VideoCache] Injecting preserved latents at step %d", step_index)
                     if "latents" in resume_latents:
                         callback_kwargs["latents"] = resume_latents["latents"].to(pipe.device)
                     if "audio_latents" in resume_latents and "audio_latents" in callback_kwargs:
@@ -391,7 +391,7 @@ class VideoStepCache:
         if cached is not None:
             # ── HIT: return cached tensors, skip text encoder ─────────────
             def _cached_encode_prompt(*args, **kwargs):  # noqa: ANN202
-                logger.info(
+                logger.debug(
                     "[VideoCache] encode_prompt cache HIT — text encoder skipped"
                 )
                 # Rebuild the return value.  We stored it as
@@ -462,7 +462,7 @@ class VideoStepCache:
         latest = self.latest_step_file()
         if not latest:
             return None
-        logger.info("[VideoCache] Latest step checkpoint: %s", latest.name)
+        logger.debug("[VideoCache] Latest step checkpoint: %s", latest.name)
         data = self.load_step(latest)
         return data.get("latents")
 
@@ -473,14 +473,14 @@ class VideoStepCache:
         """
         shutil.rmtree(str(self.run_dir), ignore_errors=True)
         self.run_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("[VideoCache] Run cache cleared: %s", self.run_dir)
+        logger.debug("[VideoCache] Run cache cleared: %s", self.run_dir)
 
     def clear_all(self) -> None:
         """Delete both embeds and run caches (full reset)."""
         self.clear_run()
         if self._embeds_path.exists():
             self._embeds_path.unlink()
-            logger.info("[VideoCache] Embeds cache cleared: %s", self.embeds_dir)
+            logger.debug("[VideoCache] Embeds cache cleared: %s", self.embeds_dir)
 
     @property
     def run_dir_path(self) -> str:

@@ -35,7 +35,7 @@ def build_lora_pairs(lora_keys: Set[str]) -> Tuple[List[LoRAPair], Any]:
     """
     for keymap_cls in _REGISTRY:
         if keymap_cls.detect(lora_keys):
-            logger.info("[LoRA] Detected arch: %s — remapping keys.", keymap_cls.NAME)
+            logger.debug("[LoRA] Detected arch: %s — remapping keys.", keymap_cls.NAME)
             pairs = keymap_cls.build_pairs(lora_keys)
             return pairs, keymap_cls
 

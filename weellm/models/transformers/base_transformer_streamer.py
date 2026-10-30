@@ -229,7 +229,7 @@ class BaseTransformerStreamer(ABC):
             return 1
 
         if self.prefetch_device != "cpu":
-            logger.info("[Streamer] Prefetching directly to %s — restricting depth to 1 to prevent VRAM overflow.", self.prefetch_device)
+            logger.debug("[Streamer] Prefetching directly to %s — restricting depth to 1 to prevent VRAM overflow.", self.prefetch_device)
             return 1
 
         try:
@@ -250,7 +250,7 @@ class BaseTransformerStreamer(ABC):
         except ImportError:
             depth = 1
 
-        logger.info(
+        logger.debug(
             "[Streamer] Adaptive prefetch depth: %d  "
             "(largest block: %.0f MB, available RAM limit: %.1f GB, overhead: %.1f GB)",
             depth,
@@ -386,7 +386,7 @@ class BaseTransformerStreamer(ABC):
         """
         from weellm.models.loras.lora_streamer import GenericLazyLoRALoader
         self.lora_loader = GenericLazyLoRALoader(lora_path, scale=lora_scale)
-        logger.info(
+        logger.debug(
             "[LoRA] Attached '%s' (scale=%.2f) to %s.",
             lora_path, lora_scale, type(self).__name__,
         )
@@ -523,13 +523,13 @@ class BaseTransformerStreamer(ABC):
         is_pinned = shard_name in self._pinned_blocks
 
         if is_pinned:
-            logger.info(
+            logger.debug(
                 "    [Streamer] Block %s (%d/%d) [VRAM HIT — skipping disk]",
                 shard_name, pos + 1, len(self._shard_order),
             )
         else:
             src = "prefetch" if shard_name in getattr(self, '_h2d_futures', {}) else "disk (sync)"
-            logger.info(
+            logger.debug(
                 "    [Streamer] Block %s (%d/%d) [loading from %s]",
                 shard_name, pos + 1, len(self._shard_order), src
             )
@@ -586,7 +586,7 @@ class BaseTransformerStreamer(ABC):
 
         t2 = time.time()
 
-        logger.info(
+        logger.debug(
             "    [Streamer] %s (%d/%d): Disk/Wait=%.3fs | H2D+Apply=%.3fs",
             shard_name, pos + 1, len(self._shard_order), t1 - t0, t2 - t1,
         )
@@ -656,7 +656,7 @@ class BaseTransformerStreamer(ABC):
         t_end  = time.time()
         t_start = getattr(module, "_weellm_t_compute_start", t_end)
         shard_name = getattr(module, _SHARD_NAME_ATTR)
-        logger.info("    [Streamer] %s: GPU Compute=%.3fs (Offloading...)", shard_name, t_end - t_start)
+        logger.debug("    [Streamer] %s: GPU Compute=%.3fs (Offloading...)", shard_name, t_end - t_start)
 
         should_evict = True
 
@@ -803,7 +803,7 @@ class BaseTransformerStreamer(ABC):
         from accelerate import init_empty_weights
         from weellm.io.utils import default_dtype
 
-        logger.info("  Instantiating %s on meta device ...", model_cls.__name__)
+        logger.debug("  Instantiating %s on meta device ...", model_cls.__name__)
         with default_dtype(dtype), init_empty_weights():
             cfg   = model_cls.load_config(str(transformer_dir / "config.json"))
             model = model_cls.from_config(cfg)

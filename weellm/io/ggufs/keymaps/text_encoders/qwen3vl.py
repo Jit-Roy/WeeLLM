@@ -88,7 +88,7 @@ class Qwen3VLGGUFKeyMap:
                 ones = torch.ones(lm_cfg.hidden_size, dtype=dtype, device=device)
                 set_module_tensor_to_device(model, "model.language_model.norm.weight",
                                             device, value=ones)
-                logger.info("  [GGUF fix] Initialised model.language_model.norm.weight to ones.")
+                logger.debug("  [GGUF fix] Initialised model.language_model.norm.weight to ones.")
         except (AttributeError, StopIteration):
             pass
 
@@ -107,7 +107,7 @@ class Qwen3VLGGUFKeyMap:
                         f"model.language_model.rotary_emb.{attr}",
                         device, value=inv_freq.clone(),
                     )
-                    logger.info("  [GGUF fix] Initialised model.language_model.rotary_emb.%s.", attr)
+                    logger.debug("  [GGUF fix] Initialised model.language_model.rotary_emb.%s.", attr)
         except AttributeError:
             pass
 
@@ -124,7 +124,7 @@ class Qwen3VLGGUFKeyMap:
                     model, "model.visual.rotary_pos_emb.inv_freq",
                     device, value=inv_freq,
                 )
-                logger.info("  [GGUF fix] Initialised model.visual.rotary_pos_emb.inv_freq.")
+                logger.debug("  [GGUF fix] Initialised model.visual.rotary_pos_emb.inv_freq.")
         except AttributeError:
             pass
 
@@ -139,7 +139,7 @@ class Qwen3VLGGUFKeyMap:
                         model, "lm_head.weight",
                         device, value=embed_w.data,
                     )
-                    logger.info("  [GGUF fix] Tied lm_head.weight to embed_tokens.weight.")
+                    logger.debug("  [GGUF fix] Tied lm_head.weight to embed_tokens.weight.")
         except AttributeError:
             pass
 

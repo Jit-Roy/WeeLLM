@@ -140,7 +140,7 @@ class BaseLazyDecoderStreamer(ABC):
     def _ensure_initialized(self) -> None:
         if self._initialized:
             return
-        logger.info("Initialising streaming %s text encoder ...", self._model_name)
+        logger.debug("Initialising streaming %s text encoder ...", self._model_name)
         self._seeker = get_seeker(self.text_encoder_dir, cache_to_ram=self.cache_to_ram)
         self._load_model_skeleton()
         self._load_tokenizer()
@@ -159,7 +159,7 @@ class BaseLazyDecoderStreamer(ABC):
             self._executor = None
 
         self._initialized = True
-        logger.info("Text encoder ready (streaming via Live Seek).")
+        logger.debug("Text encoder ready (streaming via Live Seek).")
 
     def _compute_prefetch_depth(self) -> int:
         """Adaptive prefetch depth: available_ram_budget // avg_layer_size."""

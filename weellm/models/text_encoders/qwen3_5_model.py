@@ -84,14 +84,14 @@ class Qwen3_5ModelStreamer:
     def _ensure_initialized(self):
         if self._initialized:
             return
-        logger.info("Initializing streaming Qwen3_5Model text encoder ...")
+        logger.debug("Initializing streaming Qwen3_5Model text encoder ...")
         self._seeker = get_seeker(self.text_encoder_dir, cache_to_ram=self.cache_to_ram)
         self._load_model_skeleton()
         self._load_resident_modules()
         self._install_hooks()
 
         self._initialized = True
-        logger.info("Qwen3_5Model text encoder ready (streaming via Live Seek).")
+        logger.debug("Qwen3_5Model text encoder ready (streaming via Live Seek).")
 
     def _load_model_skeleton(self):
         config = AutoConfig.from_pretrained(str(self.text_encoder_dir), trust_remote_code=True)

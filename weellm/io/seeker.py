@@ -80,7 +80,7 @@ def get_seeker(model_dir: Union[str, Path], cache_to_ram: bool = False):
         if len(parts) >= 3 and "." in parts[-1]:
             repo_id = f"{parts[0]}/{parts[1]}"
             filename = "/".join(parts[2:])
-            logger.info("  [WeeLLM] Hub file '%s' not found locally. Downloading from repo: %s...", model_dir_str, repo_id)
+            logger.debug("  [WeeLLM] Hub file '%s' not found locally. Downloading from repo: %s...", model_dir_str, repo_id)
             from huggingface_hub import hf_hub_download
             downloaded_path = hf_hub_download(repo_id=repo_id, filename=filename)
             model_dir_path = Path(downloaded_path)
@@ -102,7 +102,7 @@ def get_seeker(model_dir: Union[str, Path], cache_to_ram: bool = False):
         if is_hub_id:
             actual_repo_id = f"{parts[0]}/{parts[1]}"
 
-            logger.info("Directory '%s' not found. Attempting to download from Hugging Face Hub (repo: %s)...", model_dir, actual_repo_id)
+            logger.debug("Directory '%s' not found. Attempting to download from Hugging Face Hub (repo: %s)...", model_dir, actual_repo_id)
             from huggingface_hub import snapshot_download, HfApi
             try:
                 files = HfApi().list_repo_files(repo_id=actual_repo_id)
@@ -120,7 +120,7 @@ def get_seeker(model_dir: Union[str, Path], cache_to_ram: bool = False):
                     f"{target_subfolder}/*.safetensors.index.json",
                     "model_index.json"
                 ]
-                logger.info("  Detected pipeline repo. Downloading ONLY subfolder '%s' ...", target_subfolder)
+                logger.debug("  Detected pipeline repo. Downloading ONLY subfolder '%s' ...", target_subfolder)
             else:
                 allow_patterns = ["*.safetensors", "*.safetensors.index.json", "*.json"]
 
@@ -132,7 +132,7 @@ def get_seeker(model_dir: Union[str, Path], cache_to_ram: bool = False):
             # Absolute local path — try to recover a missing HF cache subfolder.
             repo_id, subfolder = _extract_hub_repo_from_cache_path(model_dir_path)
             if repo_id and subfolder:
-                logger.info(
+                logger.debug(
                     "Local subfolder '%s' not found. Downloading '%s' from repo '%s' ...",
                     model_dir_path, subfolder, repo_id,
                 )

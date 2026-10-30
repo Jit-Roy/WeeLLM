@@ -50,7 +50,7 @@ def build_remap_fn(
     for keymap_cls in _REGISTRY:
         if keymap_cls.detect(weight_map_keys):
             remap_dict: Dict[str, str] = keymap_cls.build_remap(weight_map_keys)
-            logger.info(
+            logger.debug(
                 "[SafetensorsKeymap] Detected format: %s — remapping to diffusers convention.",
                 keymap_cls.NAME,
             )

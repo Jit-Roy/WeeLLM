@@ -123,7 +123,7 @@ class WeeVideoResult:
             from diffusers.utils import export_to_video
             export_to_video(self.frames, output_video_path=filepath, fps=final_fps)
             
-        logger.info(f"Video saved to {filepath} at {final_fps} FPS.")
+        logger.debug(f"Video saved to {filepath} at {final_fps} FPS.")
 
 class WeeVideoPipeline(WeeBasePipeline):
     
@@ -155,7 +155,7 @@ class WeeVideoPipeline(WeeBasePipeline):
         # we skip the routing to avoid infinite loops and just construct it.
         if cls is WeeVideoPipeline and class_name in _VIDEO_MAP:
             module_path, class_name_str = _VIDEO_MAP[class_name]
-            logger.info("  Mode:     %s", class_name)
+            logger.debug("  Mode:     %s", class_name)
 
             module = importlib.import_module(module_path)
             pipeline_class = getattr(module, class_name_str)
@@ -277,7 +277,7 @@ class WeeVideoPipeline(WeeBasePipeline):
 
                 height = _user_h if _user_h is not None else (_fh if _fh else 512)
                 width  = _user_w if _user_w is not None else (_fw if _fw else 512)
-                logger.info(
+                logger.debug(
                     "[WeeLLM] I2V mode — resolved dims: height=%d, width=%d "
                     "(source: %s)",
                     height, width,
@@ -287,7 +287,7 @@ class WeeVideoPipeline(WeeBasePipeline):
                 # T2V mode: sensible default.
                 height = _user_h if _user_h is not None else 512
                 width  = _user_w if _user_w is not None else 512
-                logger.info(
+                logger.debug(
                     "[WeeLLM] T2V mode — resolved dims: height=%d, width=%d",
                     height, width,
                 )
@@ -331,7 +331,7 @@ class WeeVideoPipeline(WeeBasePipeline):
                             def __getattr__(self, attr):
                                 return getattr(self.block, attr)
                             def __call__(self, pipe, state):
-                                logger.info("[VideoCache] Skipping ModularPipeline TextEncoder block (Cache HIT)")
+                                logger.debug("[VideoCache] Skipping ModularPipeline TextEncoder block (Cache HIT)")
                                 block_state = self.block.get_block_state(state) if hasattr(self.block, "get_block_state") else getattr(state, getattr(self.block, "model_name", "unknown"), None)
                                 if block_state is not None:
                                     device = getattr(pipe, "_execution_device", getattr(pipe, "device", "cuda"))
@@ -423,7 +423,7 @@ class WeeVideoPipeline(WeeBasePipeline):
             _patch_denoise_loops(_underlying._blocks.sub_blocks)
         
         if _ep_hit:
-            logger.info("[VideoCache] Text encoder output restored from cache — skipped entirely.")
+            logger.debug("[VideoCache] Text encoder output restored from cache — skipped entirely.")
             try:
                 from weellm.io.memory import evict_module as _evict_te
                 _te_names = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
@@ -447,7 +447,7 @@ class WeeVideoPipeline(WeeBasePipeline):
             kwargs.setdefault("output_type", "latent")
             
         if lora_weights is not None:
-            logger.info(f"Loading LoRA weights from {lora_weights}")
+            logger.debug(f"Loading LoRA weights from {lora_weights}")
             
             from weellm.models.loras.lora_streamer import GenericLazyLoRALoader
             lazy_loader = GenericLazyLoRALoader(lora_weights)
@@ -464,7 +464,7 @@ class WeeVideoPipeline(WeeBasePipeline):
                 lazy_loader.apply_to_module(_conn_model, "connectors")
 
         if _video_cache.has_final():
-            logger.info("[VideoCache] Final-latents cache HIT — running decode-only.")
+            logger.debug("[VideoCache] Final-latents cache HIT — running decode-only.")
             _cached_final = _video_cache.load_final()
             _cached_latents = _cached_final.get("latents")
             if _cached_latents is not None and hasattr(_underlying, "vae") and _underlying.vae is not None:
@@ -541,7 +541,7 @@ class WeeVideoPipeline(WeeBasePipeline):
             if latest_file is not None:
                 resume_step = _video_cache.step_from_file(latest_file)
                 resume_latents = _video_cache.load_step(latest_file)
-                logger.info(f"[VideoCache] Resuming from step {resume_step}!")
+                logger.debug(f"[VideoCache] Resuming from step {resume_step}!")
 
                 class SkipDenoisingWrapper:
                     def __init__(self, original, r_step):
@@ -552,7 +552,7 @@ class WeeVideoPipeline(WeeBasePipeline):
                         return getattr(self.original, name)
                     def __call__(self, *args, **kw):
                         if self.current_step <= self.resume_step:
-                            logger.info(f"[VideoCache] Fast-forwarding step {self.current_step}")
+                            logger.debug(f"[VideoCache] Fast-forwarding step {self.current_step}")
                             self.current_step += 1
                             latents = kw.get("hidden_states", args[0] if len(args) > 0 else None)
                             if latents is None: latents = kw.get("sample", None)
@@ -661,7 +661,7 @@ class WeeVideoPipeline(WeeBasePipeline):
             
             if not _is_waveform and _audio_vae:
                 try:
-                    logger.info("[WeeLLM] Manually decoding audio latents using audio_vae...")
+                    logger.debug("[WeeLLM] Manually decoding audio latents using audio_vae...")
                     with torch.no_grad():
                         _audio = _audio.to(_audio_vae.dtype).to(_audio_vae.device)
                         if hasattr(_audio_vae, "config") and hasattr(_audio_vae.config, "latents_mean"):

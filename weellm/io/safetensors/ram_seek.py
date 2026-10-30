@@ -50,7 +50,7 @@ class SafetensorsRAMSeeker(SafetensorsBase):
         if filename in self._ram_cache:
             return
 
-        logger.info("  [RAM Cache] Loading %s into CPU RAM...", filename)
+        logger.debug("  [RAM Cache] Loading %s into CPU RAM...", filename)
         with open(filepath, "rb") as f:
             raw = f.read(8)
             if len(raw) < 8:

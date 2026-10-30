@@ -78,13 +78,13 @@ def resolve_model_path(model_id_or_path: str, skip_components: set = None) -> Pa
             "Install it via: pip install huggingface_hub"
         )
 
-    logger.info(
+    logger.debug(
         "Path '%s' not found locally. Attempting to download from Hugging Face Hub ...",
         model_id_or_path,
     )
 
     # Phase 1: fetch model_index.json to know which components we need.
-    logger.info("  Fetching model_index.json from '%s' ...", model_id_or_path)
+    logger.debug("  Fetching model_index.json from '%s' ...", model_id_or_path)
     index_dir  = snapshot_download(model_id_or_path, allow_patterns=["model_index.json"])
     index_path = Path(index_dir) / "model_index.json"
     with open(index_path, "r", encoding="utf-8") as f:
@@ -97,11 +97,11 @@ def resolve_model_path(model_id_or_path: str, skip_components: set = None) -> Pa
     for key, value in index_data.items():
         if isinstance(value, list) and len(value) >= 2:
             if skip_components and key in skip_components:
-                logger.info("  Skipping safetensors download for '%s' (override provided), but keeping configs", key)
+                logger.debug("  Skipping safetensors download for '%s' (override provided), but keeping configs", key)
                 allow_patterns.append(f"{key}/*.json")
                 continue
             allow_patterns.append(f"{key}/*")
 
-    logger.info("  Downloading only required components: %s", allow_patterns)
+    logger.debug("  Downloading only required components: %s", allow_patterns)
     cached_path = snapshot_download(model_id_or_path, allow_patterns=allow_patterns)
     return Path(cached_path)

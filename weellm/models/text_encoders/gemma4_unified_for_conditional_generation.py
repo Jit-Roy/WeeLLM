@@ -45,7 +45,7 @@ class Gemma4UnifiedForConditionalGenerationStreamer:
                     self._prefetch_depth = 0
                 else:
                     self._prefetch_depth = max(1, min(_MAX_PREFETCH_DEPTH, int(usable // layer_bytes)))
-                    logger.info(
+                    logger.debug(
                         "[TE Streamer] Adaptive prefetch depth: %d (layer=%.0f MB, usable RAM=%.1f GB)",
                         self._prefetch_depth, layer_bytes / 1e6, usable / 1e9,
                     )
@@ -126,7 +126,7 @@ class Gemma4UnifiedForConditionalGenerationStreamer:
         del sd
                     
         t2 = time.time()
-        logger.info(
+        logger.debug(
             "    [TE Streamer] %s (%d/%d): Disk/Wait=%.3fs | H2D+Apply=%.3fs",
             shard_name, pos + 1, self.layer_count, t1 - t0, t2 - t1,
         )
@@ -148,7 +148,7 @@ class Gemma4UnifiedForConditionalGenerationStreamer:
         t_end = time.time()
         t_start = getattr(module, "_weellm_t_compute_start", t_end)
         shard_name = module._gemma_te_shard
-        logger.info("    [TE Streamer] %s: GPU Compute=%.3fs (Offloading...)", shard_name, t_end - t_start)
+        logger.debug("    [TE Streamer] %s: GPU Compute=%.3fs (Offloading...)", shard_name, t_end - t_start)
         
         evict_module(module)
         return output
@@ -162,10 +162,10 @@ class Gemma4UnifiedForConditionalGenerationStreamer:
         prefetch=True,
         cache_to_ram=False,
     ):
-        logger.info("Step 1/3 -- Initializing LiveSeeker on Gemma4-12B weights ...")
+        logger.debug("Step 1/3 -- Initializing LiveSeeker on Gemma4-12B weights ...")
         seeker = get_seeker(str(model_dir), cache_to_ram=cache_to_ram)
         
-        logger.info("  Instantiating Gemma3TextModel on meta device ...")
+        logger.debug("  Instantiating Gemma3TextModel on meta device ...")
         # Exact LTX-2.5 Text Encoder (Gemma 3 12B architecture):
         import json
         import os
@@ -206,7 +206,7 @@ class Gemma4UnifiedForConditionalGenerationStreamer:
         model.eval()
 
         # Fix PyTorch meta buffers that lose their values during init_empty_weights()
-        logger.info("  Re-initializing rotary embeddings and scale buffers on GPU ...")
+        logger.debug("  Re-initializing rotary embeddings and scale buffers on GPU ...")
         # 1. Re-initialize RoPE so all inv_freq buffers are calculated with real data
         model.rotary_emb = type(model.rotary_emb)(text_config).to(device)
         
@@ -245,7 +245,7 @@ class Gemma4UnifiedForConditionalGenerationStreamer:
                 except Exception:
                     pass
 
-        logger.info("Step 2/3 -- Hooking streaming layers ...")
+        logger.debug("Step 2/3 -- Hooking streaming layers ...")
         streamer = cls(
             model=model,
             seeker=seeker,
@@ -254,7 +254,7 @@ class Gemma4UnifiedForConditionalGenerationStreamer:
             prefetch=prefetch,
         )
 
-        logger.info("Step 3/3 -- Loading resident tensors ...")
+        logger.debug("Step 3/3 -- Loading resident tensors ...")
         resident_keys = streamer._get_resident_keys()
         sd = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
         

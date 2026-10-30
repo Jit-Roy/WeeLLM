@@ -127,7 +127,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
                     setattr(vae, _attr, 10_000)
             if hasattr(vae, "enable_slicing"):
                 vae.enable_slicing()
-            logger.info(
+            logger.debug(
                 "      -> [WeeLLM/LTX2] VAE temporal tiling enabled: "
                 "tile=33 sample frames, stride=17 (~50%% overlap). "
                 "blend_t() crossfading active — no seam artifacts."
@@ -195,7 +195,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
                     from diffusers import LTX2InContextPipeline
                     from diffusers.pipelines.ltx2.pipeline_ltx2_condition import LTX2VideoCondition
                     import inspect
-                    logger.info("Routing to LTX2InContextPipeline (Video Interpolation)...")
+                    logger.debug("Routing to LTX2InContextPipeline (Video Interpolation)...")
                     valid_keys = set(inspect.signature(LTX2InContextPipeline.__init__).parameters.keys())
                     safe_components = {k: v for k, v in self._pipeline.components.items() if k in valid_keys}
                     self._pipeline = LTX2InContextPipeline(**safe_components)
@@ -214,7 +214,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
                 if "ImageToVideo" not in _current_class_name:
                     from diffusers import LTX2ImageToVideoPipeline
                     import inspect
-                    logger.info("Routing to LTX2ImageToVideoPipeline (Image-to-Video)...")
+                    logger.debug("Routing to LTX2ImageToVideoPipeline (Image-to-Video)...")
                     valid_keys = set(inspect.signature(LTX2ImageToVideoPipeline.__init__).parameters.keys())
                     safe_components = {k: v for k, v in self._pipeline.components.items() if k in valid_keys}
                     self._pipeline = LTX2ImageToVideoPipeline(**safe_components)
@@ -231,7 +231,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
             if _current_class_name != "LTX2Pipeline":
                 from diffusers import LTX2Pipeline
                 import inspect
-                logger.info("Routing back to LTX2Pipeline (Text-to-Video)...")
+                logger.debug("Routing back to LTX2Pipeline (Text-to-Video)...")
                 _model_dir = getattr(self._pipeline, "model_dir", None)
                 _safe_encode = getattr(self._pipeline, "encode_prompt", None)
                 valid_keys = set(inspect.signature(LTX2Pipeline.__init__).parameters.keys())
@@ -248,7 +248,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
         
         if _resolved_num_frames is None and _duration is None:
             _duration = 5.0
-            logger.info("  Auto-defaulting to %.1fs duration for LTX model", _duration)
+            logger.debug("  Auto-defaulting to %.1fs duration for LTX model", _duration)
 
         if _resolved_num_frames is None and _duration is not None:
             _fps = kwargs.get("fps", 24.0)
@@ -256,7 +256,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
             # LTX-2.5 requires frame count ≡ 1 (mod 8)
             _snapped = max(1, ((_raw_frames - 1 + 4) // 8) * 8 + 1)
             _resolved_num_frames = _snapped
-            logger.info(
+            logger.debug(
                 "  Duration:  %.1fs @ %.0ffps → %d frames (snapped to 8k+1)",
                 _duration, _fps, _resolved_num_frames,
             )
@@ -296,7 +296,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
         """
         temporal_upscaler = kwargs.get("temporal_upscaler", getattr(self._pipeline, "temporal_upscaler", None))
         if temporal_upscaler:
-            logger.info("Upsampling latents temporally using %s", temporal_upscaler)
+            logger.debug("Upsampling latents temporally using %s", temporal_upscaler)
             
             _dev = latents.device
             _dtype = vae.dtype if vae else latents.dtype
@@ -315,7 +315,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
                 
         latent_upsampler = kwargs.get("latent_upsampler", None)
         if latent_upsampler:
-            logger.info("Upsampling latents using %s", latent_upsampler)
+            logger.debug("Upsampling latents using %s", latent_upsampler)
             from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel
             
             _dev = latents.device
@@ -360,7 +360,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
                     missing = [k for k in keys if k not in _cpu_weight_cache]
                     block_tag = keys[0].rsplit(".", 1)[0] if keys else "?"
                     if missing:
-                        logger.info(
+                        logger.debug(
                             "[VAE Cache] MISS  %s — %d/%d keys absent. Reading from disk...",
                             block_tag, len(missing), len(keys)
                         )
@@ -384,13 +384,13 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
                                 save_ok += 1
                             except Exception as _ce:
                                 logger.warning("[VAE Cache] Failed to save key %s to CPU cache: %s", k, _ce)
-                        logger.info(
+                        logger.debug(
                             "[VAE Cache] Cached %d/%d loaded keys to CPU RAM (total cache: %d keys).",
                             save_ok, len(loaded), len(_cpu_weight_cache)
                         )
                     else:
                         vram_mb = torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0
-                        logger.info(
+                        logger.debug(
                             "[VAE Cache] HIT   %s — all %d keys in CPU RAM (pinned=%s). VRAM used: %.1f MB",
                             block_tag, len(keys),
                             all(_cpu_weight_cache[k].is_pinned() for k in keys if k in _cpu_weight_cache),
@@ -413,7 +413,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
 
                 _vae_streamer.seeker.get_tensors = _ram_cached_get_tensors
                 _vae_streamer._weellm_ram_cache_installed = True
-                logger.info(
+                logger.debug(
                     "[WeeLLM/LTX2] VAE block RAM cache installed (streamer found via hook ref). "
                     "Decoder blocks will be read from disk ONCE, then served from CPU RAM."
                 )
@@ -462,7 +462,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
                     _b.data = torch.empty(0, dtype=_b.dtype)
             if _freed > 0:
                 _total_freed += _freed
-                logger.info("[WeeLLM/LTX2] Freed %.1f MB from %s.", _freed, _te_key)
+                logger.debug("[WeeLLM/LTX2] Freed %.1f MB from %s.", _freed, _te_key)
 
         # 2. gc-scan for orphaned CUDA tensors (e.g. failed embed_audio/vision placements
         #    that were loaded to GPU but never registered in any nn.Module).
@@ -484,12 +484,12 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
                 pass
         if _orphan_freed > 0:
             _total_freed += _orphan_freed
-            logger.info("[WeeLLM/LTX2] Freed %.1f MB orphaned CUDA tensors (embed_audio/vision).", _orphan_freed)
+            logger.debug("[WeeLLM/LTX2] Freed %.1f MB orphaned CUDA tensors (embed_audio/vision).", _orphan_freed)
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             _vram_after = torch.cuda.memory_allocated() / 1024**2
-            logger.info("[WeeLLM/LTX2] VRAM: %.1f → %.1f MB (freed %.1f MB before VAE).",
+            logger.debug("[WeeLLM/LTX2] VRAM: %.1f → %.1f MB (freed %.1f MB before VAE).",
                         _vram_before, _vram_after, _total_freed)
 
         # ── Debug: save latents to disk once for VAE-only debugging ──────────
@@ -497,11 +497,11 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
         _latents_save_path = "debug_latents.pt"
         if not _os.path.exists(_latents_save_path):
             torch.save(latents.cpu(), _latents_save_path)
-            logger.info("[WeeLLM/LTX2] Saved latents to %s for VAE debug. Shape: %s", _latents_save_path, tuple(latents.shape))
+            logger.debug("[WeeLLM/LTX2] Saved latents to %s for VAE debug. Shape: %s", _latents_save_path, tuple(latents.shape))
 
         if vae is not None and hasattr(vae, "_decode") and hasattr(vae, "use_framewise_decoding"):
 
-            logger.info("[WeeLLM/LTX2] Pre-warming VAE decoder (populating CPU RAM cache)...")
+            logger.debug("[WeeLLM/LTX2] Pre-warming VAE decoder (populating CPU RAM cache)...")
             try:
                 import gc
                 _lat_ch = getattr(getattr(vae, "config", None), "latent_channels", 128)
@@ -519,7 +519,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
                     torch.cuda.empty_cache()
                 gc.collect()
                 _cache_ref = locals().get("_cpu_weight_cache")
-                logger.info(
+                logger.debug(
                     "[WeeLLM/LTX2] Pre-warm complete — CPU RAM cache has %s keys.",
                     len(_cache_ref) if _cache_ref is not None else "N/A (cache not installed)"
                 )
@@ -589,7 +589,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
 
             _tile_mb   = _tile * _bytes_per_frame / 1024**2
             _n_tiles   = max(1, (latents.shape[2] - (_tile // _tcr)) // (_stride // _tcr) + 1)
-            logger.info(
+            logger.debug(
                 "[WeeLLM/LTX2] VAE temporal tiling: tile=%d frames, stride=%d, overlap=%d "
                 "(~%d tiles, ~%.0f MB/tile, free VRAM %.0f MB).",
                 _tile, _stride, _overlap, _n_tiles, _tile_mb, _free_vram / 1024**2,
@@ -655,7 +655,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
                     del prev_decoded
                     torch.cuda.empty_cache()
 
-                logger.info(
+                logger.debug(
                     "[WeeLLM/LTX2][StreamVAE] All %d tiles decoded. Assembling on GPU...",
                     len(result_chunks),
                 )
@@ -675,7 +675,7 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
     def load_lora_weights(self, pretrained_model_name_or_path_or_dict, **kwargs):
         """Intercept diffusers LoRA loading to preserve WeeLLM LiveSeeker hooks."""
         from weellm.models.loras.lora_streamer import GenericLazyLoRALoader
-        logger.info(f"[WeeLLM] Intercepted load_lora_weights for {pretrained_model_name_or_path_or_dict}")
+        logger.debug(f"[WeeLLM] Intercepted load_lora_weights for {pretrained_model_name_or_path_or_dict}")
         
         lazy_loader = GenericLazyLoRALoader(pretrained_model_name_or_path_or_dict)
         _tr_model = getattr(self._pipeline, "transformer", None)

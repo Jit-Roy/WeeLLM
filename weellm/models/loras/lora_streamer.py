@@ -100,7 +100,7 @@ class GenericLazyLoRALoader:
         from weellm.io.safetensors.keymaps.loras import build_lora_pairs
         self.lora_pairs, _ = build_lora_pairs(self.keys)
 
-        logger.info(
+        logger.debug(
             "[LoRA] Indexed %d LoRA weight pairs from: %s",
             len(self.lora_pairs),
             os.path.basename(lora_path),
@@ -277,7 +277,7 @@ class GenericLazyLoRALoader:
                     raise
 
         if applied_count > 0 or skipped_count > 0:
-            logger.info(
+            logger.debug(
                 "[LoRA] Lazily applied %d LoRA tensors to '%s'  (%d skipped)",
                 applied_count,
                 shard_name,

@@ -912,7 +912,7 @@ class HiDreamImageEditingPipeline(DiffusionPipeline, HiDreamImageLoraLoaderMixin
                 new_h = max(16, (new_h // 16) * 16)
                 
                 if new_w != w or new_h != h:
-                    logger.info(f"Auto-resizing image from {w}x{h} to {new_w}x{new_h} to maintain aspect ratio within 2304 max patches per image.")
+                    logger.debug(f"Auto-resizing image from {w}x{h} to {new_w}x{new_h} to maintain aspect ratio within 2304 max patches per image.")
                     img = img.resize((new_w, new_h), PIL.Image.LANCZOS)
             return img
 
@@ -965,7 +965,7 @@ class HiDreamImageEditingPipeline(DiffusionPipeline, HiDreamImageLoraLoaderMixin
                                     "editing": {k: lora_ckpt[k] for k in non_lora_keys},
                                     "refine": {k: src_state_dict.get(k, lora_ckpt[k]) for k in non_lora_keys},
                                 }
-                                logger.info("  Auto-Enabled HiDream-E1-Full Refine Mode (Refine strength: 0.3)")
+                                logger.debug("  Auto-Enabled HiDream-E1-Full Refine Mode (Refine strength: 0.3)")
                             self._e1_lora_loaded = True
                         except Exception as e:
                             logger.warning(f"Failed to auto-load E1 LoRA for refinement: {e}")
@@ -1139,9 +1139,9 @@ class HiDreamImageEditingPipeline(DiffusionPipeline, HiDreamImageLoraLoaderMixin
         # 6. Denoising loop
         refine_stage = False
         if reload_keys is not None:
-            logger.info(f"loading editing keys")
+            logger.debug(f"loading editing keys")
             load_info = self.transformer.load_state_dict(reload_keys['editing'], strict=False)
-            logger.info(f"finished loading editing keys")
+            logger.debug(f"finished loading editing keys")
             assert len(load_info.unexpected_keys) == 0
             try:
                 self.transformer.enable_adapters()
@@ -1160,11 +1160,11 @@ class HiDreamImageEditingPipeline(DiffusionPipeline, HiDreamImageLoraLoaderMixin
                     
                     if hasattr(self.transformer, "set_refine_mode"):
                         self.transformer.set_refine_mode(True)
-                    logger.info(f"loading refine keys")
+                    logger.debug(f"loading refine keys")
                     load_info = self.transformer.load_state_dict(reload_keys['refine'], strict=False)
-                    logger.info(f"finished loading refine keys")
+                    logger.debug(f"finished loading refine keys")
                     assert len(load_info.unexpected_keys) == 0
-                    logger.info(f"Refining start at step {i}")
+                    logger.debug(f"Refining start at step {i}")
                     refine_stage = True
 
                 if self.interrupt:

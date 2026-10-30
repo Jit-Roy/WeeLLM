@@ -130,11 +130,11 @@ class UNet2DConditionModelStreamer(BaseTransformerStreamer):
     ) -> "UNet2DConditionModelStreamer":
         path = os.path.join(model_dir, "unet")
 
-        logger.info("Step 1/3 -- Initializing LiveSeeker on UNet weights ...")
+        logger.debug("Step 1/3 -- Initializing LiveSeeker on UNet weights ...")
         seeker = get_seeker(path, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d tensors.", len(seeker.weight_map))
+        logger.debug("  Found %d tensors.", len(seeker.weight_map))
 
-        logger.info("Step 2/3 -- Instantiating UNet2DConditionModel on meta device ...")
+        logger.debug("Step 2/3 -- Instantiating UNet2DConditionModel on meta device ...")
         config = UNet2DConditionModel.load_config(os.path.join(path, "config.json"))
         with default_dtype(dtype), init_empty_weights():
             model = UNet2DConditionModel.from_config(config)
@@ -144,7 +144,7 @@ class UNet2DConditionModelStreamer(BaseTransformerStreamer):
             if buf is not None and buf.device.type != "meta":
                 set_module_tensor_to_device(model, buf_name, device, value=buf)
 
-        logger.info("Step 3/3 -- Loading resident UNet tensors to GPU ...")
+        logger.debug("Step 3/3 -- Loading resident UNet tensors to GPU ...")
         streamer = cls(model=model, seeker=seeker, device=device, dtype=dtype, prefetch=prefetch)
         resident_keys = streamer._get_resident_keys()
         resident_sd   = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
@@ -154,10 +154,10 @@ class UNet2DConditionModelStreamer(BaseTransformerStreamer):
         _patch_forward_input_device(model)
         report_memory("After resident load")
 
-        logger.info(
+        logger.debug(
             "Installed %d down blocks, 1 mid block, %d up blocks for streaming.",
             len(model.down_blocks),
             len(model.up_blocks),
         )
-        logger.info("UNetStreamer ready. Mode: Live Seek from original shards")
+        logger.debug("UNetStreamer ready. Mode: Live Seek from original shards")
         return streamer

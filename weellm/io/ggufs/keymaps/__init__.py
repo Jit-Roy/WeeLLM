@@ -91,7 +91,7 @@ def build_remap_fn(gguf_keys: List[str], arch: str = "unknown") -> tuple[Callabl
     for keymap_cls in _REGISTRY:
         if keymap_cls.detect(gguf_keys, arch):
             remap_dict: Dict[str, Any] = keymap_cls.build_remap(gguf_keys)
-            logger.info("[GGUFSeeker] Detected arch: %s — remapping to Diffusers convention.", keymap_cls.NAME)
+            logger.debug("[GGUFSeeker] Detected arch: %s — remapping to Diffusers convention.", keymap_cls.NAME)
 
             def _remap(name: str, _d=remap_dict) -> List:
                 return _d.get(name, [(name, None)])
@@ -131,4 +131,4 @@ __all__ = [
     "Ideogram4GGUFKeyMap",
     "Lumina2GGUFKeyMap",
     "QwenImageGGUFKeyMap",
-]
+]

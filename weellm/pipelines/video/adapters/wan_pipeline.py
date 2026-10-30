@@ -104,7 +104,7 @@ class WeeWanPipeline(WeeVideoPipeline):
             kwargs["width"] = max(32, round((w or 512) / 32) * 32)
 
             if kwargs["height"] != h or kwargs["width"] != w:
-                logger.info("[WeeLLM/Wan] Snapped dims %sx%s -> %dx%d", str(w), str(h), kwargs["width"], kwargs["height"])
+                logger.debug("[WeeLLM/Wan] Snapped dims %sx%s -> %dx%d", str(w), str(h), kwargs["width"], kwargs["height"])
         else:
             kwargs["height"] = max(32, round(int(_h) / 32) * 32)
             kwargs["width"] = max(32, round(int(_w) / 32) * 32)
@@ -206,7 +206,7 @@ class WeeWanPipeline(WeeVideoPipeline):
                     WanImageToVideoPipeline._execution_device = property(lambda self_obj: real_dev)
                     WanImageToVideoPipeline.device = property(lambda self_obj: real_dev)
                     WanImageToVideoPipeline._weellm_patched_dev = True
-                logger.info("[WeeLLM/Wan] Built WanImageToVideoPipeline for I2V mode (first_frame%s).",
+                logger.debug("[WeeLLM/Wan] Built WanImageToVideoPipeline for I2V mode (first_frame%s).",
                             " + last_frame" if last_frame is not None else "")
 
             else:
@@ -243,7 +243,7 @@ class WeeWanPipeline(WeeVideoPipeline):
 
             # Fast path: decode-only cache hit
             if _video_cache is not None and _video_cache.has_final():
-                logger.info("[VideoCache] Final-latents cache HIT — running decode-only.")
+                logger.debug("[VideoCache] Final-latents cache HIT — running decode-only.")
                 _cached_final = _video_cache.load_final()
                 _lat = _cached_final.get("latents")
                 if _lat is not None:
@@ -259,7 +259,7 @@ class WeeWanPipeline(WeeVideoPipeline):
                                 # Resolve inner nn.Module if this is a WeeLLM streamer wrapper
                                 _inner = getattr(_tr, "model", _tr)
                                 n_evicted = evict_module(_inner)
-                                logger.info("[WeeLLM/Wan] Cache-hit evict '%s': %d tensors freed.",
+                                logger.debug("[WeeLLM/Wan] Cache-hit evict '%s': %d tensors freed.",
                                             _tr_name, n_evicted)
                         gc.collect()
                         if torch.cuda.is_available():
@@ -268,7 +268,7 @@ class WeeWanPipeline(WeeVideoPipeline):
                         vae = self._i2v_pipeline.vae
                         if getattr(self._i2v_pipeline.config, "expand_timesteps", True):
                             import sys
-                            logger.info("[WeeLLM/Wan] Step 1/3: Preprocessing first frame (%dx%d)...", width, height)
+                            logger.debug("[WeeLLM/Wan] Step 1/3: Preprocessing first frame (%dx%d)...", width, height)
                             sys.stdout.flush()
                             image_tensor = self._i2v_pipeline.video_processor.preprocess(
                                 first_frame, height=height, width=width
@@ -279,7 +279,7 @@ class WeeWanPipeline(WeeVideoPipeline):
                                     last_frame, height=height, width=width
                                 ).to(real_dev, dtype=torch.float32)
                             num_channels_latents = vae.config.z_dim
-                            logger.info("[WeeLLM/Wan] Step 2/3: Encoding first-frame condition with VAE...",)
+                            logger.debug("[WeeLLM/Wan] Step 2/3: Encoding first-frame condition with VAE...",)
                             sys.stdout.flush()
                             latents_outputs = self._i2v_pipeline.prepare_latents(
                                 image=image_tensor,
@@ -295,7 +295,7 @@ class WeeWanPipeline(WeeVideoPipeline):
                                 last_image=last_image_tensor,
                             )
                             _, condition, first_frame_mask = latents_outputs
-                            logger.info("[WeeLLM/Wan] Step 3/3: Blending clean first-frame condition into cached latents at frame 0...")
+                            logger.debug("[WeeLLM/Wan] Step 3/3: Blending clean first-frame condition into cached latents at frame 0...")
                             sys.stdout.flush()
                             _lat = (1 - first_frame_mask) * condition + first_frame_mask * _lat.to(real_dev, dtype=torch.float32)
                             del image_tensor, last_image_tensor, condition, first_frame_mask, latents_outputs
@@ -303,7 +303,7 @@ class WeeWanPipeline(WeeVideoPipeline):
                             clean_memory(real_dev)
 
                         _lat = _lat.to(device=real_dev, dtype=vae.dtype)
-                        logger.info("[WeeLLM/Wan] Denormalizing latents (mean + std)...")
+                        logger.debug("[WeeLLM/Wan] Denormalizing latents (mean + std)...")
                         sys.stdout.flush()
                         latents_mean = (
                             torch.tensor(vae.config.latents_mean)
@@ -318,18 +318,18 @@ class WeeWanPipeline(WeeVideoPipeline):
                         from weellm.io.utils import clean_memory
                         clean_memory(real_dev)
                         import sys
-                        logger.info("[WeeLLM/Wan] Decoding video from latents (shape: %s | free VRAM: %.1f MB)...",
+                        logger.debug("[WeeLLM/Wan] Decoding video from latents (shape: %s | free VRAM: %.1f MB)...",
                                     tuple(_lat.shape),
                                     (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1e6 if torch.cuda.is_available() else 0.0)
                         sys.stdout.flush()
                         video = vae.decode(_lat, return_dict=False)[0]
-                        logger.info(
+                        logger.debug(
                             "[WeeLLM/Wan] VAE decode finished (output shape: %s). Postprocessing frames...",
                             tuple(video.shape) if hasattr(video, "shape") else type(video)
                         )
                         sys.stdout.flush()
                         video = self._i2v_pipeline.video_processor.postprocess_video(video, output_type="pil")
-                        logger.info("[WeeLLM/Wan] Postprocessing complete.")
+                        logger.debug("[WeeLLM/Wan] Postprocessing complete.")
                         sys.stdout.flush()
 
                     frames = video[0] if isinstance(video, list) and len(video) > 0 else video
@@ -361,9 +361,9 @@ class WeeWanPipeline(WeeVideoPipeline):
 
             i2v_kwargs["negative_prompt"] = neg_prompt
             if not kwargs.get("negative_prompt"):
-                logger.info("[WeeLLM/Wan] Injected official Wan motion-inducing negative prompt.")
+                logger.debug("[WeeLLM/Wan] Injected official Wan motion-inducing negative prompt.")
 
-            logger.info("[WeeLLM/Wan] Running I2V: %d frames, %dx%d, output_type=%s, flow_shift=%s",
+            logger.debug("[WeeLLM/Wan] Running I2V: %d frames, %dx%d, output_type=%s, flow_shift=%s",
                         i2v_kwargs.get("num_frames", 81),
                         i2v_kwargs.get("width", 0),
                         i2v_kwargs.get("height", 0),
@@ -380,7 +380,7 @@ class WeeWanPipeline(WeeVideoPipeline):
                     OrderedDict.__setitem__(_scheduler.config, "flow_shift", i2v_flow_shift)
                     object.__setattr__(_scheduler.config, "flow_shift", i2v_flow_shift)
                     _patched_flow = True
-                    logger.info(
+                    logger.debug(
                         "[WeeLLM/Wan] Patched scheduler flow_shift: %.1f -> %.1f (explicit override)",
                         _orig_flow_shift, i2v_flow_shift
                     )
@@ -424,5 +424,5 @@ class WeeWanPipeline(WeeVideoPipeline):
         kwargs.pop("frame_rate", None)
         if not kwargs.get("negative_prompt"):
             kwargs["negative_prompt"] = DEFAULT_WAN_NEG_PROMPT
-            logger.info("[WeeLLM/Wan] Injected official Wan motion-inducing negative prompt for T2V.")
+            logger.debug("[WeeLLM/Wan] Injected official Wan motion-inducing negative prompt for T2V.")
         return super().__call__(**kwargs)

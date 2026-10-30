@@ -65,13 +65,13 @@ class ZImageTransformer2DModelStreamer(BaseTransformerStreamer):
 
         model_dir = Path(model_dir)
 
-        logger.info("Step 1/3 -- Initializing LiveSeeker on ZImageTransformer weights ...")
+        logger.debug("Step 1/3 -- Initializing LiveSeeker on ZImageTransformer weights ...")
         seeker = get_seeker(model_dir, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d tensors across HF shards.", len(seeker.weight_map))
+        logger.debug("  Found %d tensors across HF shards.", len(seeker.weight_map))
 
         model = cls._load_model_on_meta(ZImageTransformer2DModel, model_dir, device, dtype, seeker)
 
-        logger.info("Step 3/3 -- Loading resident transformer tensors to GPU ...")
+        logger.debug("Step 3/3 -- Loading resident transformer tensors to GPU ...")
         streamer = cls(model=model, seeker=seeker, device=device, dtype=dtype, prefetch=prefetch)
         
         resident_keys = streamer._get_resident_keys()
@@ -81,9 +81,9 @@ class ZImageTransformer2DModelStreamer(BaseTransformerStreamer):
         clean_memory(device)
         report_memory("After resident load")
 
-        logger.info(
+        logger.debug(
             "Installed %d transformer blocks for streaming.",
             len(model.context_refiner) + len(model.noise_refiner) + len(model.layers)
         )
-        logger.info("ZImageTransformer2DModelStreamer ready. Mode: Live Seek from original shards")
+        logger.debug("ZImageTransformer2DModelStreamer ready. Mode: Live Seek from original shards")
         return streamer

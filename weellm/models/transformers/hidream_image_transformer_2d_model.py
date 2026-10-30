@@ -51,14 +51,14 @@ class HiDreamImageTransformer2DModelStreamer(BaseTransformerStreamer):
         from safetensors.torch import load_file
         import os
         if os.path.exists(lora_path):
-            logger.info(f"Loading E1 LoRA from {lora_path} for refining mode fallback...")
+            logger.debug(f"Loading E1 LoRA from {lora_path} for refining mode fallback...")
             self.lora_dict = load_file(lora_path, device="cpu")
         else:
             logger.warning(f"LoRA file not found at {lora_path}. Refine mode fallback will not subtract LoRA weights.")
 
     def set_refine_mode(self, refine: bool):
         if self.refine_mode != refine:
-            logger.info(f"Transformer Streamer refine_mode changed to {refine}")
+            logger.debug(f"Transformer Streamer refine_mode changed to {refine}")
         self.refine_mode = refine
 
     def apply_state_dict(self, state_dict: Dict[str, torch.Tensor], skip_errors: bool = False) -> None:
@@ -124,23 +124,23 @@ class HiDreamImageTransformer2DModelStreamer(BaseTransformerStreamer):
         # Disabling prefetch lets only one block sit in VRAM at a time.
         # Everything stays true float32 — no dtype mixing.
         if dtype == torch.float32 and prefetch:
-            logger.info(
+            logger.debug(
                 "  [fp32] Disabling prefetch to save ~0.9 GB peak VRAM "
                 "(one block at a time instead of two). Everything stays float32."
             )
             prefetch = False
 
-        logger.info("Initializing SafetensorsLiveSeeker on HiDream Transformer weights ...")
+        logger.debug("Initializing SafetensorsLiveSeeker on HiDream Transformer weights ...")
         seeker = get_seeker(model_dir, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d tensors across HF shards.", len(seeker.weight_map))
+        logger.debug("  Found %d tensors across HF shards.", len(seeker.weight_map))
 
-        logger.info("Instantiating HiDreamImageTransformer2DModel on meta device ...")
+        logger.debug("Instantiating HiDreamImageTransformer2DModel on meta device ...")
         config = HiDreamImageTransformer2DModel.load_config(model_dir)
         with default_dtype(dtype), init_empty_weights():
             model = HiDreamImageTransformer2DModel.from_config(config)
         model.eval()
 
-        logger.info("Step 3/3 -- Loading resident transformer tensors to GPU ...")
+        logger.debug("Step 3/3 -- Loading resident transformer tensors to GPU ...")
         streamer = cls(model=model, seeker=seeker, device=device, dtype=dtype, prefetch=prefetch)
 
         # Load non-meta buffers
@@ -155,11 +155,11 @@ class HiDreamImageTransformer2DModelStreamer(BaseTransformerStreamer):
         clean_memory(device)
         report_memory("After resident load")
 
-        logger.info(
+        logger.debug(
             "Installed %d double blocks, %d single blocks, and %d caption projections for streaming.",
             len(model.double_stream_blocks),
             len(model.single_stream_blocks),
             len(getattr(model, "caption_projection", [])) if getattr(model, "caption_projection", None) is not None else 0
         )
-        logger.info("HiDreamImageTransformer2DModelStreamer ready. Mode: Live Seek from original shards")
+        logger.debug("HiDreamImageTransformer2DModelStreamer ready. Mode: Live Seek from original shards")
         return streamer

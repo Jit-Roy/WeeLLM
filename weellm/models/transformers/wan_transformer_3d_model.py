@@ -90,15 +90,15 @@ class WanTransformer3DModelStreamer(BaseTransformerStreamer):
     ) -> "WanTransformer3DModelStreamer":
         transformer_dir = Path(transformer_dir)
 
-        logger.info("Step 1/3 -- Initializing LiveSeeker on Wan transformer weights ...")
+        logger.debug("Step 1/3 -- Initializing LiveSeeker on Wan transformer weights ...")
         seeker = get_seeker(transformer_dir, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d tensors across HF shards.", len(seeker.weight_map))
+        logger.debug("  Found %d tensors across HF shards.", len(seeker.weight_map))
 
         from diffusers import WanTransformer3DModel
         from accelerate import init_empty_weights
         from accelerate.utils.modeling import set_module_tensor_to_device
 
-        logger.info("Step 2/3 -- Instantiating WanTransformer3DModel on meta device ...")
+        logger.debug("Step 2/3 -- Instantiating WanTransformer3DModel on meta device ...")
         config = WanTransformer3DModel.load_config(str(transformer_dir))
         with init_empty_weights(), default_dtype(dtype):
             model = WanTransformer3DModel.from_config(config)
@@ -109,7 +109,7 @@ class WanTransformer3DModelStreamer(BaseTransformerStreamer):
             if buf is not None and buf.device.type != "meta":
                 set_module_tensor_to_device(model, buf_name, device, value=buf.to(device))
 
-        logger.info("Step 3/3 -- Loading resident transformer tensors to device=%s ...", device)
+        logger.debug("Step 3/3 -- Loading resident transformer tensors to device=%s ...", device)
         streamer = cls(
             model=model,
             seeker=seeker,
@@ -129,6 +129,6 @@ class WanTransformer3DModelStreamer(BaseTransformerStreamer):
         report_memory("After resident load")
 
         block_count = len(streamer._get_shard_order())
-        logger.info("Installed %d blocks for streaming.", block_count)
-        logger.info("WanTransformer3DModelStreamer ready. Mode: Live Seek from original shards")
+        logger.debug("Installed %d blocks for streaming.", block_count)
+        logger.debug("WanTransformer3DModelStreamer ready. Mode: Live Seek from original shards")
         return streamer

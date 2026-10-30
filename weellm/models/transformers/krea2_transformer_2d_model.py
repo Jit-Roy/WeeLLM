@@ -322,7 +322,7 @@ def _apply_krea2_runtime_patches() -> None:
     Krea2Transformer2DModel.forward = patched_transformer_forward
     Krea2Transformer2DModel._weellm_patched_fwd = True
 
-    logger.info("      -> [WeeLLM] Krea2 runtime patches loaded in model module.")
+    logger.debug("      -> [WeeLLM] Krea2 runtime patches loaded in model module.")
 
 
 class Krea2Transformer2DModelStreamer(BaseTransformerStreamer):
@@ -422,15 +422,15 @@ class Krea2Transformer2DModelStreamer(BaseTransformerStreamer):
 
         transformer_dir = Path(transformer_dir)
 
-        logger.info("Step 1/3 -- Initializing LiveSeeker on Krea-2-Turbo transformer weights ...")
+        logger.debug("Step 1/3 -- Initializing LiveSeeker on Krea-2-Turbo transformer weights ...")
         seeker = get_seeker(transformer_dir, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d tensors.", len(seeker.weight_map))
+        logger.debug("  Found %d tensors.", len(seeker.weight_map))
 
         model = cls._load_model_on_meta(Krea2Transformer2DModel, transformer_dir, device, dtype, seeker)
 
         _apply_krea2_runtime_patches()
 
-        logger.info("Step 3/3 -- Loading resident Krea-2-Turbo transformer tensors to GPU ...")
+        logger.debug("Step 3/3 -- Loading resident Krea-2-Turbo transformer tensors to GPU ...")
         streamer = cls(model=model, seeker=seeker, device=device, dtype=dtype, prefetch=prefetch)
         resident_keys = streamer._get_resident_keys()
         resident_sd   = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
@@ -439,12 +439,12 @@ class Krea2Transformer2DModelStreamer(BaseTransformerStreamer):
         clean_memory(device)
         report_memory("After resident load")
 
-        logger.info(
+        logger.debug(
             "Installed %d layerwise, %d refiner, and %d joint transformer blocks for streaming.",
             len(model.text_fusion.layerwise_blocks),
             len(model.text_fusion.refiner_blocks),
             len(model.transformer_blocks),
         )
-        logger.info("Krea2Transformer2DModelStreamer ready. Mode: Live Seek from original shards")
+        logger.debug("Krea2Transformer2DModelStreamer ready. Mode: Live Seek from original shards")
         return streamer
 

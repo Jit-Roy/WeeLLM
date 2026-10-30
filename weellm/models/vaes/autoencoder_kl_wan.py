@@ -135,14 +135,14 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
         import sys
         sys.stdout.flush()
         t0 = time.time()
-        logger.info("    [WeeLLM Wan VAE] Loading %d decoder tensors into GPU VRAM...", len(decoder_keys))
+        logger.debug("    [WeeLLM Wan VAE] Loading %d decoder tensors into GPU VRAM...", len(decoder_keys))
         sys.stdout.flush()
         sd = self.seeker.get_tensors(decoder_keys, device="cpu", dtype=self.dtype)
         for name, tensor in sd.items():
             self._place_tensor(name, tensor.to(self.device), self.device, self.dtype)
         del sd
         clean_memory(self.device)
-        logger.info("    [WeeLLM Wan VAE] Loaded decoder in %.2fs. Running decode entirely in GPU VRAM (zero disk seeks).", time.time() - t0)
+        logger.debug("    [WeeLLM Wan VAE] Loaded decoder in %.2fs. Running decode entirely in GPU VRAM (zero disk seeks).", time.time() - t0)
         sys.stdout.flush()
 
     def _evict_decoder(self) -> None:
@@ -181,7 +181,7 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
         w_range = list(range(0, width,  tile_latent_stride_w))
         total_tiles = len(h_range) * len(w_range)
 
-        logger.info(
+        logger.debug(
             "    [WeeLLM Wan VAE] Tiled GPU Decode started: %d spatial tiles (%dx%d grid), "
             "%d latent frames, tile size %dx%d px (stride %dx%d px).",
             total_tiles, len(h_range), len(w_range),
@@ -207,7 +207,7 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
                     m.clear_cache()
                     tile_frames = []
 
-                    logger.info(
+                    logger.debug(
                         "    [WeeLLM Wan VAE] Starting Tile %d/%d | Grid [%d,%d] (latent y=%d, x=%d)...",
                         tile_idx, total_tiles, r_idx + 1, c_idx + 1, i, j
                     )
@@ -232,7 +232,7 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
                         tile_frames.append(decoded.cpu().float())
                         del tile_k, decoded
                         if (k + 1) % 4 == 0 or (k + 1) == num_frames:
-                            logger.info(
+                            logger.debug(
                                 "      -> Tile %d/%d | Frame %d/%d (%.2fs)",
                                 tile_idx, total_tiles, k + 1, num_frames, time.time() - t_frame_start
                             )
@@ -249,7 +249,7 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
                     pct      = (tile_idx / total_tiles) * 100.0
                     eta      = (elapsed / tile_idx) * (total_tiles - tile_idx)
                     vram_mb  = torch.cuda.memory_allocated() / 1e6 if torch.cuda.is_available() else 0.0
-                    logger.info(
+                    logger.debug(
                         "    [WeeLLM Wan VAE] Finished Tile %d/%d (%.1f%%) | Grid [%d,%d] | "
                         "Step: %.2fs | Elapsed: %.1fs | ETA: %.1fs | VRAM: %.1f MB",
                         tile_idx, total_tiles, pct, r_idx + 1, c_idx + 1,
@@ -261,7 +261,7 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
             m.clear_cache()
 
             # Blend tiles using native AutoencoderKLWan vectorized blending
-            logger.info("    [WeeLLM Wan VAE] All %d tiles decoded. Blending spatial tiles...", total_tiles)
+            logger.debug("    [WeeLLM Wan VAE] All %d tiles decoded. Blending spatial tiles...", total_tiles)
             sys.stdout.flush()
             result_rows = []
             for i, row in enumerate(rows):
@@ -276,7 +276,7 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
             dec = torch.cat(result_rows, dim=3)[:, :, :, :sample_height, :sample_width]
 
         if getattr(m.config, "patch_size", None) is not None:
-            logger.info("    [WeeLLM Wan VAE] Unpatchifying video tensor (patch_size=%s)...", m.config.patch_size)
+            logger.debug("    [WeeLLM Wan VAE] Unpatchifying video tensor (patch_size=%s)...", m.config.patch_size)
             sys.stdout.flush()
             from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
             dec = unpatchify(dec, patch_size=m.config.patch_size)
@@ -285,7 +285,7 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
         dec = dec.to(dtype=self.dtype, device=self.device)
 
         total_elapsed = time.time() - t_decode_start
-        logger.info(
+        logger.debug(
             "    [WeeLLM Wan VAE] Decode complete: %s video in %.2fs total!",
             tuple(dec.shape), total_elapsed
         )
@@ -330,11 +330,11 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
         diffusers = importlib.import_module("diffusers")
         vae_cls = getattr(diffusers, class_name)
 
-        logger.info("  Step 1/3 -- Initialising LiveSeeker on Wan VAE weights (%s) ...", class_name)
+        logger.debug("  Step 1/3 -- Initialising LiveSeeker on Wan VAE weights (%s) ...", class_name)
         seeker = get_seeker(vae_dir, cache_to_ram=cache_to_ram)
-        logger.info("  Found %d VAE tensors across shards.", len(seeker.weight_map))
+        logger.debug("  Found %d VAE tensors across shards.", len(seeker.weight_map))
 
-        logger.info("  Step 2/3 -- Instantiating %s on meta device ...", class_name)
+        logger.debug("  Step 2/3 -- Instantiating %s on meta device ...", class_name)
         with default_dtype(dtype), init_empty_weights():
             cfg = vae_cls.load_config(str(config_path))
             model = vae_cls.from_config(cfg)
@@ -342,7 +342,7 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
 
         streamer = cls(model, seeker, device, dtype)
 
-        logger.info("  Step 3/3 -- Loading Wan VAE resident tensors to GPU ...")
+        logger.debug("  Step 3/3 -- Loading Wan VAE resident tensors to GPU ...")
         resident_keys = streamer._get_resident_keys()
         resident_sd = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
         for name, tensor in resident_sd.items():
@@ -351,5 +351,5 @@ class AutoencoderKLWanStreamer(BaseVAEStreamer):
 
         clean_memory(device)
         report_memory("After Wan VAE resident load")
-        logger.info("  AutoencoderKLWanStreamer ready (%d resident keys, one-pass GPU decode).", len(resident_keys))
+        logger.debug("  AutoencoderKLWanStreamer ready (%d resident keys, one-pass GPU decode).", len(resident_keys))
         return streamer

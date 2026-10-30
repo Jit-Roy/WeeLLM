@@ -78,7 +78,7 @@ class BaseVAEStreamer:
     def _load_encoder(self):
         with self._encoder_lock:
             if not self._encoder_loaded:
-                logger.info("\n[WeeLLM VAE] Lazy encoder triggered — loading encoder weights to GPU ...")
+                logger.debug("\n[WeeLLM VAE] Lazy encoder triggered — loading encoder weights to GPU ...")
                 enc_keys = self._get_encoder_keys()
                 enc_sd   = self.seeker.get_tensors(enc_keys, device=self.device, dtype=self.dtype)
                 for name, tensor in enc_sd.items():
@@ -90,7 +90,7 @@ class BaseVAEStreamer:
     def _evict_encoder(self):
         with self._encoder_lock:
             if self._encoder_loaded:
-                logger.info("[WeeLLM VAE] Encoder forward complete — evicting encoder weights ...")
+                logger.debug("[WeeLLM VAE] Encoder forward complete — evicting encoder weights ...")
                 self._evict_keys(self._get_encoder_keys())
                 clean_memory(self.device)
                 report_memory("After VAE Encoder Eviction")

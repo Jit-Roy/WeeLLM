@@ -222,7 +222,7 @@ class MiniMaxH3GGUFKeyMap:
                 adaln_table = table_tensor["adaln_t_table"]  # [1025, 8]
                 embedder = AdalNTableEmbedder(adaln_table)
                 model.time_embedder = embedder
-                logger.info("  Installed AdalNTableEmbedder (table shape %s) — pruned mode.",
+                logger.debug("  Installed AdalNTableEmbedder (table shape %s) — pruned mode.",
                             tuple(adaln_table.shape))
 
                 _emb_ref = embedder
@@ -234,16 +234,16 @@ class MiniMaxH3GGUFKeyMap:
                     if t is not None:
                         _emb_ref._raw_t = t
                         if not getattr(_emb_ref, "_t_logged", False):
-                            logger.info("  [adaln_t_debug] first timestep = %s  dtype=%s  values=%s",
+                            logger.debug("  [adaln_t_debug] first timestep = %s  dtype=%s  values=%s",
                                         tuple(t.shape), t.dtype,
                                         t.flatten()[:4].tolist())
                             _emb_ref._t_logged = True
                     return None
 
                 model.register_forward_pre_hook(_cache_raw_timestep, with_kwargs=True)
-                logger.info("  Registered raw-timestep pre-hook on transformer.")
+                logger.debug("  Registered raw-timestep pre-hook on transformer.")
 
-                logger.info("  Detected pruned GGUF (adaln_t_table present) — "
+                logger.debug("  Detected pruned GGUF (adaln_t_table present) — "
                             "reinitialising adaln_proj.linear in_features: 2688 → 8 on all blocks ...")
                 
                 # Reinitialise adaln_proj.linear to accept 8-dim input (matching the table output dim)
@@ -258,7 +258,7 @@ class MiniMaxH3GGUFKeyMap:
                         dtype=dtype,
                     )
                     blk.adaln_proj.linear = new_lin
-                logger.info("  adaln_proj.linear reinitialised on %d blocks.", len(model.transformer_blocks))
+                logger.debug("  adaln_proj.linear reinitialised on %d blocks.", len(model.transformer_blocks))
 
                 # norm_out.linear also uses temb in the same AdaLN pattern (from
                 # final_layer.adaln_proj.linear in the GGUF) — patch it too.
@@ -271,7 +271,7 @@ class MiniMaxH3GGUFKeyMap:
                         device="cpu",
                         dtype=dtype,
                     )
-                    logger.info("  norm_out.linear reinitialised to in_features=8.")
+                    logger.debug("  norm_out.linear reinitialised to in_features=8.")
 
                 # ── Patch adaln_proj and norm_out to skip SiLU ────────────────────
                 # Diffusers hardcodes nn.functional.silu() before every adaln linear.
@@ -309,7 +309,7 @@ class MiniMaxH3GGUFKeyMap:
 
                     model.norm_out.forward = _norm_out_no_silu
 
-                logger.info(
+                logger.debug(
                     "  Patched adaln_proj (×%d) and norm_out to skip SiLU "
                     "(pruned GGUF: apply_silu=False).",
                     len(model.transformer_blocks),
