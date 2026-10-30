@@ -82,6 +82,70 @@ def _sha1(*parts: str) -> str:
     return h.hexdigest()[:16]
 
 
+def _image_hash(img) -> str:
+    """
+    Produce a stable, lightweight 16-char hex fingerprint of an image-like
+    object so it can be included in a cache key without being slow.
+
+    Supports:
+      * ``None``                   → constant ``"none"``
+      * ``PIL.Image.Image``        → SHA-1 of raw pixel bytes
+      * ``torch.Tensor``           → SHA-1 of raw tensor bytes
+      * ``numpy.ndarray``          → SHA-1 of raw array bytes
+      * ``list`` of the above      → combined hash of all elements
+      * ``str`` (file path)        → SHA-1 of the path string (cheap; path
+                                     uniquely identifies the source file)
+      * anything else              → hash of ``repr()``
+    """
+    if img is None:
+        return "none"
+
+    if isinstance(img, list):
+        # Recursively hash each element and combine.
+        return _sha1(*[_image_hash(x) for x in img])
+
+    if isinstance(img, str):
+        # File-path string — hash the path, not the pixels (fast).
+        return _sha1(img)
+
+    h = hashlib.sha1()
+    try:
+        # PIL Image
+        try:
+            from PIL import Image as _PilImg
+            if isinstance(img, _PilImg.Image):
+                h.update(img.tobytes())
+                return h.hexdigest()[:16]
+        except ImportError:
+            pass
+
+        # torch.Tensor
+        try:
+            import torch as _torch
+            if isinstance(img, _torch.Tensor):
+                h.update(img.cpu().contiguous().numpy().tobytes())
+                return h.hexdigest()[:16]
+        except ImportError:
+            pass
+
+        # numpy ndarray
+        try:
+            import numpy as _np
+            if isinstance(img, _np.ndarray):
+                h.update(img.tobytes())
+                return h.hexdigest()[:16]
+        except ImportError:
+            pass
+
+        # Fallback: repr
+        h.update(repr(img).encode("utf-8"))
+        return h.hexdigest()[:16]
+    except Exception:
+        # If anything goes wrong, return a constant so we don't crash — the
+        # worst that happens is a cache miss on the next retry.
+        return "unknown"
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -99,8 +163,15 @@ class VideoStepCache:
         embed cache key so that changing the negative prompt properly busts
         the cached embeddings.
     height, width, num_frames, steps, seed, lora_weights:
-        Together with *prompt* these form the run key; any change busts the
-        denoising cache (but not the embeds cache).
+        Together with *prompt* and the frame hashes these form the run key;
+        any change busts the denoising cache (but not the embeds cache).
+    first_frame_hash:
+        Stable hex fingerprint of the first/conditioning frame (or ``None``).
+        Produced by :func:`_image_hash`.  Changing the conditioning image
+        automatically invalidates the denoising cache.
+    last_frame_hash:
+        Stable hex fingerprint of the last/end frame (or ``None``).
+        Same semantics as *first_frame_hash*.
     save_every:
         Save step latents every N denoising steps (default 1 = every step).
     cache_root:
@@ -118,19 +189,31 @@ class VideoStepCache:
         seed: int,
         negative_prompt: Optional[str] = None,
         lora_weights: Optional[str] = None,
+        first_frame_hash: Optional[str] = None,
+        last_frame_hash: Optional[str] = None,
         save_every: int = 1,
         cache_root: Optional[str] = None,
     ) -> None:
         self.save_every = max(1, int(save_every))
         root = Path(cache_root or os.path.join(os.getcwd(), ".weellm_cache"))
 
-        # Embed key includes both positive and negative prompt so that
-        # changing the negative prompt properly invalidates cached embeddings.
+        # Embed key: prompt + negative prompt only.
+        # Frame conditioning does not affect text-encoder output, so we do NOT
+        # include first_frame_hash here — the same embeddings are valid across
+        # different conditioning images for the same prompt.
         neg = negative_prompt or ""
         prompt_hash = _sha1(prompt, neg)
-        run_hash    = _sha1(
+
+        # Run key: every parameter that affects the denoised latent tensor.
+        # first_frame_hash and last_frame_hash are "none" for T2V runs, so
+        # switching from T2V to I2V (or changing the conditioning image) always
+        # produces a distinct run directory and triggers a fresh denoising pass.
+        ff_hash = first_frame_hash or "none"
+        lf_hash = last_frame_hash  or "none"
+        run_hash = _sha1(
             prompt,
-            str(height), str(width), str(num_frames), str(steps), str(seed), str(lora_weights),
+            str(height), str(width), str(num_frames), str(steps), str(seed),
+            str(lora_weights), ff_hash, lf_hash,
         )
 
         self.embeds_dir = root / f"embeds_{prompt_hash}"
@@ -143,8 +226,9 @@ class VideoStepCache:
         self._final_path  = self.run_dir    / "final.pt"
 
         logger.info(
-            "[VideoCache] cache_root=%s | prompt_hash=%s | run_hash=%s",
-            root, prompt_hash, run_hash,
+            "[VideoCache] cache_root=%s | prompt_hash=%s | run_hash=%s "
+            "(first_frame=%s, last_frame=%s)",
+            root, prompt_hash, run_hash, ff_hash, lf_hash,
         )
 
     # ── Prompt-embeds cache ───────────────────────────────────────────────────

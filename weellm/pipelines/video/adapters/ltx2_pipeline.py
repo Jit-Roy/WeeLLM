@@ -172,13 +172,15 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
 
     def __call__(self, prompt: str, **kwargs):
         # 0. Handle Pipeline Routing for Image/Video modalities
+        # Accept either 'first_frame' or 'image' as the conditioning frame.
+        # 'image' is treated as an alias for 'first_frame'.
         _first_frame = kwargs.pop("first_frame", None)
-        _last_frame = kwargs.pop("last_frame", None)
-        # For backwards compatibility with standard Diffusers 'image'
-        _image_fallback = kwargs.pop("image", None)
-        if _first_frame is None and _image_fallback is not None:
-            _first_frame = _image_fallback
-        
+        if _first_frame is None:
+            _first_frame = kwargs.pop("image", None)
+        else:
+            kwargs.pop("image", None)  # discard alias if first_frame already given
+        _last_frame  = kwargs.pop("last_frame",  None)
+
         # Remove video kwarg if it somehow gets passed to prevent crashes
         kwargs.pop("video", None)
 
@@ -274,6 +276,14 @@ class WeeLTX2Pipeline(WeeVideoPipeline):
                     _comp_name,
                 )
                 
+        # Stash raw frames as private kwargs so the base __call__ cache system
+        # can include them in the run hash regardless of how they were packed
+        # (plain image=, conditions=, etc.).
+        if _first_frame is not None:
+            kwargs["_first_frame_raw"] = _first_frame
+        if _last_frame is not None:
+            kwargs["_last_frame_raw"] = _last_frame
+
         # 3. Delegate to the shared generic video generation loop in the base class
         return super().__call__(prompt=prompt, **kwargs)
 

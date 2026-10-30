@@ -91,10 +91,8 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
             kwargs.pop(_k, None)
 
         # ── Resolve first_frame / last_frame → image ───────────────────────────
-        # Standard WeeLLM API mirrors Wan / LTX-2:
-        #   first_frame  (primary)  — conditioning / starting frame for I2V
-        #   image                   — backwards-compatible alias for first_frame
-        #   last_frame              — optional end frame for start+end interpolation
+        # Accept either 'first_frame' or 'image' as the conditioning frame.
+        # 'image' is treated as an alias for 'first_frame'.
         # MiniMax's native pipeline accepts:
         #   image=<PIL.Image>           → image-to-video (first frame only)
         #   image=[<PIL.Image>, ...]    → start+end frame conditioning
@@ -102,9 +100,9 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
         if _first_frame is None:
             _first_frame = kwargs.pop("image", None)
         else:
-            kwargs.pop("image", None)   # discard stale alias when first_frame was given
+            kwargs.pop("image", None)  # discard alias if first_frame already given
 
-        _last_frame = kwargs.pop("last_frame", None)
+        _last_frame = kwargs.pop("last_frame",  None)
 
         def _load_frame(f):
             """Load a frame from a file-path string, or return the object as-is."""

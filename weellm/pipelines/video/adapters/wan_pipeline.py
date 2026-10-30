@@ -110,15 +110,16 @@ class WeeWanPipeline(WeeVideoPipeline):
             kwargs["width"] = max(32, round(int(_w) / 32) * 32)
 
     def __call__(self, **kwargs):
-        # 1. Resolve first_frame and last_frame (standard WeeLLM API: first_frame, last_frame)
+        # 1. Resolve first_frame and last_frame.
+        # Accept either 'first_frame' or 'image' as the conditioning frame.
+        # 'image' is treated as an alias for 'first_frame'.
         first_frame = kwargs.pop("first_frame", None)
         if first_frame is None:
             first_frame = kwargs.pop("image", None)
+        else:
+            kwargs.pop("image", None)  
 
         last_frame = kwargs.pop("last_frame", None)
-        if last_frame is None:
-            last_frame = kwargs.pop("last_image", None)
-
         def _load_frame(f):
             if f is None:
                 return None

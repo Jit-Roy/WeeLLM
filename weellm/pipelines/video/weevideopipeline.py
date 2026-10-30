@@ -177,12 +177,19 @@ class WeeVideoPipeline(WeeBasePipeline):
                 
         return latents
 
-    def _setup_cache(self, prompt, height, width, num_frames, steps, seed, negative_prompt=None, save_every=1, cache_root=None, lora_weights=None):
-        from weellm.pipelines.video.video_cache import VideoStepCache
+    def _setup_cache(self, prompt, height, width, num_frames, steps, seed,
+                     negative_prompt=None, save_every=1, cache_root=None,
+                     lora_weights=None, first_frame=None, last_frame=None):
+        from weellm.pipelines.video.video_cache import VideoStepCache, _image_hash
         if cache_root is None:
             cache_root = os.path.join(
                 os.path.dirname(os.path.abspath(self.model_dir)), ".weellm_cache"
             )
+        # Compute lightweight pixel-level hashes so the run key changes
+        # whenever the conditioning frame(s) change (or when switching between
+        # T2V and I2V mode).
+        ff_hash = _image_hash(first_frame)
+        lf_hash = _image_hash(last_frame)
         cache = VideoStepCache(
             prompt=prompt,
             height=height,
@@ -192,6 +199,8 @@ class WeeVideoPipeline(WeeBasePipeline):
             seed=seed,
             negative_prompt=negative_prompt,
             lora_weights=lora_weights,
+            first_frame_hash=ff_hash,
+            last_frame_hash=lf_hash,
             save_every=save_every,
             cache_root=cache_root,
         )
@@ -206,7 +215,13 @@ class WeeVideoPipeline(WeeBasePipeline):
         no_cache = kwargs.pop("no_cache", False)
         cache_every = kwargs.pop("cache_every", 1)
         fresh = kwargs.pop("fresh", False)
-        
+
+        # Private raw-frame stash set by adapters (e.g. LTX-2) that pack frames
+        # into non-standard keys (conditions=, etc.) before reaching us.
+        # Must be popped here so they never reach the underlying Diffusers pipeline.
+        _raw_first_frame = kwargs.pop("_first_frame_raw", None)
+        _raw_last_frame  = kwargs.pop("_last_frame_raw",  None)
+
         lora_weights = kwargs.pop("lora_weights", None)
         latent_upsampler = kwargs.pop("latent_upsampler", None)
         user_output_type = kwargs.get("output_type", "pil")
@@ -287,7 +302,13 @@ class WeeVideoPipeline(WeeBasePipeline):
         _video_cache = self._setup_cache(
             prompt, height, width, num_frames, steps, seed,
             negative_prompt=kwargs.get("negative_prompt"),
-            save_every=cache_every, lora_weights=lora_weights
+            save_every=cache_every, lora_weights=lora_weights,
+            # first_frame: raw stash wins (LTX-2 interpolation path); Wan/MiniMax
+            # set kwargs["image"] internally so the fallback covers them.
+            first_frame=_raw_first_frame or kwargs.get("image"),
+            # last_frame: only the LTX-2 raw stash applies; Wan/MiniMax don't
+            # surface last_frame through kwargs at this level.
+            last_frame=_raw_last_frame,
         )
         if fresh:
             _video_cache.clear_run()
