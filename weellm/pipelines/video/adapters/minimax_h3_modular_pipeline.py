@@ -90,6 +90,47 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
         for _k in ("guidance_scale", "negative_prompt", "image_guidance_scale"):
             kwargs.pop(_k, None)
 
+        # ── Resolve first_frame / last_frame → image ───────────────────────────
+        # Standard WeeLLM API mirrors Wan / LTX-2:
+        #   first_frame  (primary)  — conditioning / starting frame for I2V
+        #   image                   — backwards-compatible alias for first_frame
+        #   last_frame              — optional end frame for start+end interpolation
+        # MiniMax's native pipeline accepts:
+        #   image=<PIL.Image>           → image-to-video (first frame only)
+        #   image=[<PIL.Image>, ...]    → start+end frame conditioning
+        _first_frame = kwargs.pop("first_frame", None)
+        if _first_frame is None:
+            _first_frame = kwargs.pop("image", None)
+        else:
+            kwargs.pop("image", None)   # discard stale alias when first_frame was given
+
+        _last_frame = kwargs.pop("last_frame", None)
+
+        def _load_frame(f):
+            """Load a frame from a file-path string, or return the object as-is."""
+            if f is None:
+                return None
+            if isinstance(f, str):
+                from PIL import Image as _PilImg, ImageOps as _ImgOps
+                return _ImgOps.exif_transpose(_PilImg.open(f)).convert("RGB")
+            if isinstance(f, list) and len(f) > 0 and isinstance(f[0], str):
+                from PIL import Image as _PilImg, ImageOps as _ImgOps
+                return [_ImgOps.exif_transpose(_PilImg.open(x)).convert("RGB") for x in f]
+            return f
+
+        _first_frame = _load_frame(_first_frame)
+        _last_frame  = _load_frame(_last_frame)
+
+        if _first_frame is not None and _last_frame is not None:
+            # Start + end frame conditioning (interpolation)
+            kwargs["image"] = [_first_frame, _last_frame]
+            logger.info("[WeeLLM/MiniMax] I2V mode — start+end frame conditioning (interpolation).")
+        elif _first_frame is not None:
+            # First frame only — standard image-to-video
+            kwargs["image"] = _first_frame
+            logger.info("[WeeLLM/MiniMax] I2V mode — first frame conditioning.")
+        # else: T2V — no image key set
+
         # ── Smart height/width resolution & snapping (MiniMax-specific) ──
         _h, _w = kwargs.get("height"), kwargs.get("width")
         _img = kwargs.get("image")
