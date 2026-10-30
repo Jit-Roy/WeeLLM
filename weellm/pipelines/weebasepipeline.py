@@ -195,11 +195,11 @@ class WeeBasePipeline:
 
         if guidance_scale <= 1.0:
             disable()
-            logger.info("[WeeLLM] Classifier-free guidance disabled; using one transformer pass per step.")
+            logger.debug("[WeeLLM] Classifier-free guidance disabled; using one transformer pass per step.")
         else:
             guider.guidance_scale = guidance_scale
             enable()
-            logger.info("[WeeLLM] Classifier-free guidance enabled with scale %.2f.", guidance_scale)
+            logger.debug("[WeeLLM] Classifier-free guidance enabled with scale %.2f.", guidance_scale)
         return True
 
     # ------------------------------------------------------------------
@@ -216,7 +216,7 @@ class WeeBasePipeline:
         sig = inspect.signature(self._pipeline.__call__)
         if "enable_prompt_rewrite" in sig.parameters:
             if kwargs.get("enable_prompt_rewrite", True):
-                logger.info("[WeeLLM] Disabling 'enable_prompt_rewrite' to prevent slow autoregressive generation.")
+                logger.debug("[WeeLLM] Disabling 'enable_prompt_rewrite' to prevent slow autoregressive generation.")
                 kwargs["enable_prompt_rewrite"] = False
 
         if "image" in kwargs and kwargs["image"] is not None:
@@ -231,7 +231,7 @@ class WeeBasePipeline:
                 new_h = max(divisor, (h // divisor) * divisor)
                 
                 if w != new_w or h != new_h:
-                    logger.info("[WeeLLM] Auto-resizing input image from %dx%d to %dx%d (must be multiple of %d)", w, h, new_w, new_h, divisor)
+                    logger.debug("[WeeLLM] Auto-resizing input image from %dx%d to %dx%d (must be multiple of %d)", w, h, new_w, new_h, divisor)
                     img = img.resize((new_w, new_h), PIL.Image.Resampling.LANCZOS)
                     if isinstance(kwargs["image"], list):
                         kwargs["image"][0] = img
@@ -247,7 +247,7 @@ class WeeBasePipeline:
                 
         if "_auto_resize" in sig.parameters:
             if kwargs.get("_auto_resize", True):
-                logger.info("[WeeLLM] Disabling '_auto_resize' to prevent catastrophic sequence length OOMs on 4GB GPUs.")
+                logger.debug("[WeeLLM] Disabling '_auto_resize' to prevent catastrophic sequence length OOMs on 4GB GPUs.")
                 kwargs["_auto_resize"] = False
                 
         # --- Memory Overhead Estimation ---
@@ -386,9 +386,9 @@ class WeeBasePipeline:
         if not pipeline_class_name:
             raise ValueError("Could not determine diffusers pipeline class from model_index.json")
 
-        logger.info("\n============================================================")
-        logger.info("  WeeLLM -- Building Native %s with Streamers", pipeline_class_name)
-        logger.info("============================================================\n")
+        logger.debug("\n============================================================")
+        logger.debug("  WeeLLM -- Building Native %s with Streamers", pipeline_class_name)
+        logger.debug("============================================================\n")
 
         effective_dtype  = cls._resolve_dtype(device, torch_dtype)
         diffusers_kwargs = dict(kwargs)
@@ -415,7 +415,7 @@ class WeeBasePipeline:
         BaseTransformerStreamer._global_ram_budget_gb = ram_budget_gb
 
         # ── Step 1: Tokenizers & Scheduler ──────────────────────────────
-        logger.info("[1/4] Loading Tokenizers and Scheduler ...")
+        logger.debug("[1/4] Loading Tokenizers and Scheduler ...")
         cls._load_tokenizers_and_scheduler(model_dir_path, index, device, effective_dtype, diffusers_kwargs)
 
         if "processor" in index:
@@ -434,7 +434,7 @@ class WeeBasePipeline:
                 pass
 
         # ── Step 2: VAE ─────────────────────────────────────────────────
-        logger.info("\n[2/4] Initializing VAE (Lazy loading on meta device) ...")
+        logger.debug("\n[2/4] Initializing VAE (Lazy loading on meta device) ...")
 
         # VAEs often produce artifacts in half-precision due to intermediate activation overflow.
         # If we are running in float16 or bfloat16, upcast the VAE to float32.
@@ -455,7 +455,7 @@ class WeeBasePipeline:
                     logger.warning("Failed to load %s: %s", vae_key, e)
 
         # ── Step 3: Text Encoders ────────────────────────────────────────
-        logger.info("\n[3/4] Preparing Text Encoders ...")
+        logger.debug("\n[3/4] Preparing Text Encoders ...")
         te_streamers = cls._load_text_encoders(
             model_dir_path,
             index,
@@ -469,7 +469,7 @@ class WeeBasePipeline:
         )
 
         # ── Step 4: Transformer / UNet ──────────────────────────────────
-        logger.info("\n[4/4] Preparing Transformer / UNet ...")
+        logger.debug("\n[4/4] Preparing Transformer / UNet ...")
 
         # Always pop both so neither leaks into diffusers kwargs.
         # Prefer the one that matches the actual component key from model_index.json.
@@ -502,7 +502,7 @@ class WeeBasePipeline:
                     parts = str(lora_weights).split("/")
                     repo_id = "/".join(parts[:2])
                     filename = "/".join(parts[2:])
-                    logger.info(f"Downloading LoRA from {repo_id} ({filename}) ...")
+                    logger.debug(f"Downloading LoRA from {repo_id} ({filename}) ...")
                     lora_weights = hf_hub_download(repo_id=repo_id, filename=filename)
                 except Exception as e:
                     logger.warning(f"Failed to download LoRA from Hugging Face: {e}")
@@ -517,9 +517,9 @@ class WeeBasePipeline:
             diffusers_kwargs["unconditional_transformer"] = tr_model
 
         # ── Instantiate pipeline ─────────────────────────────────────────
-        logger.info("\n============================================================")
-        logger.info("  Instantiating Native Diffusers Pipeline ...")
-        logger.info("============================================================\n")
+        logger.debug("\n============================================================")
+        logger.debug("  Instantiating Native Diffusers Pipeline ...")
+        logger.debug("============================================================\n")
 
         diffusers_kwargs.pop("torch_dtype", None)
         
@@ -531,7 +531,7 @@ class WeeBasePipeline:
             pipeline_module = importlib.import_module("diffusers")
             if hasattr(pipeline_module, pipeline_class_name):
                 pipeline_cls = getattr(pipeline_module, pipeline_class_name)
-                logger.info(f"Loaded pipeline {pipeline_class_name} from standard diffusers")
+                logger.debug(f"Loaded pipeline {pipeline_class_name} from standard diffusers")
         except Exception:
             pass
 
@@ -551,7 +551,7 @@ class WeeBasePipeline:
                         spec.loader.exec_module(custom_module)
                         if hasattr(custom_module, pipeline_class_name):
                             pipeline_cls = getattr(custom_module, pipeline_class_name)
-                            logger.info(f"Loaded adapter pipeline {pipeline_class_name} from {py_file.relative_to(pipelines_dir)}")
+                            logger.debug(f"Loaded adapter pipeline {pipeline_class_name} from {py_file.relative_to(pipelines_dir)}")
                             break
                     except Exception as e:
                         pass
@@ -639,7 +639,7 @@ class WeeBasePipeline:
         bf16_supported = torch.cuda.is_bf16_supported()
 
         if torch_dtype == torch.bfloat16 and not bf16_supported:
-            logger.info(
+            logger.debug(
                 "  [WeeLLM] NOTE: bfloat16 is not supported on this GPU.\n"
                 "  [WeeLLM] Auto-casting to float32 (safe fallback) to prevent NaNs/black images "
                 "that can occur with float16 on large models.\n"
@@ -647,7 +647,7 @@ class WeeBasePipeline:
             return torch.float32
 
         if torch_dtype == torch.float32:
-            logger.info(
+            logger.debug(
                 "  [WeeLLM] NOTE: float32 requested. Running in full precision.\n"
                 "  [WeeLLM] Memory budget is tighter — use --dtype bfloat16 for ~2× speedup "
                 "with equivalent quality.\n"
@@ -803,7 +803,7 @@ class WeeBasePipeline:
             # that lives in a separate Hub repo rather than shipping it.
             if not local_te_path.exists() and hf_cls_name in _TE_EXTERNAL_REPO:
                 external_repo = _TE_EXTERNAL_REPO[hf_cls_name]
-                logger.info(
+                logger.debug(
                     "  [WeeLLM] '%s' subfolder not found locally — downloading from "
                     "external repo '%s' ...",
                     key, external_repo,
@@ -820,7 +820,7 @@ class WeeBasePipeline:
                     try:
                         from transformers import AutoTokenizer
                         out[tok_key] = AutoTokenizer.from_pretrained(downloaded)
-                        logger.info("  [WeeLLM] Loaded %s from '%s'.", tok_key, external_repo)
+                        logger.debug("  [WeeLLM] Loaded %s from '%s'.", tok_key, external_repo)
                     except Exception as e:
                         logger.warning("  [WeeLLM] Could not load %s from '%s': %s", tok_key, external_repo, e)
             else:
@@ -1111,13 +1111,13 @@ class WeeBasePipeline:
     ) -> None:
         """Apply xformers, VAE tiling, text-encoder eviction hooks, and VRAM defrag."""
 
-        logger.info("\n[5/5] Applying Aggressive RAM Eviction...")
+        logger.debug("\n[5/5] Applying Aggressive RAM Eviction...")
 
         cuda_available = torch.cuda.is_available() and device != "cpu"
 
         if cuda_available and torch.cuda.get_device_capability()[0] < 8:
             torch.backends.cuda.enable_flash_sdp(False)
-            logger.info(
+            logger.debug(
                 "      -> [WeeLLM] Pre-Ampere GPU detected (Compute < 8.0): disabled Flash Attention "
                 "(not supported on Compute < 8.0)."
             )
@@ -1141,7 +1141,7 @@ class WeeBasePipeline:
                             setattr(vae, _attr, 10_000)
                     if hasattr(vae, "enable_slicing"):
                         vae.enable_slicing()
-                    logger.info(
+                    logger.debug(
                         "      -> [WeeLLM] Video VAE detected: temporal frame-wise decoding "
                         "enabled (chunk=9 frames). Spatial tiling disabled to prevent seam artifacts."
                     )
@@ -1153,13 +1153,13 @@ class WeeBasePipeline:
                         vae.tile_latent_min_size = int(
                             vae_tile_size / (2 ** (len(vae.config.block_out_channels) - 1))
                         )
-                    logger.info(
+                    logger.debug(
                         "      -> [WeeLLM] Enabled Aggressive VAE Tiling (tile_size=%d) "
                         "to prevent decoding VRAM spikes.", vae_tile_size,
                     )
                 elif hasattr(pipeline, "enable_vae_tiling"):
                     pipeline.enable_vae_tiling()
-                    logger.info("      -> [WeeLLM] Enabled VAE Tiling (via pipeline) to prevent decoding VRAM spikes.")
+                    logger.debug("      -> [WeeLLM] Enabled VAE Tiling (via pipeline) to prevent decoding VRAM spikes.")
         except Exception:
             pass
 
@@ -1173,7 +1173,7 @@ class WeeBasePipeline:
                 
                 def safe_vae_call(self_obj, *args, **kwargs):
                     if method_name == "decode" and cache_to_ram:
-                        logger.info("\n[WeeLLM] One-Shot: Freeing Transformer from RAM before VAE Decode...")
+                        logger.debug("\n[WeeLLM] One-Shot: Freeing Transformer from RAM before VAE Decode...")
                         for tr_name in ["transformer", "unet"]:
                             if hasattr(pipeline, tr_name):
                                 setattr(pipeline, tr_name, None)
@@ -1242,7 +1242,7 @@ class WeeBasePipeline:
             evicted = evict_module(module)
             if cuda_available:
                 torch.cuda.empty_cache()
-            logger.info("[WeeLLM Offload] Evicted %d tensors to meta (%s).", evicted, label)
+            logger.debug("[WeeLLM Offload] Evicted %d tensors to meta (%s).", evicted, label)
 
         # TE eviction hook: runs on FIRST forward of transformer/unet
         def _evict_te_before_unet(module, args):
@@ -1256,7 +1256,7 @@ class WeeBasePipeline:
                 _evict_module_to_meta(te_mod, te_key)
 
             if cache_to_ram:
-                logger.info("\n[WeeLLM] One-Shot: Freeing Text Encoders from RAM...")
+                logger.debug("\n[WeeLLM] One-Shot: Freeing Text Encoders from RAM...")
                 # Explicitly clear the RAM cache from the seeker since closure captures keep it alive
                 for te_key, te_mod in te_streamers.items():
                     if hasattr(te_mod, "_seeker") and hasattr(te_mod._seeker, "clear_ram_cache"):
@@ -1277,10 +1277,24 @@ class WeeBasePipeline:
             tr_module.register_forward_pre_hook(_evict_te_before_unet)
 
         # VRAM defrag: evict transformer before lazy VAE decode
-        if hasattr(pipeline, "vae") and hasattr(pipeline.vae, "decode"):
-            original_vae_decode_vram = pipeline.vae.decode
+        _vae_targets = []
+        for _vkey in ["vae", "video_vae", "audio_vae"]:
+            _vmod = getattr(pipeline, _vkey, None)
+            if _vmod is not None and hasattr(_vmod, "decode") and not any(_vmod is t for t in _vae_targets):
+                _vae_targets.append(_vmod)
 
-            def defrag_vae_decode(self_obj, *args, **kwargs):
+        for _target_vae in _vae_targets:
+            original_vae_decode_vram = _target_vae.decode
+            
+            # Map to the specific streamer matching this VAE component
+            if _target_vae is getattr(pipeline, "audio_vae", None):
+                target_streamer = getattr(pipeline, "audio_vae_streamer", None)
+            elif _target_vae is getattr(pipeline, "video_vae", None):
+                target_streamer = getattr(pipeline, "video_vae_streamer", None) or getattr(pipeline, "vae_streamer", None)
+            else:
+                target_streamer = getattr(pipeline, "vae_streamer", None) or getattr(pipeline, "video_vae_streamer", None)
+
+            def defrag_vae_decode(self_obj, *args, orig_fn=original_vae_decode_vram, streamer=target_streamer, **kwargs):
                 report_memory("Before VAE Decode (Before GC)")
                 gc.collect()
                 if cuda_available:
@@ -1300,12 +1314,10 @@ class WeeBasePipeline:
                     args = tuple(a.to(tgt_dtype) if torch.is_tensor(a) and a.is_floating_point() else a for a in args)
                     kwargs = {k: (v.to(tgt_dtype) if torch.is_tensor(v) and v.is_floating_point() else v) for k, v in kwargs.items()}
 
-                if hasattr(pipeline, "vae_streamer") and "decode" in pipeline.vae_streamer.__class__.__dict__:
-                    res = pipeline.vae_streamer.decode(*args, **kwargs)
-                elif hasattr(pipeline, "video_vae_streamer") and "decode" in pipeline.video_vae_streamer.__class__.__dict__ and getattr(pipeline, "vae", None) is getattr(pipeline, "video_vae", None):
-                    res = pipeline.video_vae_streamer.decode(*args, **kwargs)
+                if streamer is not None and "decode" in streamer.__class__.__dict__:
+                    res = streamer.decode(*args, **kwargs)
                 else:
-                    res = original_vae_decode_vram(*args, **kwargs)       
+                    res = orig_fn(*args, **kwargs)       
                 report_memory("After VAE Decode (Before GC)")
                 gc.collect()
                 if cuda_available:
@@ -1313,13 +1325,19 @@ class WeeBasePipeline:
                 report_memory("After VAE Decode (After GC)")
                 return res
 
-            pipeline.vae.decode = types.MethodType(defrag_vae_decode, pipeline.vae)
+            _target_vae.decode = types.MethodType(defrag_vae_decode, _target_vae)
 
         # VRAM defrag: evict TE before lazy VAE encode (critical for Img2Img/Edit)
-        if hasattr(pipeline, "vae") and hasattr(pipeline.vae, "encode"):
-            original_vae_encode_vram = pipeline.vae.encode
+        _vae_encode_targets = []
+        for _vkey in ["vae", "video_vae", "audio_vae"]:
+            _vmod = getattr(pipeline, _vkey, None)
+            if _vmod is not None and hasattr(_vmod, "encode") and not any(_vmod is t for t in _vae_encode_targets):
+                _vae_encode_targets.append(_vmod)
 
-            def defrag_vae_encode(self_obj, *args, **kwargs):
+        for _enc_vae in _vae_encode_targets:
+            original_vae_encode_vram = _enc_vae.encode
+
+            def defrag_vae_encode(self_obj, *args, orig_enc=original_vae_encode_vram, **kwargs):
                 report_memory("Before VAE Encode (Before GC)")
                 gc.collect()
                 if cuda_available:
@@ -1329,7 +1347,7 @@ class WeeBasePipeline:
                 if tr_module is not None:
                     _evict_te_before_unet(tr_module, None)
                 
-                res = original_vae_encode_vram(*args, **kwargs)
+                res = orig_enc(*args, **kwargs)
                 return res
             
-            pipeline.vae.encode = types.MethodType(defrag_vae_encode, pipeline.vae)
+            _enc_vae.encode = types.MethodType(defrag_vae_encode, _enc_vae)

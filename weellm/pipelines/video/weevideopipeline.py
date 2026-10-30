@@ -467,9 +467,9 @@ class WeeVideoPipeline(WeeBasePipeline):
             logger.debug("[VideoCache] Final-latents cache HIT — running decode-only.")
             _cached_final = _video_cache.load_final()
             _cached_latents = _cached_final.get("latents")
-            if _cached_latents is not None and hasattr(_underlying, "vae") and _underlying.vae is not None:
+            _vae = getattr(_underlying, "vae", getattr(_underlying, "video_vae", None))
+            if _cached_latents is not None and _vae is not None:
                 try:
-                    _vae = _underlying.vae
                     _vproc = getattr(_underlying, "video_processor", None)
                     
                     from weellm.io.memory import evict_module as _evict
@@ -612,7 +612,7 @@ class WeeVideoPipeline(WeeBasePipeline):
             logger.debug(f"[VideoCache] Could not save final cache: {e}")
             
         if hasattr(out, "frames") and isinstance(out.frames, torch.Tensor):
-            _vae = getattr(_underlying, "vae", None)
+            _vae = getattr(_underlying, "vae", getattr(_underlying, "video_vae", None))
             _vproc = getattr(_underlying, "video_processor", None)
             
             if _vae and _vproc:

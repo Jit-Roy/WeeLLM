@@ -70,13 +70,6 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
             if hasattr(underlying, "components"):
                 underlying.components["vae"] = underlying.video_vae
 
-        # ModularPipeline decodes audio directly through the component. Route
-        # that call through the streamer so streamed parameters are materialised.
-        audio_streamer = getattr(pipe, "audio_vae_streamer", None)
-        audio_vae = getattr(underlying, "audio_vae", None)
-        if audio_streamer is not None and audio_vae is not None:
-            audio_vae.decode = audio_streamer.decode
-        
         # ── Apply post-load patches ───────────────────────────────────────────
         cls._apply_pipeline_patches(underlying, device)
         cls._inject_tokenizer_processor(underlying, model_dir_path)
@@ -122,11 +115,11 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
         if _first_frame is not None and _last_frame is not None:
             # Start + end frame conditioning (interpolation)
             kwargs["image"] = [_first_frame, _last_frame]
-            logger.info("[WeeLLM/MiniMax] I2V mode — start+end frame conditioning (interpolation).")
+            logger.debug("[WeeLLM/MiniMax] I2V mode — start+end frame conditioning (interpolation).")
         elif _first_frame is not None:
             # First frame only — standard image-to-video
             kwargs["image"] = _first_frame
-            logger.info("[WeeLLM/MiniMax] I2V mode — first frame conditioning.")
+            logger.debug("[WeeLLM/MiniMax] I2V mode — first frame conditioning.")
         # else: T2V — no image key set
 
         # ── Smart height/width resolution & snapping (MiniMax-specific) ──
@@ -149,7 +142,7 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
             kwargs["width"]  = max(32, round(w / 32) * 32)
             
             if kwargs["height"] != h or kwargs["width"] != w:
-                logger.info("[WeeLLM/MiniMax] Snapped dims %dx%d → %dx%d", w, h, kwargs["width"], kwargs["height"])
+                logger.debug("[WeeLLM/MiniMax] Snapped dims %dx%d → %dx%d", w, h, kwargs["width"], kwargs["height"])
 
             # 3. Physically resize to prevent VAE crash (supports single image or list of frames)
             if isinstance(_img, PIL.Image.Image) and _img.size != (kwargs["width"], kwargs["height"]):
@@ -164,7 +157,7 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
             while _nf % 17 != 5:
                 _nf += 1
             if _nf != kwargs["num_frames"]:
-                logger.info("[WeeLLM/MiniMax] num_frames snapped %d → %d (must be 17n+5).",
+                logger.debug("[WeeLLM/MiniMax] num_frames snapped %d → %d (must be 17n+5).",
                             kwargs["num_frames"], _nf)
             kwargs["num_frames"] = _nf
 
@@ -182,20 +175,20 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
         if not getattr(MiniMaxH3ModularPipeline, "_weellm_te_layer_patched", False):
             MiniMaxH3ModularPipeline.text_encoder_layer = property(lambda self: 49)
             MiniMaxH3ModularPipeline._weellm_te_layer_patched = True
-            logger.info("[WeeLLM/MiniMax] text_encoder_layer: 50 → 49")
+            logger.debug("[WeeLLM/MiniMax] text_encoder_layer: 50 → 49")
 
         # min_duration: 5.0s → 0.0s  (allow any frame count)
         if not getattr(MiniMaxH3ModularPipeline, "_weellm_min_dur_patched", False):
             MiniMaxH3ModularPipeline.min_duration = property(lambda self: 0.0)
             MiniMaxH3ModularPipeline._weellm_min_dur_patched = True
-            logger.info("[WeeLLM/MiniMax] min_duration: 5.0s → 0.0s")
+            logger.debug("[WeeLLM/MiniMax] min_duration: 5.0s → 0.0s")
 
         # _execution_device → real GPU
         real_device = torch.device(device)
         if not getattr(MiniMaxH3ModularPipeline, "_weellm_exec_dev_patched", False):
             MiniMaxH3ModularPipeline._execution_device = property(lambda self: real_device)
             MiniMaxH3ModularPipeline._weellm_exec_dev_patched = True
-            logger.info("[WeeLLM/MiniMax] _execution_device → %s", real_device)
+            logger.debug("[WeeLLM/MiniMax] _execution_device → %s", real_device)
 
         # Video scheduler shift = 12.0
         if getattr(underlying, "scheduler", None) is not None:
@@ -204,7 +197,7 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
                 if isinstance(underlying.scheduler, MiniMaxH3Scheduler):
                     if getattr(underlying.scheduler, "shift", None) != 12.0:
                         underlying.scheduler = MiniMaxH3Scheduler(shift=12.0)
-                        logger.info("[WeeLLM/MiniMax] scheduler shift reset to 12.0")
+                        logger.debug("[WeeLLM/MiniMax] scheduler shift reset to 12.0")
             except Exception:
                 pass
 
@@ -217,7 +210,7 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
                 underlying.tokenizer = Qwen2TokenizerFast.from_pretrained(str(te_dir))
             if getattr(underlying, "processor", None) is None:
                 underlying.processor = Qwen3VLProcessor.from_pretrained(str(te_dir))
-            logger.info("[WeeLLM/MiniMax] tokenizer + processor injected from text_encoder/.")
+            logger.debug("[WeeLLM/MiniMax] tokenizer + processor injected from text_encoder/.")
         except Exception as e:
             logger.warning("[WeeLLM/MiniMax] Could not load tokenizer/processor: %s", e)
 
@@ -227,7 +220,7 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
             try:
                 from diffusers.schedulers.scheduling_minimax_h3 import MiniMaxH3Scheduler
                 underlying.audio_scheduler = MiniMaxH3Scheduler(shift=3.0)
-                logger.info("[WeeLLM/MiniMax] audio_scheduler injected (shift=3.0).")
+                logger.debug("[WeeLLM/MiniMax] audio_scheduler injected (shift=3.0).")
             except Exception as e:
                 logger.warning("[WeeLLM/MiniMax] audio_scheduler inject failed: %s", e)
 
@@ -300,7 +293,7 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
                 if isinstance(module, MiniMaxH3TransformerBlock):
                     module.forward = types.MethodType(_chunked_block_forward, module)
                     patched += 1
-            logger.info("[WeeLLM/MiniMax] Strategy 1: Chunked FFN + in-place AdaLN patched into %d blocks.", patched)
+            logger.debug("[WeeLLM/MiniMax] Strategy 1: Chunked FFN + in-place AdaLN patched into %d blocks.", patched)
         except Exception as e:
             logger.warning("[WeeLLM/MiniMax] Strategy 1 patch failed: %s", e)
 
@@ -388,30 +381,30 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
                 if rotary_emb is not None:
                     _apply_rotary_emb_inplace_(query, *rotary_emb)
                     _apply_rotary_emb_inplace_(key,   *rotary_emb)
-                logger.info(f"VRAM before SDPA: {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+                logger.debug(f"VRAM before SDPA: {torch.cuda.memory_allocated()/1024**3:.3f} GB")
 
                 hidden_states = dispatch_attention_fn(
                     query, key, value, attn_mask=attention_mask, dropout_p=0.0,
                     is_causal=False, backend=self._attention_backend,
                     parallel_config=self._parallel_config,
                 )
-                logger.info(f"VRAM after SDPA: {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+                logger.debug(f"VRAM after SDPA: {torch.cuda.memory_allocated()/1024**3:.3f} GB")
                 
                 query_dtype = query.dtype
                 del query, key, value
                 torch.cuda.empty_cache()
-                logger.info(f"VRAM after del QKV: {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+                logger.debug(f"VRAM after del QKV: {torch.cuda.memory_allocated()/1024**3:.3f} GB")
 
                 hidden_states = hidden_states.flatten(2, 3).to(query_dtype)
                 hidden_states = attn.to_out[0](hidden_states)
                 hidden_states = attn.to_out[1](hidden_states)
-                logger.info(f"VRAM after to_out: {torch.cuda.memory_allocated()/1024**3:.3f} GB")
-                logger.info(f"--- ATTN EXIT ---")
+                logger.debug(f"VRAM after to_out: {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+                logger.debug(f"--- ATTN EXIT ---")
                 return hidden_states
 
             MiniMaxH3AttnProcessor.__call__ = _mem_efficient_attn_call
             MiniMaxH3AttnProcessor._attention_backend = AttentionBackendName._NATIVE_EFFICIENT
-            logger.info("[WeeLLM/MiniMax] Strategy 2: In-place QK-norm + RoPE + early del norm_hs patched.")
+            logger.debug("[WeeLLM/MiniMax] Strategy 2: In-place QK-norm + RoPE + early del norm_hs patched.")
         except Exception as e:
             logger.warning("[WeeLLM/MiniMax] Strategy 2 patch failed: %s", e)
 
@@ -481,6 +474,6 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
                 return MiniMaxH3TransformerOutput(sample=video_output, audio_sample=audio_output)
 
             MiniMaxH3Transformer3DModel.forward = _mem_efficient_transformer_forward
-            logger.info("[WeeLLM/MiniMax] Strategy 3: In-place packing + embed deletion + peak reset patched.")
+            logger.debug("[WeeLLM/MiniMax] Strategy 3: In-place packing + embed deletion + peak reset patched.")
         except Exception as e:
             logger.warning("[WeeLLM/MiniMax] Strategy 3 patch failed: %s", e)
