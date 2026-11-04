@@ -63,6 +63,7 @@ __all__ = [
     "LTX2VideoTransformer3DModelStreamer",
     "MiniMaxH3Transformer3DModelStreamer",
     "WanTransformer3DModelStreamer",
+    "WanAnimate2Transformer3DModelStreamer",
     "MOSSImageTransformerStreamer",
     "JoyImageEditTransformer3DModelStreamer",
     "BriaFibo2Transformer2DModelStreamer",
@@ -130,6 +131,7 @@ from .models.transformers.ltx2_connectors import LTX2TextConnectorsStreamer  # n
 from .models.transformers.ltx2_video_transformer_3d_model import LTX2VideoTransformer3DModelStreamer  # noqa: E402
 from .models.transformers.minimax_h3_transformer_3d_model import MiniMaxH3Transformer3DModelStreamer  # noqa: E402
 from .models.transformers.wan_transformer_3d_model import WanTransformer3DModelStreamer  # noqa: E402
+from .models.transformers.wan_animate_2_transformer_3d_model import WanAnimate2Transformer3DModelStreamer  # noqa: E402
 from .models.transformers.moss_image_transformer_2d_model import MOSSImageTransformerStreamer  # noqa: E402
 from .models.transformers.joy_image_edit_transformer_3d_model import JoyImageEditTransformer3DModelStreamer  # noqa: E402
 from .models.transformers.bria_fibo2_transformer_2d_model import BriaFibo2Transformer2DModelStreamer  # noqa: E402

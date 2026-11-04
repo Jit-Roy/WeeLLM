@@ -91,6 +91,7 @@ _TR_MAP = {
     "MOSSImageTransformer":                "weellm.models.transformers.moss_image_transformer_2d_model",
     "JoyImageEditTransformer3DModel":      "weellm.models.transformers.joy_image_edit_transformer_3d_model",
     "WanTransformer3DModel":               "weellm.models.transformers.wan_transformer_3d_model",
+    "WanAnimate2Transformer3DModel":        "weellm.models.transformers.wan_animate_2_transformer_3d_model",
     "BriaFibo2Transformer2DModel":         "weellm.models.transformers.bria_fibo2_transformer_2d_model",
 }
 
@@ -619,9 +620,9 @@ class WeeBasePipeline:
 
     @staticmethod
     def _load_index(model_dir: Path) -> dict:
-        index_path = model_dir / "model_index.json"
+        index_path = model_dir / "modular_model_index.json"
         if not index_path.exists():
-            index_path = model_dir / "modular_model_index.json"
+            index_path = model_dir / "model_index.json"
         with open(index_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
@@ -685,6 +686,38 @@ class WeeBasePipeline:
             except Exception as e:
                 logger.warning("Failed to load safety_checker, continuing with None: %s", e)
             out["safety_checker"] = sc
+
+        if "image_processor" in index and index["image_processor"] is not None:
+            comp = index["image_processor"]
+            lib_name = comp[0] if isinstance(comp, (list, tuple)) and len(comp) > 0 else "transformers"
+            cls_name = comp[1] if isinstance(comp, (list, tuple)) and len(comp) > 1 else "AutoImageProcessor"
+            try:
+                mod = importlib.import_module(lib_name)
+                proc_cls = getattr(mod, cls_name)
+                out["image_processor"] = proc_cls.from_pretrained(str(model_dir), subfolder="image_processor")
+            except Exception:
+                try:
+                    from transformers import AutoImageProcessor
+                    out["image_processor"] = AutoImageProcessor.from_pretrained(str(model_dir), subfolder="image_processor")
+                except Exception as e:
+                    logger.warning("Failed to load image_processor: %s", e)
+
+        if "image_encoder" in index and index["image_encoder"] is not None:
+            comp = index["image_encoder"]
+            lib_name = comp[0] if isinstance(comp, (list, tuple)) and len(comp) > 0 else "transformers"
+            cls_name = comp[1] if isinstance(comp, (list, tuple)) and len(comp) > 1 else "AutoModel"
+            try:
+                mod = importlib.import_module(lib_name)
+                encoder_cls = getattr(mod, cls_name)
+                ie = encoder_cls.from_pretrained(str(model_dir), subfolder="image_encoder", torch_dtype=effective_dtype)
+                out["image_encoder"] = ie.to(device)
+            except Exception:
+                try:
+                    from transformers import AutoModel
+                    ie = AutoModel.from_pretrained(str(model_dir), subfolder="image_encoder", torch_dtype=effective_dtype)
+                    out["image_encoder"] = ie.to(device)
+                except Exception as e:
+                    logger.warning("Failed to load image_encoder: %s", e)
 
         for key in ["tokenizer", "tokenizer_2", "tokenizer_3", "tokenizer_4", "text_processor", "processor"]:
             if key in index:
@@ -982,6 +1015,9 @@ class WeeBasePipeline:
         if not hasattr(pipeline, "scheduler"):
             return
 
+        # Schedulers (e.g. UniPC, DPMSolver) perform NumPy ops on these tables during set_timesteps
+        _CPU_SCHEDULE_ATTRS = ("alphas_cumprod", "betas", "alphas", "lambda_t", "alpha_t", "sigma_t")
+
         def _contains_tensor(value):
             if torch.is_tensor(value):
                 return True
@@ -1006,7 +1042,7 @@ class WeeBasePipeline:
             if scheduler_obj is None:
                 return
             for attr_name, attr_value in list(vars(scheduler_obj).items()):
-                if attr_name == "config":
+                if attr_name == "config" or attr_name in _CPU_SCHEDULE_ATTRS:
                     continue
                 if _contains_tensor(attr_value):
                     setattr(scheduler_obj, attr_name, _move_value(attr_value, target_device))
@@ -1037,6 +1073,12 @@ class WeeBasePipeline:
                     kw["mu"] = mu
                 if "timesteps" in params and timesteps is not None:
                     kw["timesteps"] = timesteps
+
+                for attr in _CPU_SCHEDULE_ATTRS:
+                    val = getattr(scheduler_self, attr, None)
+                    if val is not None and torch.is_tensor(val) and val.is_cuda:
+                        setattr(scheduler_self, attr, val.cpu())
+
                 result = original_set_timesteps_func(scheduler_self, **kw)
                 _move_scheduler(scheduler_self, device)
 

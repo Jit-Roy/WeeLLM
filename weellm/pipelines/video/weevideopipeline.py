@@ -21,10 +21,11 @@ logger = logging.getLogger("weellm")
 # Pipeline class name → (module path, class name)
 # ---------------------------------------------------------------------------
 _VIDEO_MAP = {
-    "LTX2Pipeline":("weellm.pipelines.video.adapters.ltx2_pipeline","WeeLTX2Pipeline"),
-    "MiniMaxH3ModularPipeline":("weellm.pipelines.video.adapters.minimax_h3_modular_pipeline","WeeMiniMaxPipeline"),
-    "WanPipeline":("weellm.pipelines.video.adapters.wan_pipeline","WeeWanPipeline"),
-    "CogVideoXPipeline":("weellm.pipelines.video.weevideopipeline","WeeVideoPipeline"),
+    "LTX2Pipeline": ("weellm.pipelines.video.adapters.ltx2_pipeline", "WeeLTX2Pipeline"),
+    "MiniMaxH3ModularPipeline": ("weellm.pipelines.video.adapters.minimax_h3_modular_pipeline", "WeeMiniMaxPipeline"),
+    "WanPipeline": ("weellm.pipelines.video.adapters.wan_pipeline", "WeeWanPipeline"),
+    "WanAnimate2ModularPipeline": ("weellm.pipelines.video.adapters.wan_animate_pipeline", "WeeWanAnimatePipeline"),
+    "CogVideoXPipeline": ("weellm.pipelines.video.weevideopipeline", "WeeVideoPipeline"),
 }
 
 class WeeVideoResult:
@@ -136,13 +137,18 @@ class WeeVideoPipeline(WeeBasePipeline):
 
     @classmethod
     def from_pretrained(cls, model_dir: str, **kwargs):
-        index_path = os.path.join(model_dir, "model_index.json")
+        index_path = os.path.join(model_dir, "modular_model_index.json")
+        if not os.path.exists(index_path):
+            index_path = os.path.join(model_dir, "model_index.json")
         class_name = ""
         
         if not os.path.exists(index_path):
             try:
                 from huggingface_hub import hf_hub_download
-                index_path = hf_hub_download(model_dir, "model_index.json")
+                try:
+                    index_path = hf_hub_download(model_dir, "modular_model_index.json")
+                except Exception:
+                    index_path = hf_hub_download(model_dir, "model_index.json")
             except Exception:
                 pass
                 

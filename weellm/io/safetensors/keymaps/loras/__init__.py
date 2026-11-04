@@ -6,8 +6,9 @@ from typing import Set, List, Tuple, Any, Callable
 
 from weellm.io.safetensors.keymaps.loras.fibo2 import Fibo2LoRAKeyMap
 from weellm.io.safetensors.keymaps.loras.ltx2 import LTX2LoRAKeyMap
-from weellm.io.safetensors.keymaps.loras.diffusers_fallback import DiffusersFallbackLoRAKeyMap
 from weellm.io.safetensors.keymaps.loras.minimax import MiniMaxH3LoRAKeyMap
+from weellm.io.safetensors.keymaps.loras.wan import WanLoRAKeyMap
+from weellm.io.safetensors.keymaps.loras.diffusers_fallback import DiffusersFallbackLoRAKeyMap
 
 logger = logging.getLogger("weellm")
 
@@ -20,6 +21,7 @@ LoRAPair = Tuple[str, str, List[LoRATarget]]
 
 # Ordered: first match wins. Put more-specific detectors at the top.
 _REGISTRY = [
+    WanLoRAKeyMap,
     Fibo2LoRAKeyMap,
     MiniMaxH3LoRAKeyMap,
     LTX2LoRAKeyMap,
