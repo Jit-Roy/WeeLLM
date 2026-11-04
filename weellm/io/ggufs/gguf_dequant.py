@@ -30,6 +30,7 @@ TORCH_COMPATIBLE_QTYPES = frozenset({
     None,
     gguf.GGMLQuantizationType.F32,
     gguf.GGMLQuantizationType.F16,
+    gguf.GGMLQuantizationType.BF16,
     gguf.GGMLQuantizationType.I8,
     gguf.GGMLQuantizationType.I16,
     gguf.GGMLQuantizationType.I32,
@@ -63,7 +64,8 @@ def split_block_dims(blocks: torch.Tensor, *args) -> tuple:
 
 def _dequant_BF16(blocks: torch.Tensor, block_size: int, type_size: int,
                   dtype=None) -> torch.Tensor:
-    return (blocks.view(torch.int16).to(torch.int32) << 16).view(torch.float32)
+    t = blocks.view(torch.bfloat16)
+    return t.to(dtype) if dtype is not None and t.dtype != dtype else t
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +321,8 @@ def dequantize_tensor(
         return raw_data.view(torch.float32).reshape(shape).to(dtype)
     if qtype == gguf.GGMLQuantizationType.F16:
         return raw_data.view(torch.float16).reshape(shape).to(dtype)
+    if qtype == gguf.GGMLQuantizationType.BF16:
+        return raw_data.view(torch.bfloat16).reshape(shape).to(dtype)
 
     # BF16 and quantized types — use block-level dequantizers
     if qtype in _DEQUANT_FUNCTIONS:

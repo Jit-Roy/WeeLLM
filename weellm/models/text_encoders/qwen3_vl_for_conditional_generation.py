@@ -102,7 +102,8 @@ class Qwen3VLForConditionalGenerationStreamer:
             return
         resident_keys = _get_resident_keys(self._seeker)
         logger.debug("[DEBUG-VRAM] Before get_tensors(resident_keys): %.3f GB", torch.cuda.memory_allocated()/1024**3)
-        resident_sd = self._seeker.get_tensors(resident_keys, device="cpu", dtype=self.dtype)
+        kwargs = {"process_gguf": False} if "ggufs" in self._seeker.__module__ else {"process_comfy": False}
+        resident_sd = self._seeker.get_tensors(resident_keys, device="cpu", dtype=self.dtype, **kwargs)
         logger.debug("[DEBUG-VRAM] After get_tensors(resident_keys): %.3f GB", torch.cuda.memory_allocated()/1024**3)
         
         cpu_sd = {k: v for k, v in resident_sd.items() if "embed_tokens" in k}
@@ -136,8 +137,20 @@ class Qwen3VLForConditionalGenerationStreamer:
                 
         if gpu_sd:
             logger.debug("[DEBUG-VRAM] Before _place_tensors(gpu_sd): %.3f GB", torch.cuda.memory_allocated()/1024**3)
-            self._place_tensors(gpu_sd, device=self.device)
+            gpu_sd_transferred = {}
+            for k, v in gpu_sd.items():
+                if isinstance(v, torch.Tensor):
+                    gpu_sd_transferred[k] = v.to(self.device, non_blocking=True)
+                else:
+                    gpu_sd_transferred[k] = v
+            from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
+            from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
+            gpu_sd_transferred = process_comfy_tensors(gpu_sd_transferred)
+            gpu_sd_transferred = process_gguf_tensors(gpu_sd_transferred)
+            torch.cuda.synchronize()
+            self._place_tensors(gpu_sd_transferred, device=self.device)
             logger.debug("[DEBUG-VRAM] After _place_tensors(gpu_sd): %.3f GB", torch.cuda.memory_allocated()/1024**3)
+            del gpu_sd_transferred
             
         del resident_sd, cpu_sd, gpu_sd
 
@@ -338,11 +351,23 @@ class Qwen3VLForConditionalGenerationStreamer:
             new_kwargs = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in kwargs.items()}
             return new_args, new_kwargs
         
-        self._model.register_forward_pre_hook(force_inputs_to_device, with_kwargs=True)
+        targets = [self._model]
+        if hasattr(self._model, "model"):
+            targets.append(self._model.model)
+            if hasattr(self._model.model, "visual"):
+                targets.append(self._model.model.visual)
+        elif hasattr(self._model, "visual"):
+            targets.append(self._model.visual)
+
+        for target in targets:
+            target.register_forward_pre_hook(force_inputs_to_device, with_kwargs=True)
 
         def evict_resident_after_forward(module, args, output):
             self.release_resident()
             return output
+
+        if hasattr(self._model, "model"):
+            self._model.model.register_forward_hook(evict_resident_after_forward)
         self._model.register_forward_hook(evict_resident_after_forward)
 
         # Hook Language Layers
@@ -377,10 +402,26 @@ class Qwen3VLForConditionalGenerationStreamer:
             # Gracefully skip missing layers in pruned GGUF models
             return args
         
-        gpu_sd = self._seeker.get_tensors(layer_keys, device=self.device, dtype=self.dtype)
-        logger.debug("[Hook] Loading %d tensors for %s onto %s", len(gpu_sd), prefix, self.device)
-        if not gpu_sd:
+        kwargs = {"process_gguf": False} if "ggufs" in self._seeker.__module__ else {"process_comfy": False}
+        cpu_sd = self._seeker.get_tensors(layer_keys, device="cpu", dtype=self.dtype, **kwargs)
+        logger.debug("[Hook] Loading %d tensors for %s onto %s", len(cpu_sd), prefix, self.device)
+        if not cpu_sd:
             logger.error("[Hook ERROR] No tensors found for %s!", prefix)
+            
+        gpu_sd = {}
+        for k, v in cpu_sd.items():
+            if isinstance(v, torch.Tensor):
+                gpu_sd[k] = v.to(self.device, non_blocking=True)
+            else:
+                gpu_sd[k] = v
+        del cpu_sd
+
+        from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
+        from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
+        gpu_sd = process_comfy_tensors(gpu_sd)
+        gpu_sd = process_gguf_tensors(gpu_sd)
+        torch.cuda.synchronize()
+
         self._place_tensors(gpu_sd)
         module._te_loaded_sd = gpu_sd  # keep original keys for eviction
         return args

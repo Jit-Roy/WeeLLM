@@ -81,7 +81,8 @@ class Qwen3VLModelStreamer:
 
     def _load_resident_modules(self):
         resident_keys = _get_resident_keys(self._seeker)
-        resident_sd = self._seeker.get_tensors(resident_keys, device="cpu", dtype=self.dtype)
+        kwargs = {"process_gguf": False} if "ggufs" in self._seeker.__module__ else {"process_comfy": False}
+        resident_sd = self._seeker.get_tensors(resident_keys, device="cpu", dtype=self.dtype, **kwargs)
         
         cpu_sd = {k: v for k, v in resident_sd.items() if "embed_tokens" in k}
         gpu_sd = {k: v for k, v in resident_sd.items() if k not in cpu_sd}
@@ -95,7 +96,19 @@ class Qwen3VLModelStreamer:
                 pin_module_to_cpu(self._model, "embed_tokens")
                 
         if gpu_sd:
-            self._place_tensors(gpu_sd, device=self.device)
+            gpu_sd_transferred = {}
+            for k, v in gpu_sd.items():
+                if isinstance(v, torch.Tensor):
+                    gpu_sd_transferred[k] = v.to(self.device, non_blocking=True)
+                else:
+                    gpu_sd_transferred[k] = v
+            from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
+            from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
+            gpu_sd_transferred = process_comfy_tensors(gpu_sd_transferred)
+            gpu_sd_transferred = process_gguf_tensors(gpu_sd_transferred)
+            torch.cuda.synchronize()
+            self._place_tensors(gpu_sd_transferred, device=self.device)
+            del gpu_sd_transferred
             
         del resident_sd, cpu_sd, gpu_sd
 
@@ -257,7 +270,22 @@ class Qwen3VLModelStreamer:
     def _generic_pre_hook(self, module: nn.Module, args):
         prefix = module._te_prefix
         layer_keys = [k for k in self._seeker.weight_map.keys() if k.startswith(prefix)]
-        gpu_sd = self._seeker.get_tensors(layer_keys, device=self.device, dtype=self.dtype)
+        if not layer_keys:
+            return args
+        kwargs = {"process_gguf": False} if "ggufs" in self._seeker.__module__ else {"process_comfy": False}
+        cpu_sd = self._seeker.get_tensors(layer_keys, device="cpu", dtype=self.dtype, **kwargs)
+        gpu_sd = {}
+        for k, v in cpu_sd.items():
+            if isinstance(v, torch.Tensor):
+                gpu_sd[k] = v.to(self.device, non_blocking=True)
+            else:
+                gpu_sd[k] = v
+        del cpu_sd
+        from weellm.io.safetensors.comfy_dequant import process_comfy_tensors
+        from weellm.io.ggufs.gguf_dequant import process_gguf_tensors
+        gpu_sd = process_comfy_tensors(gpu_sd)
+        gpu_sd = process_gguf_tensors(gpu_sd)
+        torch.cuda.synchronize()
         self._place_tensors(gpu_sd)
         module._te_loaded_sd = gpu_sd
 
