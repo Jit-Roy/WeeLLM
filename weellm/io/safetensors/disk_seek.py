@@ -1,9 +1,9 @@
 """
 disk_seek.py -- Disk-based safetensors tensor streamer.
 
-Reads specific tensors directly from disk using file seeks, completely
-avoiding memory-mapping and duplicate shard copies. Optimal for NVMe SSDs
-and local hardware.
+Reads specific tensors directly from disk using persistent mmap-backed shard
+views. Avoids duplicate shard copies in Python heap and avoids re-opening
+large mmap mappings repeatedly on Windows. Optimal for NVMe SSDs.
 
 Design principle: this is a pure disk reader. All pipeline scheduling
 decisions (when to read, what to cache, how deep to prefetch) belong in the
@@ -11,11 +11,29 @@ streamer layer above. This module just reads efficiently.
 """
 
 import logging
+import mmap
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
+
+# Mapping from safetensors dtype string to torch dtype for torch.frombuffer.
+# torch.frombuffer reads raw bytes directly, so we use the "storage" dtype
+# (the dtype the bytes are physically stored as, same as DTYPE_MAP entries).
+_TORCH_RAW_DTYPE_MAP: Dict[str, "torch.dtype"] = {
+    "F64":     torch.float64,
+    "F32":     torch.float32,
+    "F16":     torch.float16,
+    "BF16":    torch.int16,    # stored as uint16 ≡ int16 bytes; view as bfloat16 after load
+    "I64":     torch.int64,
+    "I32":     torch.int32,
+    "I16":     torch.int16,
+    "I8":      torch.int8,
+    "U8":      torch.uint8,
+    "BOOL":    torch.uint8,
+    "F8_E4M3": torch.uint8,   # stored as uint8; view as float8_e4m3fn after load
+}
 
 from weellm.io.safetensors.safetensors_base import DTYPE_MAP, SafetensorsBase
 
@@ -27,9 +45,9 @@ class SafetensorsDiskSeeker(SafetensorsBase):
     Reads specific tensors from Hugging Face safetensors files directly from
     disk using file seeks.
 
-    Completely avoids memory-mapping and loading entire duplicate shards.
-    Uses file.readinto() into a fresh per-tensor bytearray to avoid any
-    need for .clone() and to keep peak RAM minimal.
+    Uses persistent mmap-backed shard views and zero-copy slices to minimize
+    RAM overhead and avoid Windows kernel PTE exhaustion (WinError 1450).
+    Provides explicit lifecycle cleanup via close() and __enter__/__exit__.
 
     Best for: local machines with NVMe SSDs.
     """
@@ -37,6 +55,38 @@ class SafetensorsDiskSeeker(SafetensorsBase):
     def __init__(self, model_dir: Union[str, Path]):
         super().__init__(model_dir)
         self._parse_index()
+        # Cache of open mmap objects keyed by str(filepath).
+        # Avoids re-opening mmap on every get_tensors() call — repeated open/close
+        # of large shard files (5 GB each) exhausts Windows kernel PTE resources
+        # (WinError 1450) after ~200 calls across a multi-pass pipeline run.
+        # Values: (file_handle, mmap_obj, memoryview) — all kept open for process lifetime.
+        self._mmap_cache: Dict[str, tuple] = {}
+
+    def close(self) -> None:
+        """Close all cached memory mappings and file handles."""
+        for f_handle, mm, mv in list(self._mmap_cache.values()):
+            try:
+                mv.release()
+            except Exception:
+                pass
+            try:
+                mm.close()
+            except Exception:
+                pass
+            try:
+                f_handle.close()
+            except Exception:
+                pass
+        self._mmap_cache.clear()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def get_tensors(
         self,
@@ -84,43 +134,69 @@ class SafetensorsDiskSeeker(SafetensorsBase):
             filepath = self.model_dir / src_file
             header, data_base = self._read_header(filepath)
 
-            with open(filepath, "rb") as f:
-                for raw_key in src_keys:
-                    meta      = header[raw_key]
-                    dtype_str = meta["dtype"]
-                    shape     = meta["shape"]
-                    start, _  = meta["data_offsets"]
+            # Reuse a cached mmap for this shard. Opening a new mmap.mmap() for
+            # every get_tensors() call (up to ~200 times per pipeline run on a 5 GB
+            # shard file) exhausts Windows kernel page-table entries (WinError 1450).
+            # Model weights are read-only and never modified, so it is safe to keep
+            # the mmap open for the process lifetime.
+            cache_key = str(filepath)
+            if cache_key not in self._mmap_cache:
+                f_handle = open(filepath, "rb")
+                mm = mmap.mmap(f_handle.fileno(), 0, access=mmap.ACCESS_READ)
+                mv = memoryview(mm)
+                self._mmap_cache[cache_key] = (f_handle, mm, mv)
+            _, mm, mm_view = self._mmap_cache[cache_key]
 
+            for raw_key in src_keys:
+                meta      = header[raw_key]
+                dtype_str = meta["dtype"]
+                shape     = meta["shape"]
+                start, _  = meta["data_offsets"]
+
+                count    = int(np.prod(shape)) if shape else 1
+                raw_td   = _TORCH_RAW_DTYPE_MAP.get(dtype_str, torch.uint8)
+                # BF16 and F8 are physically stored as uint16/uint8 with
+                # element counts matching the original shape.
+                if dtype_str == "BF16":
+                    nbytes = count * 2   # uint16 = 2 bytes per element
+                elif dtype_str in ("U8", "BOOL", "F8_E4M3", "I8"):
+                    nbytes = count * 1
+                else:
                     np_dtype = DTYPE_MAP.get(dtype_str, np.uint8)
-                    count    = int(np.prod(shape)) if shape else 1
-                    nbytes   = count * np.dtype(np_dtype).itemsize
+                    nbytes = count * np.dtype(np_dtype).itemsize
 
-                    # Fresh bytearray per tensor - no clone() needed, halves peak RAM.
-                    buf  = bytearray(nbytes)
-                    view = memoryview(buf)
-                    f.seek(data_base + start)
-                    n = f.readinto(view)
-                    if n != nbytes:
-                        raise ValueError(
-                            f"Short read for '{raw_key}' in {filepath}: "
-                            f"expected {nbytes} B, got {n} B"
-                        )
+                offset = data_base + start
+                # Zero-copy view into mmap (OS page cache, not heap).
+                # torch.frombuffer accepts read-only buffers (unlike torch.from_numpy).
+                # del slice_mv and t_raw immediately after use to release the
+                # exported pointer before any potential mmap lifecycle operations.
+                slice_mv = mm_view[offset : offset + nbytes]
+                t_raw = torch.frombuffer(slice_mv, dtype=raw_td)
+                del slice_mv  # release mmap reference from this memoryview slice
 
-                    arr = np.frombuffer(view, dtype=np_dtype)
-                    if shape:
-                        arr = arr.reshape(shape)
+                if device != "cpu":
+                    # DMA from OS page cache → VRAM, no Python heap copy needed.
+                    t = t_raw.to(device=device, non_blocking=False)
+                else:
+                    # Clone to heap so tensor can be used independently of mmap.
+                    t = t_raw.clone()
+                del t_raw  # release mmap-backed tensor
 
-                    t = torch.from_numpy(arr)
-                    if dtype_str == "BF16":
-                        t = t.view(torch.bfloat16)
-                    elif dtype_str == "F8_E4M3":
-                        t = t.view(torch.float8_e4m3fn)
+                # Reinterpret storage dtype as the logical tensor dtype.
+                if dtype_str == "BF16":
+                    t = t.view(torch.bfloat16)
+                elif dtype_str == "F8_E4M3":
+                    t = t.view(torch.float8_e4m3fn)
+                elif dtype_str == "BOOL":
+                    t = t.to(torch.bool)
 
-                    t = t.to(device=device)
-                    if dtype is not None and t.dtype != dtype and t.is_floating_point():
-                        t = t.to(dtype=dtype)
+                if shape:
+                    t = t.reshape(shape)
 
-                    raw_result[raw_key] = t
+                if dtype is not None and t.dtype != dtype and t.is_floating_point():
+                    t = t.to(dtype=dtype)
+
+                raw_result[raw_key] = t
 
         # When a keymap is active, dequantisation MUST happen inside the seeker
         # (before remapping), regardless of the process_comfy flag.
