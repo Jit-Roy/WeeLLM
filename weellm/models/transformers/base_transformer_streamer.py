@@ -94,9 +94,18 @@ class BaseTransformerStreamer(ABC):
         self.dtype  = dtype
         self.prefetch = prefetch
         # Where prefetched blocks land before H2D:
-        #   "cpu"  → pinned CPU RAM  (safe on all machines)
-        #   "cuda" → directly to VRAM (only if VRAM budget allows a 2nd block)
+        #   "cpu"  -> pinned CPU RAM  (safe on all machines)
+        #   "cuda" -> directly to VRAM (only if VRAM budget allows a 2nd block)
         self.prefetch_device: str = prefetch_device if prefetch_device else "cpu"
+
+        # ----------------------------------------------------------------
+        # Per-pass timing tracking (for INFO-level diagnostics)
+        # ----------------------------------------------------------------
+        self._pass_num: int = 0              # incremented at block 0 of each pass
+        self._pass_t_start: float = 0.0     # wall-clock time at pass start
+        self._pass_disk_total: float = 0.0  # accumulated disk-wait seconds in this pass
+        self._pass_compute_total: float = 0.0  # accumulated compute seconds in this pass
+        self._enable_pass_preseed: bool = True  # whether to pre-seed blocks for the next pass
 
         # Build the ordered list of (shard_name, block_module) tuples.
         self._shard_order: List[Tuple[str, nn.Module]] = self._get_shard_order()
@@ -268,8 +277,9 @@ class BaseTransformerStreamer(ABC):
         modules in ``_shard_order`` are visited.
         """
         with self._lock:
-            futures = list(self._h2d_futures.values())
+            futures = list(self._h2d_futures.values()) + list(self._disk_futures.values())
             self._h2d_futures.clear()
+            self._disk_futures.clear()
             self._pinned_blocks.clear()
             self._cache_budget_bytes = 0
             self._double_buffering_enabled = False
@@ -318,6 +328,14 @@ class BaseTransformerStreamer(ABC):
 
     def release_resident(self) -> int:
         """Evict connector weights while another pipeline component runs."""
+        with self._lock:
+            futures = list(self._h2d_futures.values()) + list(self._disk_futures.values())
+            self._h2d_futures.clear()
+            self._disk_futures.clear()
+
+        for future in futures:
+            future.cancel()
+
         if not self._resident_loaded:
             return 0
         released = 0
@@ -514,6 +532,18 @@ class BaseTransformerStreamer(ABC):
         shard_name: str = getattr(module, _SHARD_NAME_ATTR)
         pos = self._shard_name_to_pos[shard_name]
         layer_keys = self._get_layer_keys(shard_name)
+        n_total = len(self._shard_order)
+
+        # ---- Pass-start bookkeeping ----------------------------------------
+        if pos == 0:
+            self._pass_num += 1
+            self._pass_t_start = time.time()
+            self._pass_disk_total = 0.0
+            self._pass_compute_total = 0.0
+            logger.info(
+                "  [Streamer] Pass %d START — %d blocks to stream",
+                self._pass_num, n_total,
+            )
 
         # VRAM calibration: reset peak stats at the very start of each pass.
         if not self._calibration_done and shard_name == self._shard_order[0][0]:
@@ -524,14 +554,16 @@ class BaseTransformerStreamer(ABC):
 
         if is_pinned:
             logger.debug(
-                "    [Streamer] Block %s (%d/%d) [VRAM HIT — skipping disk]",
-                shard_name, pos + 1, len(self._shard_order),
+                "    [Transformer] Block %s (%d/%d) [VRAM HIT]",
+                shard_name, pos + 1, n_total,
             )
         else:
-            src = "prefetch" if shard_name in getattr(self, '_h2d_futures', {}) else "disk (sync)"
-            logger.debug(
-                "    [Streamer] Block %s (%d/%d) [loading from %s]",
-                shard_name, pos + 1, len(self._shard_order), src
+            has_h2d = shard_name in getattr(self, '_h2d_futures', {})
+            has_disk = shard_name in getattr(self, '_disk_futures', {})
+            src = "h2d-prefetch" if has_h2d else ("disk-prefetch" if has_disk else "disk (sync)")
+            logger.info(
+                "    [Transformer] Block %s (%d/%d) [%s]",
+                shard_name, pos + 1, n_total, src,
             )
 
         t0 = time.time()
@@ -555,11 +587,14 @@ class BaseTransformerStreamer(ABC):
                     cpu_sd = disk_fut.result()
                     if cpu_sd is not None:
                         sd = {}
-                        for k, v in cpu_sd.items():
+                        for k in list(cpu_sd.keys()):
+                            v = cpu_sd.pop(k)
                             if isinstance(v, torch.Tensor):
                                 sd[k] = v.to(self.device)
                             else:
                                 sd[k] = v
+                            del v
+                        del cpu_sd
                         sd = process_comfy_tensors(sd)
                         sd = process_gguf_tensors(sd)
 
@@ -568,6 +603,7 @@ class BaseTransformerStreamer(ABC):
                 sd = self.seeker.get_tensors(layer_keys, device=self.device, dtype=self.dtype)
 
         t1 = time.time()
+        disk_wait = t1 - t0
 
         if not is_pinned:
             if self._h2d_stream is not None:
@@ -585,10 +621,14 @@ class BaseTransformerStreamer(ABC):
                 setattr(module, "_weellm_lora_applied", True)
 
         t2 = time.time()
+        self._pass_disk_total += disk_wait
+        h2d_apply = t2 - t1
+        setattr(module, "_weellm_disk_wait", disk_wait)
+        setattr(module, "_weellm_h2d_apply", h2d_apply)
 
         logger.debug(
-            "    [Streamer] %s (%d/%d): Disk/Wait=%.3fs | H2D+Apply=%.3fs",
-            shard_name, pos + 1, len(self._shard_order), t1 - t0, t2 - t1,
+            "    [Streamer] %s (%d/%d): disk_wait=%.2fs  h2d+apply=%.2fs",
+            shard_name, pos + 1, n_total, disk_wait, h2d_apply,
         )
         setattr(module, "_weellm_t_compute_start", time.time())
 
@@ -608,7 +648,6 @@ class BaseTransformerStreamer(ABC):
         # Launch background operations for upcoming blocks
         # ------------------------------------------------------------------
         if self.prefetch and self._disk_executor is not None:
-            n_total = len(self._shard_order)
             disk_kwargs = (
                 {"process_gguf": False}
                 if "ggufs" in self.seeker.__module__
@@ -656,7 +695,16 @@ class BaseTransformerStreamer(ABC):
         t_end  = time.time()
         t_start = getattr(module, "_weellm_t_compute_start", t_end)
         shard_name = getattr(module, _SHARD_NAME_ATTR)
-        logger.debug("    [Streamer] %s: GPU Compute=%.3fs (Offloading...)", shard_name, t_end - t_start)
+        pos = self._shard_name_to_pos[shard_name]
+        compute_t = t_end - t_start
+        self._pass_compute_total += compute_t
+        setattr(module, "_weellm_last_compute_t", compute_t)
+        disk_wait = getattr(module, "_weellm_disk_wait", 0.0)
+        h2d_apply = getattr(module, "_weellm_h2d_apply", 0.0)
+        logger.info(
+            "    [Streamer] %s (%d/%d): disk_wait=%.2fs  h2d+apply=%.2fs  compute=%.2fs",
+            shard_name, pos + 1, len(self._shard_order), disk_wait, h2d_apply, compute_t,
+        )
 
         should_evict = True
 
@@ -783,6 +831,47 @@ class BaseTransformerStreamer(ABC):
 
         if should_evict:
             evict_module(module)
+
+        # ---- Pass-end summary + pre-seed next pass -------------------------
+        if self._shard_order and shard_name == self._shard_order[-1][0]:
+            pass_wall = time.time() - self._pass_t_start
+            n_total = len(self._shard_order)
+            logger.info(
+                "  [Streamer] Pass %d END   — wall=%.1fs  disk_total=%.1fs  compute_total=%.1fs  "
+                "avg_disk/blk=%.2fs  avg_compute/blk=%.3fs",
+                self._pass_num, pass_wall,
+                self._pass_disk_total, self._pass_compute_total,
+                self._pass_disk_total / max(n_total, 1),
+                self._pass_compute_total / max(n_total, 1),
+            )
+
+            # Pre-seed disk reads for the FIRST (prefetch_depth+1) blocks of
+            # the NEXT pass. This hides disk latency during the scheduler gap
+            # between denoising steps (typically 0.5-2 s of CPU work).
+            if self.prefetch and getattr(self, "_enable_pass_preseed", True) and self._disk_executor is not None:
+                disk_kwargs = (
+                    {"process_gguf": False}
+                    if "ggufs" in self.seeker.__module__
+                    else {"process_comfy": False}
+                )
+                seeded = 0
+                for seed_pos in range(min(self._prefetch_depth + 1, n_total)):
+                    seed_name, _ = self._shard_order[seed_pos]
+                    if seed_name in self._pinned_blocks:
+                        continue
+                    with self._lock:
+                        if seed_name not in self._disk_futures and seed_name not in self._h2d_futures:
+                            akeys = self._get_layer_keys(seed_name)
+                            self._disk_futures[seed_name] = self._disk_executor.submit(
+                                self.seeker.get_tensors, akeys, "cpu", self.dtype,
+                                **disk_kwargs
+                            )
+                            seeded += 1
+                if seeded:
+                    logger.info(
+                        "  [Streamer] Pre-seeded disk reads for next pass (blocks 0..%d)",
+                        seeded - 1,
+                    )
 
         return output
 

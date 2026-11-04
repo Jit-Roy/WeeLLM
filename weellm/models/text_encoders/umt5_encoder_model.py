@@ -30,6 +30,10 @@ from accelerate.utils.modeling import set_module_tensor_to_device
 
 
 
+import logging
+logger = logging.getLogger("weellm")
+
+
 class UMT5EncoderModelStreamer:
     """
     Wraps UMT5EncoderModel for layer-by-layer streaming.
@@ -77,11 +81,17 @@ class UMT5EncoderModelStreamer:
 
     def _pre_hook(self, module: nn.Module, args):
         idx = module._t5_block_idx
+        total = len(self.model.encoder.block)
+        logger.info("  [TextEncoder/UMT5] Streaming block %d/%d ...", idx + 1, total)
         block_keys = self._get_block_keys(idx)
         sd = self.seeker.get_tensors(block_keys, device=self.device, dtype=self.dtype)
         place_tensors(self.model, sd, self.device, self.dtype)
 
     def _post_hook(self, module: nn.Module, args, output):
+        idx = getattr(module, "_t5_block_idx", None)
+        total = len(self.model.encoder.block)
+        if idx is not None:
+            logger.info("  [TextEncoder/UMT5] Finished block %d/%d (evicted)", idx + 1, total)
         evict_module(module)
         return output
 
@@ -96,11 +106,11 @@ class UMT5EncoderModelStreamer:
     ) -> "UMT5EncoderModelStreamer":
         from transformers import UMT5EncoderModel
 
-        print(f"Initializing SafetensorsLiveSeeker on text_encoder weights ...")
+        logger.info("Initializing SafetensorsLiveSeeker on text_encoder weights ...")
         seeker = get_seeker(model_dir, cache_to_ram=cache_to_ram)
-        print(f"  Found {len(seeker.weight_map)} tensors.")
+        logger.info("  Found %d tensors.", len(seeker.weight_map))
 
-        print(f"Instantiating UMT5EncoderModel on meta device ...")
+        logger.info("Instantiating UMT5EncoderModel on meta device ...")
         config = UMT5EncoderModel.config_class.from_pretrained(model_dir)
         with default_dtype(dtype), init_empty_weights():
             model = UMT5EncoderModel(config)
@@ -121,7 +131,7 @@ class UMT5EncoderModelStreamer:
             return any(k.startswith(p) or k == p for p in resident_prefixes)
 
         resident_keys = [k for k in seeker.weight_map if is_resident(k)]
-        print(f"Loading resident UMT5 tensors ({len(resident_keys)} tensors) ...")
+        logger.info("Loading resident UMT5 tensors (%d tensors) ...", len(resident_keys))
         resident_sd = seeker.get_tensors(resident_keys, device="cpu", dtype=dtype)
         
         cpu_sd = {k: v for k, v in resident_sd.items() if k.startswith("shared.")}
@@ -146,7 +156,7 @@ class UMT5EncoderModelStreamer:
         clean_memory(device)
 
         num_blocks = len(model.encoder.block)
-        print(f"  -> {num_blocks} UMT5 encoder blocks will stream on-demand. Resident weights on GPU.")
+        logger.info("  -> %d UMT5 encoder blocks will stream on-demand. Resident weights on GPU.", num_blocks)
         report_memory("After UMT5 encoder init")
 
         # Diffusers extracts `text_encoder_2.model` and calls it directly, bypassing UMT5EncoderModelStreamer.__call__.

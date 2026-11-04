@@ -7,6 +7,7 @@ directly from the SSD to prevent OOM on the massive weights.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -19,6 +20,8 @@ from transformers import AutoConfig, Qwen3VLForConditionalGeneration
 
 from weellm.io.utils import clean_memory
 from weellm.io.seeker import get_seeker
+
+logger = logging.getLogger("weellm")
 
 
 def _get_resident_keys(seeker) -> List[str]:
@@ -54,26 +57,28 @@ class Qwen3VLForConditionalGenerationStreamer:
         self._seeker: Optional[object] = None
         self._model: Optional[nn.Module] = None
         self._initialized = False
+        self._resident_loaded = False
         
         self._ensure_initialized()
 
     def _ensure_initialized(self):
         if self._initialized:
             return
-        print("Initialising streaming MiniMax-H3 Qwen3VL text encoder ...")
+        logger.info("Initialising streaming MiniMax-H3 Qwen3VL text encoder ...")
         self._seeker = get_seeker(self.text_encoder_dir, cache_to_ram=self.cache_to_ram)
         self._load_model_skeleton()
-        self._load_resident_modules()
+        # Resident modules loading deferred until forward pass (saves 1.8GB RAM/VRAM on cache hits)
         self._install_hooks()
         
         self._initialized = True
-        print("MiniMax-H3 Qwen3VL text encoder ready (streaming via Live Seek).")
+        logger.info("MiniMax-H3 Qwen3VL text encoder ready (streaming via Live Seek).")
 
     def _load_model_skeleton(self):
         config = AutoConfig.from_pretrained(str(self.text_encoder_dir), trust_remote_code=True)
         with default_dtype(self.dtype), init_empty_weights():
             self._model = Qwen3VLForConditionalGeneration(config)
         self._model.eval()
+        self._model._weellm_streamer = self
 
         # Truncate layers to match the available weights (e.g., for pruned models).
         # We leave the config layer count intact so Diffusers validation passes, 
@@ -84,7 +89,7 @@ class Qwen3VLForConditionalGenerationStreamer:
                 default=50
             )
             if max_layer + 1 < len(self._model.model.language_model.layers):
-                print(f"[WeeLLM] Truncating language_model.layers to {max_layer + 1} to prevent meta crash.")
+                logger.info("[WeeLLM] Truncating language_model.layers to %d to prevent meta crash.", max_layer + 1)
                 self._model.model.language_model.layers = self._model.model.language_model.layers[:max_layer + 1]
             
             # The final norm layer is not hooked because we don't stream it (and Diffusers doesn't need it 
@@ -93,34 +98,36 @@ class Qwen3VLForConditionalGenerationStreamer:
                 self._model.model.language_model.norm = nn.Identity()
 
     def _load_resident_modules(self):
+        if getattr(self, "_resident_loaded", False):
+            return
         resident_keys = _get_resident_keys(self._seeker)
-        print(f"[DEBUG-VRAM] Before get_tensors(resident_keys): {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+        logger.debug("[DEBUG-VRAM] Before get_tensors(resident_keys): %.3f GB", torch.cuda.memory_allocated()/1024**3)
         resident_sd = self._seeker.get_tensors(resident_keys, device="cpu", dtype=self.dtype)
-        print(f"[DEBUG-VRAM] After get_tensors(resident_keys): {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+        logger.debug("[DEBUG-VRAM] After get_tensors(resident_keys): %.3f GB", torch.cuda.memory_allocated()/1024**3)
         
         cpu_sd = {k: v for k, v in resident_sd.items() if "embed_tokens" in k}
         gpu_sd = {k: v for k, v in resident_sd.items() if k not in cpu_sd}
         
-        print(f"\n[DEBUG] ----------------- QWEN3-VL RESIDENT TENSORS -----------------")
+        logger.debug("----------------- QWEN3-VL RESIDENT TENSORS -----------------")
         gpu_bytes = 0
         for k, v in gpu_sd.items():
             mb = (v.numel() * v.element_size()) / 1024**2
-            print(f"[DEBUG] GPU Resident Tensor: {k} | Shape: {list(v.shape)} | Size: {mb:.2f} MB")
+            logger.debug("GPU Resident Tensor: %s | Shape: %s | Size: %.2f MB", k, list(v.shape), mb)
             gpu_bytes += mb
-        print(f"[DEBUG] TOTAL GPU RESIDENT: {gpu_bytes:.2f} MB")
+        logger.debug("TOTAL GPU RESIDENT: %.2f MB", gpu_bytes)
         
         cpu_bytes = 0
         for k, v in cpu_sd.items():
             mb = (v.numel() * v.element_size()) / 1024**2
-            print(f"[DEBUG] CPU Resident Tensor: {k} | Shape: {list(v.shape)} | Size: {mb:.2f} MB")
+            logger.debug("CPU Resident Tensor: %s | Shape: %s | Size: %.2f MB", k, list(v.shape), mb)
             cpu_bytes += mb
-        print(f"[DEBUG] TOTAL CPU RESIDENT: {cpu_bytes:.2f} MB")
-        print(f"[DEBUG] -------------------------------------------------------------")
+        logger.debug("TOTAL CPU RESIDENT: %.2f MB", cpu_bytes)
+        logger.debug("-------------------------------------------------------------")
 
         if cpu_sd:
-            print(f"[DEBUG-VRAM] Before _place_tensors(cpu_sd): {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+            logger.debug("[DEBUG-VRAM] Before _place_tensors(cpu_sd): %.3f GB", torch.cuda.memory_allocated()/1024**3)
             self._place_tensors(cpu_sd, device="cpu")
-            print(f"[DEBUG-VRAM] After _place_tensors(cpu_sd): {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+            logger.debug("[DEBUG-VRAM] After _place_tensors(cpu_sd): %.3f GB", torch.cuda.memory_allocated()/1024**3)
             from weellm.io.memory import pin_module_to_cpu
             if hasattr(self._model, "model") and hasattr(self._model.model, "language_model") and hasattr(self._model.model.language_model, "embed_tokens"):
                 pin_module_to_cpu(self._model, "model.language_model.embed_tokens")
@@ -128,9 +135,9 @@ class Qwen3VLForConditionalGenerationStreamer:
                 pin_module_to_cpu(self._model, "embed_tokens")
                 
         if gpu_sd:
-            print(f"[DEBUG-VRAM] Before _place_tensors(gpu_sd): {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+            logger.debug("[DEBUG-VRAM] Before _place_tensors(gpu_sd): %.3f GB", torch.cuda.memory_allocated()/1024**3)
             self._place_tensors(gpu_sd, device=self.device)
-            print(f"[DEBUG-VRAM] After _place_tensors(gpu_sd): {torch.cuda.memory_allocated()/1024**3:.3f} GB")
+            logger.debug("[DEBUG-VRAM] After _place_tensors(gpu_sd): %.3f GB", torch.cuda.memory_allocated()/1024**3)
             
         del resident_sd, cpu_sd, gpu_sd
 
@@ -154,7 +161,27 @@ class Qwen3VLForConditionalGenerationStreamer:
                     )
 
         self._init_missing_tensors()
+        self._resident_loaded = True
         clean_memory(self.device)
+
+    def release_resident(self):
+        if not getattr(self, "_resident_loaded", False):
+            return
+        resident_keys = _get_resident_keys(self._seeker)
+        for name in resident_keys:
+            if name.startswith("model.embed_tokens"):
+                name = name.replace("model.embed_tokens", "model.language_model.embed_tokens")
+            elif name.startswith("model.norm"):
+                name = name.replace("model.norm", "model.language_model.norm")
+            elif name.startswith("model.layers"):
+                name = name.replace("model.layers", "model.language_model.layers")
+            try:
+                set_module_tensor_to_device(self._model, name, "meta")
+            except Exception:
+                pass
+        self._resident_loaded = False
+        clean_memory(self.device)
+        logger.debug("[Qwen3VL] Released resident tensors back to meta device.")
 
     def _init_missing_tensors(self):
         """Initialize omitted tensors (like RoPE inv_freq and tied heads) if they are still on meta."""
@@ -302,12 +329,21 @@ class Qwen3VLForConditionalGenerationStreamer:
         # any wrapper __call__. It also queries the first parameter (which is on CPU) to
         # determine the model device, so it passes inputs on CPU. To prevent this, we attach a pre-hook 
         # to the raw model itself to intercept and move inputs to CUDA.
+        # Resident modules are also loaded here lazily on the first forward call,
+        # ensuring zero VRAM/RAM overhead when prompt embeds are cached.
         def force_inputs_to_device(module, args, kwargs):
+            if not getattr(self, "_resident_loaded", False):
+                self._load_resident_modules()
             new_args = tuple(arg.to(self.device) if torch.is_tensor(arg) else arg for arg in args)
             new_kwargs = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in kwargs.items()}
             return new_args, new_kwargs
         
         self._model.register_forward_pre_hook(force_inputs_to_device, with_kwargs=True)
+
+        def evict_resident_after_forward(module, args, output):
+            self.release_resident()
+            return output
+        self._model.register_forward_hook(evict_resident_after_forward)
 
         # Hook Language Layers
         if hasattr(self._model, "model") and hasattr(self._model.model, "language_model") and hasattr(self._model.model.language_model, "layers"):
@@ -342,9 +378,9 @@ class Qwen3VLForConditionalGenerationStreamer:
             return args
         
         gpu_sd = self._seeker.get_tensors(layer_keys, device=self.device, dtype=self.dtype)
-        print(f"[Hook] Loading {len(gpu_sd)} tensors for {prefix} onto {self.device}")
+        logger.debug("[Hook] Loading %d tensors for %s onto %s", len(gpu_sd), prefix, self.device)
         if not gpu_sd:
-            print(f"[Hook ERROR] No tensors found for {prefix}!")
+            logger.error("[Hook ERROR] No tensors found for %s!", prefix)
         self._place_tensors(gpu_sd)
         module._te_loaded_sd = gpu_sd  # keep original keys for eviction
         return args

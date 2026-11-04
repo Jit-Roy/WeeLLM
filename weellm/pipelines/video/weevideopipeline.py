@@ -25,6 +25,8 @@ _VIDEO_MAP = {
     "MiniMaxH3ModularPipeline": ("weellm.pipelines.video.adapters.minimax_h3_modular_pipeline", "WeeMiniMaxPipeline"),
     "WanPipeline": ("weellm.pipelines.video.adapters.wan_pipeline", "WeeWanPipeline"),
     "WanAnimate2ModularPipeline": ("weellm.pipelines.video.adapters.wan_animate_pipeline", "WeeWanAnimatePipeline"),
+    "WanAnimate2Pipeline": ("weellm.pipelines.video.adapters.wan_animate_pipeline", "WeeWanAnimatePipeline"),
+    "WanAnimatePipeline": ("weellm.pipelines.video.adapters.wan_animate_pipeline", "WeeWanAnimatePipeline"),
     "CogVideoXPipeline": ("weellm.pipelines.video.weevideopipeline", "WeeVideoPipeline"),
 }
 
@@ -260,7 +262,10 @@ class WeeVideoPipeline(WeeBasePipeline):
                 _fh, _fw = None, None
                 try:
                     from PIL import Image as _PILImage
-                    if isinstance(_first_frame, _PILImage.Image):
+                    if isinstance(_first_frame, (str, Path)):
+                        _img = _PILImage.open(_first_frame)
+                        _fw, _fh = _img.size
+                    elif isinstance(_first_frame, _PILImage.Image):
                         _fw, _fh = _first_frame.size   # PIL.size → (width, height)
                     elif isinstance(_first_frame, torch.Tensor):
                         _t = _first_frame
@@ -312,9 +317,8 @@ class WeeVideoPipeline(WeeBasePipeline):
             # first_frame: raw stash wins (LTX-2 interpolation path); Wan/MiniMax
             # set kwargs["image"] internally so the fallback covers them.
             first_frame=_raw_first_frame or kwargs.get("image"),
-            # last_frame: only the LTX-2 raw stash applies; Wan/MiniMax don't
-            # surface last_frame through kwargs at this level.
-            last_frame=_raw_last_frame,
+            # last_frame: raw stash wins or last_image from kwargs
+            last_frame=_raw_last_frame or kwargs.get("last_image"),
         )
         if fresh:
             _video_cache.clear_run()
@@ -548,6 +552,9 @@ class WeeVideoPipeline(WeeBasePipeline):
                 resume_step = _video_cache.step_from_file(latest_file)
                 resume_latents = _video_cache.load_step(latest_file)
                 logger.debug(f"[VideoCache] Resuming from step {resume_step}!")
+                if "WEELLM_RESUME_STEP" not in os.environ and latest_file.exists():
+                    os.environ["WEELLM_RESUME_STEP"] = str(resume_step + 1)
+                    os.environ["WEELLM_RESUME_PATH"] = str(latest_file)
 
                 class SkipDenoisingWrapper:
                     def __init__(self, original, r_step):
