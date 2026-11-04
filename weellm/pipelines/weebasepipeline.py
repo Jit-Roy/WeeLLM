@@ -495,6 +495,10 @@ class WeeBasePipeline:
         transformer_streamer._resident_loaded = True
         
         lora_weights = diffusers_kwargs.pop("lora_weights", None)
+        if lora_weights is None:
+            lora_weights = diffusers_kwargs.pop("lora_path", None)
+        else:
+            diffusers_kwargs.pop("lora_path", None)
         lora_scale = diffusers_kwargs.pop("lora_scale", 1.0)
         if lora_weights is not None:
             if not Path(lora_weights).exists() and "/" in str(lora_weights):
@@ -908,6 +912,7 @@ class WeeBasePipeline:
 
             te_streamers[key] = streamer
             te_model = getattr(streamer, "model", getattr(streamer, "_model", streamer))
+            te_model._weellm_streamer = streamer
             te_model = WeeBasePipeline._patch_to(te_model)
             out[key] = te_model
 
@@ -1342,13 +1347,21 @@ class WeeBasePipeline:
                 if cuda_available:
                     torch.cuda.empty_cache()
                 report_memory("Before VAE Decode (After GC)")
-                tr = getattr(pipeline, "transformer", None)
-                _evict_module_to_meta(tr, "transformer")
-                if tr is not None:
-                    st = getattr(tr, "_weellm_streamer", None)
-                    if st is not None:
-                        st._resident_loaded = False
-                report_memory("Before VAE Decode (After Transformer Offload)")
+                for _comp in ["transformer", "transformer_ref", "text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4", "connectors"]:
+                    _mod = getattr(pipeline, _comp, None)
+                    if _mod is not None:
+                        _real = getattr(_mod, "original", _mod)
+                        if isinstance(_real, torch.nn.Module):
+                            _st = getattr(_real, "_weellm_streamer", None)
+                            if _st is not None:
+                                _st._resident_loaded = False
+                                if hasattr(_st, "release_resident"):
+                                    try:
+                                        _st.release_resident()
+                                    except Exception:
+                                        pass
+                            _evict_module_to_meta(_real, _comp)
+                report_memory("Before VAE Decode (After Transformer/TE Offload)")
 
                 # Cast float inputs (latents) to VAE's expected dtype
                 tgt_dtype = getattr(self_obj, "dtype", None)

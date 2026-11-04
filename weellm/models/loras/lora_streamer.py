@@ -207,14 +207,16 @@ class GenericLazyLoRALoader:
 
                 try:
                     target_dev = valid_targets[0][0].device
+                    # Compute delta on CPU to prevent ~1.5 GB FP32 VRAM spikes
+                    cpu_dev = torch.device('cpu')
                     with torch.no_grad():
                         if b_key is None:
-                            diff_t = self._read_tensor(f, a_key, target_dev)
+                            diff_t = self._read_tensor(f, a_key, cpu_dev)
                             delta = self.scale * diff_t
                             del diff_t
                         else:
-                            a_t = self._read_tensor(f, a_key, target_dev)   # float32 on GPU
-                            b_t = self._read_tensor(f, b_key, target_dev)   # float32 on GPU
+                            a_t = self._read_tensor(f, a_key, cpu_dev)
+                            b_t = self._read_tensor(f, b_key, cpu_dev)
 
                             alpha = None
                             alpha_key = None
@@ -225,7 +227,7 @@ class GenericLazyLoRALoader:
                                         alpha_key = candidate
                                         break
                             if alpha_key is not None:
-                                alpha_t = self._read_tensor(f, alpha_key, target_dev)
+                                alpha_t = self._read_tensor(f, alpha_key, cpu_dev)
                                 alpha = alpha_t.item()
                                 del alpha_t
 
@@ -259,7 +261,7 @@ class GenericLazyLoRALoader:
                                     slices = tuple(slice(0, s) for s in param.shape)
                                     sub_delta = sub_delta[slices]
 
-                            param.data.add_(sub_delta.to(dtype=param.dtype))
+                            param.data.add_(sub_delta.to(device=param.device, dtype=param.dtype))
                             applied_count += 1
 
                     # Release GPU memory immediately – do not accumulate across pairs

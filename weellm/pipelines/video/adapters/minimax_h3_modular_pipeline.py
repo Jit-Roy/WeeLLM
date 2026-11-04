@@ -16,6 +16,7 @@ Follows the same pattern as inference.py:
 import gc
 import logging
 import types
+from pathlib import Path
 import torch
 from weellm.pipelines.video.weevideopipeline import WeeVideoPipeline
 
@@ -83,30 +84,42 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
         for _k in ("guidance_scale", "negative_prompt", "image_guidance_scale"):
             kwargs.pop(_k, None)
 
-        # ── Resolve first_frame / last_frame → image ───────────────────────────
-        # Accept either 'first_frame' or 'image' as the conditioning frame.
-        # 'image' is treated as an alias for 'first_frame'.
-        # MiniMax's native pipeline accepts:
-        #   image=<PIL.Image>           → image-to-video (first frame only)
-        #   image=[<PIL.Image>, ...]    → start+end frame conditioning
-        _first_frame = kwargs.pop("first_frame", None)
-        if _first_frame is None:
-            _first_frame = kwargs.pop("image", None)
+        # ── Conditioning frame resolution ──────────────────────────────────────
+        # Rule:
+        #   1. If user passes 'image': first frame = image, NO last frame.
+        #   2. Else user passes 'first_frame' and 'last_frame' together (interpolation).
+        #   3. Else neither: text-to-video mode.
+        if "image" in kwargs:
+            _first_frame = kwargs.pop("image")
+            _last_frame = None
+            kwargs.pop("first_frame", None)
+            kwargs.pop("last_frame", None)
+            kwargs.pop("last_image", None)
+        elif "first_frame" in kwargs and "last_frame" in kwargs:
+            _first_frame = kwargs.pop("first_frame")
+            _last_frame = kwargs.pop("last_frame")
+            kwargs.pop("last_image", None)
+        elif "first_frame" in kwargs:
+            _first_frame = kwargs.pop("first_frame")
+            _last_frame = None
+            kwargs.pop("last_frame", None)
+            kwargs.pop("last_image", None)
         else:
-            kwargs.pop("image", None)  # discard alias if first_frame already given
-
-        _last_frame = kwargs.pop("last_frame",  None)
+            _first_frame = None
+            _last_frame = None
+            kwargs.pop("last_frame", None)
+            kwargs.pop("last_image", None)
 
         def _load_frame(f):
             """Load a frame from a file-path string, or return the object as-is."""
             if f is None:
                 return None
-            if isinstance(f, str):
+            if isinstance(f, (str, Path)):
                 from PIL import Image as _PilImg, ImageOps as _ImgOps
-                return _ImgOps.exif_transpose(_PilImg.open(f)).convert("RGB")
-            if isinstance(f, list) and len(f) > 0 and isinstance(f[0], str):
+                return _ImgOps.exif_transpose(_PilImg.open(str(f))).convert("RGB")
+            if isinstance(f, list) and len(f) > 0 and isinstance(f[0], (str, Path)):
                 from PIL import Image as _PilImg, ImageOps as _ImgOps
-                return [_ImgOps.exif_transpose(_PilImg.open(x)).convert("RGB") for x in f]
+                return [_ImgOps.exif_transpose(_PilImg.open(str(x))).convert("RGB") for x in f]
             return f
 
         _first_frame = _load_frame(_first_frame)
@@ -114,22 +127,26 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
 
         if _first_frame is not None and _last_frame is not None:
             # Start + end frame conditioning (interpolation)
-            kwargs["image"] = [_first_frame, _last_frame]
+            kwargs["image"] = _first_frame
+            kwargs["last_image"] = _last_frame
             logger.debug("[WeeLLM/MiniMax] I2V mode — start+end frame conditioning (interpolation).")
         elif _first_frame is not None:
             # First frame only — standard image-to-video
             kwargs["image"] = _first_frame
+            kwargs.pop("last_image", None)
             logger.debug("[WeeLLM/MiniMax] I2V mode — first frame conditioning.")
-        # else: T2V — no image key set
+        else:
+            # T2V — no image keys set
+            kwargs.pop("image", None)
+            kwargs.pop("last_image", None)
 
         # ── Smart height/width resolution & snapping (MiniMax-specific) ──
         _h, _w = kwargs.get("height"), kwargs.get("width")
-        _img = kwargs.get("image")
+        _first = kwargs.get("image")
 
         if _h is None or _w is None:
             import PIL.Image
             h, w = _h or 512, _w or 512
-            _first = _img[0] if isinstance(_img, list) and _img else _img
 
             # 1. Fallback to image dims if present
             if isinstance(_first, PIL.Image.Image):
@@ -144,11 +161,14 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
             if kwargs["height"] != h or kwargs["width"] != w:
                 logger.debug("[WeeLLM/MiniMax] Snapped dims %dx%d → %dx%d", w, h, kwargs["width"], kwargs["height"])
 
-            # 3. Physically resize to prevent VAE crash (supports single image or list of frames)
-            if isinstance(_img, PIL.Image.Image) and _img.size != (kwargs["width"], kwargs["height"]):
-                kwargs["image"] = _img.resize((kwargs["width"], kwargs["height"]), PIL.Image.Resampling.LANCZOS)
-            elif isinstance(_img, list) and isinstance(_first, PIL.Image.Image):
-                kwargs["image"] = [i.resize((kwargs["width"], kwargs["height"]), PIL.Image.Resampling.LANCZOS) for i in _img]
+        # 3. Physically resize to prevent VAE crash
+        import PIL.Image
+        _req_h, _req_w = kwargs.get("height"), kwargs.get("width")
+        if _req_h is not None and _req_w is not None:
+            if isinstance(kwargs.get("image"), PIL.Image.Image) and kwargs["image"].size != (_req_w, _req_h):
+                kwargs["image"] = kwargs["image"].resize((_req_w, _req_h), PIL.Image.Resampling.LANCZOS)
+            if isinstance(kwargs.get("last_image"), PIL.Image.Image) and kwargs["last_image"].size != (_req_w, _req_h):
+                kwargs["last_image"] = kwargs["last_image"].resize((_req_w, _req_h), PIL.Image.Resampling.LANCZOS)
                 
         # Snap num_frames to 17*n+5 (MiniMax VAE requirement)
         _nf = kwargs.get("num_frames")

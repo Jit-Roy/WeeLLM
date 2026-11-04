@@ -1,3 +1,4 @@
+import os
 import json
 import logging
 import threading
@@ -11,6 +12,11 @@ import psutil
 import torch
 import torch.nn as nn
 from accelerate import init_empty_weights
+
+os.environ["TRITON_DEFAULT_FP_FUSION"] = "1"
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
 from weellm.io.seeker import get_seeker
 from weellm.io.utils import default_dtype, clean_memory, report_memory
@@ -342,13 +348,14 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
         TILE_BYTES  = all_hs.nbytes // max(num_tiles_total, 1)
         BLOCK_BYTES = 150 * 1024 * 1024  # ~150 MB per block weights in VRAM
 
-        # 2 ping-pong GPU slots saves 150 MB vs 3 slots.
         # Peak per-tile VRAM during forward:
-        #   all_hs (held) + out_chunk (1x) + SwiGLU intermediates (~4x) = ~5x TILE_BYTES
+        #   input tile (1x) + SwiGLU gate+up intermediates (~4x) + output (1x) = ~6x TILE_BYTES
+        # Using measured TILE_BYTES ensures correctness regardless of resolution.
+        # Keep a 400 MB safety headroom above the 2 ping-pong block weight slots.
         gpu_blocks_capacity      = 2
-        OVERHEAD_BYTES           = 300 * 1024 * 1024  # 300 MB safety margin
+        OVERHEAD_BYTES           = 400 * 1024 * 1024  # 400 MB safety margin
         available_for_microbatch = max(0, free_vram - gpu_blocks_capacity * BLOCK_BYTES - OVERHEAD_BYTES)
-        max_tiles_allowed = max(1, int(available_for_microbatch // (5 * TILE_BYTES))) if TILE_BYTES > 0 else 1
+        max_tiles_allowed = max(1, min(4, int(available_for_microbatch // (6 * TILE_BYTES)))) if TILE_BYTES > 0 else 1
         MAX_MICROBATCH    = max(1, min(num_tiles_total, max_tiles_allowed))
 
         # RAM cache depth: number of blocks to prefetch into CPU RAM
@@ -454,21 +461,8 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
                     compute_end   = torch.cuda.Event(enable_timing=True)
                     compute_start.record()
 
-                    # Micro-batched GPU forward pass (in-place update of all_hs)
-                    # Writing output directly back into all_hs avoids a torch.cat
-                    # allocation that would double peak VRAM.
-                    # Compile current block (weights are on GPU at this point).
-                    # torch.compile's internal dynamo cache deduplicates across all 36 blocks:
-                    # block 0 triggers real compilation (~10s one-time), blocks 1-35 are cache hits.
-                    # We must NOT cache the OptimizedModule across block iterations — each block
-                    # instance must be compiled when ITS weights are loaded, otherwise the cached
-                    # wrapper would reference a different block's evicted (meta) parameters.
-                    #
-                    # mode="default": kernel fusion without CUDA graph capture.
-                    # reduce-overhead uses CUDA graphs which require static shapes; for infinite-length
-                    # videos the last microbatch can have any remainder size (n_tiles % MAX_MICROBATCH),
-                    # causing per-shape re-capture overhead. default mode + dynamic=True handles any
-                    # batch size with the same compiled kernel, safely scaling to any video length.
+                    # Micro-batched GPU forward pass using Triton (torch.compile)
+                    # Compiles block via Inductor with Triton kernel fusion.
                     compiled_block = torch.compile(block, mode="default", dynamic=True)
 
                     for b_start in range(0, num_tiles_total, MAX_MICROBATCH):
@@ -476,12 +470,16 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
                         chunk_cos = all_cos[b_start : b_start + MAX_MICROBATCH].to(self.device, non_blocking=True)
                         chunk_sin = all_sin[b_start : b_start + MAX_MICROBATCH].to(self.device, non_blocking=True)
                         out_chunk = compiled_block(chunk_hs, (chunk_cos, chunk_sin))
-                        # In-place copy back to CPU: reuses all_hs storage; out_chunk freed immediately
-                        all_hs[b_start : b_start + MAX_MICROBATCH].copy_(out_chunk.cpu(), non_blocking=True)
+                        # all_hs is pinned memory — copy_(cuda_tensor, non_blocking=True) triggers
+                        # an async DMA transfer without a synchronous .cpu() intermediary.
+                        all_hs[b_start : b_start + MAX_MICROBATCH].copy_(out_chunk, non_blocking=True)
                         del out_chunk, chunk_hs, chunk_cos, chunk_sin
-                        if hasattr(torch, "clear_autocast_cache"):
-                            torch.clear_autocast_cache()
-                        torch.cuda.empty_cache()
+
+                    # empty_cache() once per block (not inside the tile loop) avoids 720
+                    # redundant CUDA driver fence calls on WDDM (~1-10 ms each on Windows).
+                    if hasattr(torch, "clear_autocast_cache"):
+                        torch.clear_autocast_cache()
+                    torch.cuda.empty_cache()
 
                     compute_end.record()
 
@@ -496,7 +494,7 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
 
                     used = torch.cuda.memory_allocated() / 1e9
                     resv = torch.cuda.memory_reserved() / 1e9
-                    logger.debug(
+                    logger.info(
                         "    [VAE Streamer] Block %02d/%d | Disk: %4.0fms | H2D: %4.0fms | "
                         "Compute: %4.0fms | GPU Idle: %3.0fms | GPU Blocks: %d | "
                         "CPU Blocks: %d/%d | VRAM: %.2fGB / Resv: %.2fGB",
@@ -544,10 +542,14 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
         all_hs = all_hs.view(N, T_tile, H_tile, W_tile, dec.out_channels, patch_size_t, patch_size, patch_size)
         all_hs = all_hs.permute(0, 4, 1, 5, 2, 6, 3, 7).contiguous()
         all_hs = all_hs.reshape(N, dec.out_channels, T_tile * patch_size_t, H_tile * patch_size, W_tile * patch_size)
-        # Move decoded tiles back to GPU for spatial and temporal stitching
-        decoded_tiles = [t.unsqueeze(0).to(self.device, non_blocking=True) for t in all_hs.unbind(dim=0)]
+        # Free GPU memory and caches before post-processing
+        torch.cuda.empty_cache()
+        # Keep decoded tiles on CPU for spatial stitching and temporal blending to save VRAM
+        decoded_tiles = [t.unsqueeze(0) for t in all_hs.unbind(dim=0)]
+        del all_hs
+        clean_memory()
 
-        # Stitch tiles per clip, then blend temporal overlaps
+        # Stitch tiles per clip, then blend temporal overlaps (on CPU)
         num_y = len(y_indices)
         num_x = len(x_indices)
         decoded_chunks = []
@@ -588,7 +590,9 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
             )
             dec_out = dec_out[:, :, :-pad_frames]
 
-        return dec_out
+        del decoded_tiles, decoded_chunks
+        clean_memory()
+        return dec_out.to(self.device)
 
     def __getattr__(self, name: str):
         return getattr(self.model, name)
