@@ -194,7 +194,7 @@ class Qwen3VLForConditionalGenerationStreamer:
                 pass
         self._resident_loaded = False
         clean_memory(self.device)
-        logger.debug("[Qwen3VL] Released resident tensors back to meta device.")
+        logger.info("[Qwen3VL] Released resident tensors back to meta device.")
 
     def _init_missing_tensors(self):
         """Initialize omitted tensors (like RoPE inv_freq and tied heads) if they are still on meta."""
@@ -404,7 +404,7 @@ class Qwen3VLForConditionalGenerationStreamer:
         
         kwargs = {"process_gguf": False} if "ggufs" in self._seeker.__module__ else {"process_comfy": False}
         cpu_sd = self._seeker.get_tensors(layer_keys, device="cpu", dtype=self.dtype, **kwargs)
-        logger.debug("[Hook] Loading %d tensors for %s onto %s", len(cpu_sd), prefix, self.device)
+        logger.info("    [TextEncoder] Loading %d tensors for %s onto %s", len(cpu_sd), prefix, self.device)
         if not cpu_sd:
             logger.error("[Hook ERROR] No tensors found for %s!", prefix)
             

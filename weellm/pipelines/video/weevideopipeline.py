@@ -230,6 +230,10 @@ class WeeVideoPipeline(WeeBasePipeline):
         _raw_first_frame = kwargs.pop("_first_frame_raw", None)
         _raw_last_frame  = kwargs.pop("_last_frame_raw",  None)
 
+        # Standard video generation API: 'first_frame' (or 'image' as alias) and 'last_frame'.
+        first_frame = _raw_first_frame or kwargs.get("first_frame") or kwargs.get("image")
+        last_frame  = _raw_last_frame  or kwargs.get("last_frame")
+
         lora_weights = kwargs.pop("lora_weights", None)
         latent_upsampler = kwargs.pop("latent_upsampler", None)
         user_output_type = kwargs.get("output_type", "pil")
@@ -244,14 +248,14 @@ class WeeVideoPipeline(WeeBasePipeline):
         # ── Smart height/width resolution ─────────────────────────────────────
         # Priority:
         #   1. User explicitly passed both → use as-is, ignore everything else.
-        #   2. Image-to-video (kwargs["image"] set by WeeLTX2Pipeline router):
+        #   2. Image-to-video (first frame supplied):
         #        - Missing dim(s) are filled from the first frame's actual size.
         #   3. Text-to-video (no image): default to 512×512.
         # In all cases the resolved values are written back into kwargs so the
         # underlying diffusers pipeline and the cache both see the same dims.
         _user_h = kwargs.get("height")
         _user_w = kwargs.get("width")
-        _first_frame = kwargs.get("image")   # set by WeeLTX2Pipeline for I2V
+        _first_frame = first_frame
 
         if _user_h is not None and _user_w is not None:
             # Both provided by the user — respect exactly, don't look at image dims.
@@ -314,11 +318,8 @@ class WeeVideoPipeline(WeeBasePipeline):
             prompt, height, width, num_frames, steps, seed,
             negative_prompt=kwargs.get("negative_prompt"),
             save_every=cache_every, lora_weights=lora_weights,
-            # first_frame: raw stash wins (LTX-2 interpolation path); Wan/MiniMax
-            # set kwargs["image"] internally so the fallback covers them.
-            first_frame=_raw_first_frame or kwargs.get("image"),
-            # last_frame: raw stash wins or last_image from kwargs
-            last_frame=_raw_last_frame or kwargs.get("last_image"),
+            first_frame=first_frame,
+            last_frame=last_frame,
         )
         if fresh:
             _video_cache.clear_run()
