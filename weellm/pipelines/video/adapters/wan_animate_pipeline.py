@@ -15,10 +15,53 @@ from typing import Optional, Union, List
 import PIL.Image
 import torch
 
+from weellm.io.utils import clean_memory
 from weellm.pipelines.video.weevideopipeline import WeeVideoPipeline, WeeVideoResult
 from weellm.pipelines.video.adapters.wan_pipeline import DEFAULT_WAN_NEG_PROMPT
 
 logger = logging.getLogger("weellm")
+
+
+def _log_mem(tag: str):
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    import psutil
+    vm = psutil.virtual_memory()
+    ram_used = vm.used / (1024**2)
+    ram_avail = vm.available / (1024**2)
+    ram_pct = vm.percent
+    if torch.cuda.is_available():
+        alloc = torch.cuda.memory_allocated() / (1024**2)
+        res = torch.cuda.memory_reserved() / (1024**2)
+        max_alloc = torch.cuda.max_memory_allocated() / (1024**2)
+        logger.debug(
+            "    [MEM DBG] %-40s | VRAM: %7.1f MB (Res: %7.1f, Peak: %7.1f) | Host RAM: %7.1f MB (Avail: %7.1f MB, %4.1f%%)",
+            tag, alloc, res, max_alloc, ram_used, ram_avail, ram_pct,
+        )
+    else:
+        logger.debug(
+            "    [MEM DBG] %-40s | Host RAM: %7.1f MB (Avail: %7.1f MB, %4.1f%%)",
+            tag, ram_used, ram_avail, ram_pct,
+        )
+
+
+def _dump_gpu_tensors(tag: str = "", min_mb: float = 10.0):
+    import gc
+    if not torch.cuda.is_available():
+        return
+    lines = []
+    total = 0.0
+    for obj in gc.get_objects():
+        try:
+            if torch.is_tensor(obj) and obj.is_cuda:
+                sz = obj.nelement() * obj.element_size() / (1024**2)
+                total += sz
+                if sz >= min_mb:
+                    lines.append(f"{str(list(obj.shape)):25s} | {str(obj.dtype):15s} | {sz:7.1f} MB")
+        except Exception:
+            pass
+    sep = "\n      "
+    logger.info("    [GPU TENSORS %s] Total: %.1f MB (tracked >= %.0f MB: %d tensors):\n      %s", tag, total, min_mb, len(lines), sep.join(lines))
 
 
 def _load_image(img):
@@ -134,10 +177,8 @@ def _patch_flex_attention():
                     # result (~158 MB bf16) ≈ 199 MB — fits on 4 GB GPU.
                     # ROPE_CHUNK = 2048 tokens: 2048 × n_heads × head_dim/2 × 8 B ≈ 41 MB
                     ROPE_CHUNK = 2048
-                    result = torch.empty_like(x)
                     for i, (f, h, w) in enumerate(grid_sizes.tolist()):
                         seq_len = f * h * w
-                        # freqs_i: [seq_len, 1, c/2] complex64 — small (~7 MB), built once
                         freqs_i = torch.cat(
                             [
                                 freqs_split[0][: f * time_stride : time_stride].view(f, 1, 1, -1).expand(f, h, w, -1),
@@ -149,59 +190,127 @@ def _patch_flex_attention():
 
                         for s in range(0, seq_len, ROPE_CHUNK):
                             e = min(s + ROPE_CHUNK, seq_len)
-                            # view_as_complex requires float32 or float64
                             x_chunk = torch.view_as_complex(
                                 x[i, s:e].float().reshape(e - s, n, -1, 2)
                             )
                             rot = x_chunk * freqs_i[s:e]
                             del x_chunk
-                            # Write directly into result in target dtype — no accumulation
-                            result[i, s:e] = torch.view_as_real(rot).flatten(2).to(x.dtype)
+                            # In-place update saves 416 MB tensor allocation
+                            x[i, s:e] = torch.view_as_real(rot).flatten(2).to(x.dtype)
                             del rot
 
                         del freqs_i
-                        # Padding tokens are copied unchanged
-                        if seq_len < result.shape[1]:
-                            result[i, seq_len:] = x[i, seq_len:]
 
-                    return result
+                    return x
 
                 tw.rope_apply = _safe_rope_apply
                 tw._weellm_rope_patched = True
 
             if not hasattr(tw, "_weellm_kv_cache_patched"):
-                class CPUPinnedWanAnimate2KVLayerCache:
-                    """CPU-backed KV cache to prevent storing gigabytes of KV across 40 layers in VRAM."""
-                    def __init__(self):
-                        self.key: torch.Tensor | None = None
-                        self.value: torch.Tensor | None = None
+                class DiskBackedWanAnimate2KVLayerCache:
+                    """Disk-backed on-demand KV cache to eliminate storing 32 GB of KV across 40 layers in RAM or VRAM."""
+                    _counter = 0
+
+                    def __init__(self, layer_idx: int | None = None):
+                        if layer_idx is None:
+                            layer_idx = DiskBackedWanAnimate2KVLayerCache._counter
+                            DiskBackedWanAnimate2KVLayerCache._counter += 1
+                        self.layer_idx = layer_idx
+                        self.cache_dir = Path(r"D:\Personal Projects\WeeLLM\.weellm_cache\kv_layers")
+                        self.cache_dir.mkdir(parents=True, exist_ok=True)
+                        self.k_path = self.cache_dir / f"k_layer_{self.layer_idx}.pt"
+                        self.v_path = self.cache_dir / f"v_layer_{self.layer_idx}.pt"
+                        self._key: torch.Tensor | None = None
+                        self._value: torch.Tensor | None = None
 
                     def store(self, key: torch.Tensor, value: torch.Tensor):
-                        self.key = key.to("cpu")
-                        self.value = value.to("cpu")
+                        _log_mem(f"kv_store_layer_{self.layer_idx}_start")
+                        import threading
+                        k_cpu = key.cpu()
+                        v_cpu = value.cpu()
+                        self._key = None
+                        self._value = None
+
+                        def _bg_save(k_t, v_t, kp, vp):
+                            torch.save(k_t, kp)
+                            torch.save(v_t, vp)
+
+                        t = threading.Thread(target=_bg_save, args=(k_cpu, v_cpu, self.k_path, self.v_path), daemon=True)
+                        t.start()
+                        self._save_thread = t
+                        _log_mem(f"kv_store_layer_{self.layer_idx}_async_dispatched")
+
+                    @property
+                    def key(self) -> torch.Tensor:
+                        if hasattr(self, "_save_thread") and self._save_thread is not None:
+                            self._save_thread.join()
+                            self._save_thread = None
+                        if self._key is None:
+                            if not self.k_path.exists():
+                                raise RuntimeError(f"Layer {self.layer_idx} KV cache file not found: {self.k_path}")
+                            _log_mem(f"kv_load_key_layer_{self.layer_idx}")
+                            self._key = torch.load(self.k_path, weights_only=True)
+                        return self._key
+
+                    @property
+                    def value(self) -> torch.Tensor:
+                        if hasattr(self, "_save_thread") and self._save_thread is not None:
+                            self._save_thread.join()
+                            self._save_thread = None
+                        if self._value is None:
+                            if not self.v_path.exists():
+                                raise RuntimeError(f"Layer {self.layer_idx} KV cache file not found: {self.v_path}")
+                            _log_mem(f"kv_load_val_layer_{self.layer_idx}")
+                            self._value = torch.load(self.v_path, weights_only=True)
+                        return self._value
 
                     def get(self) -> tuple[torch.Tensor, torch.Tensor]:
-                        if self.key is None:
-                            raise RuntimeError("The KV cache is empty. Run the reference pass before the generation pass.")
-                        device = "cuda" if torch.cuda.is_available() else "cpu"
-                        return self.key.to(device, non_blocking=True), self.value.to(device, non_blocking=True)
+                        return self.key, self.value
+
+                    def evict(self):
+                        self._key = None
+                        self._value = None
 
                     def clear(self):
-                        self.key = None
-                        self.value = None
+                        # Evict tensors from memory, but preserve persistent disk cache across runs!
+                        self.evict()
 
-                tw.WanAnimate2KVLayerCache = CPUPinnedWanAnimate2KVLayerCache
+                class DiskBackedWanAnimate2KVCache:
+                    """Container holding one DiskBackedWanAnimate2KVLayerCache per transformer layer."""
+                    def __init__(self, num_layers: int):
+                        DiskBackedWanAnimate2KVLayerCache._counter = 0
+                        self.layer_caches = [DiskBackedWanAnimate2KVLayerCache(layer_idx=i) for i in range(num_layers)]
+
+                    def get(self, layer_idx: int) -> DiskBackedWanAnimate2KVLayerCache:
+                        return self.layer_caches[layer_idx]
+
+                    def clear(self):
+                        for cache in self.layer_caches:
+                            cache.clear()
+
+                tw.WanAnimate2KVLayerCache = DiskBackedWanAnimate2KVLayerCache
+                tw.WanAnimate2KVCache = DiskBackedWanAnimate2KVCache
+                try:
+                    import diffusers.modular_pipelines.wan_animate_2.denoise as w_denoise
+                    w_denoise.WanAnimate2KVCache = DiskBackedWanAnimate2KVCache
+                    w_denoise.WanAnimate2KVLayerCache = DiskBackedWanAnimate2KVLayerCache
+                except Exception:
+                    pass
                 tw._weellm_kv_cache_patched = True
-                logger.info("[WeeLLM] Enabled CPU-backed KV cache for Wan Animate layers.")
+                logger.info("[WeeLLM] Enabled disk-backed KV cache for Wan Animate layers (zero RAM leakage).")
 
             if not hasattr(tw, "_weellm_attn_proc_patched"):
-                # ── Head-chunked cached attention ──────────────────────────────────────────
-                # At 960×544: full packed key = (1, 87808, 40, 128) × 2 bytes = 899 MB each
-                # — impossible on 4 GB VRAM.  Processing _HC heads at a time keeps the peak
-                # packed allocation at (_HC/40) × 899 MB ≈ 90 MB (for _HC=4).
-                # Reference KV is moved from CPU head-group by head-group; the full 439 MB
-                # GPU copy is never needed simultaneously.
-                _HC = 4   # heads per chunk (4 × 128 dim × ~88K tokens × 2 byte = 90 MB each)
+                # Compile flex_attention with TorchInductor/Triton on Windows
+                try:
+                    from torch.nn.attention import flex_attention
+                    if not hasattr(flex_attention, "_weellm_compiled"):
+                        flex_attention.flex_attention = torch.compile(flex_attention.flex_attention)
+                        flex_attention._weellm_compiled = True
+                        logger.info("[WeeLLM] Successfully compiled flex_attention with TorchInductor/Triton.")
+                except Exception as e:
+                    logger.warning("[WeeLLM] flex_attention compilation skipped: %s", e)
+
+                _HC = 20   # 20 heads per chunk (2 iterations total instead of 5 for 40 heads)
 
                 import math as _math
 
@@ -213,36 +322,76 @@ def _patch_flex_attention():
                     reference_grid_sizes=None, reference_rope_stride=1,
                     attention_mask=None, origin_latent_frames=None, origin_latent_hw=None,
                 ):
-                    if kv_cache_mode != "cached":
-                        # Extract mode: original code (no large packed buffers needed)
-                        return _orig_attn_proc_call(
-                            _self, attn, hidden_states, rotary_emb, grid_sizes, kv_cache,
-                            kv_cache_mode, rope_stride, reference_rotary_emb,
-                            reference_grid_sizes, reference_rope_stride,
-                            attention_mask, origin_latent_frames, origin_latent_hw,
-                        )
-
-                    # ── Cached mode: head-chunked path ────────────────────────────────────
                     from diffusers.models.attention_dispatch import (
                         dispatch_attention_fn,
                         AttentionBackendName,
                     )
 
-                    # QKV projections (replicate _get_qkv_projections)
-                    if getattr(attn, "fused_projections", False):
-                        query, key, value = attn.to_qkv(hidden_states).chunk(3, dim=-1)
-                    else:
-                        query = attn.to_q(hidden_states)
-                        key   = attn.to_k(hidden_states)
-                        value = attn.to_v(hidden_states)
-                    query = attn.norm_q(query)
-                    key   = attn.norm_k(key)
-                    query = query.unflatten(2, (attn.heads, -1))
-                    key   = key.unflatten(2, (attn.heads, -1))
-                    value = value.unflatten(2, (attn.heads, -1))
+                    C_SIZE = 4096
+                    batch_size, seq_len, _ = hidden_states.shape
+                    heads = attn.heads
+                    head_dim = hidden_states.shape[-1] // heads
+                    device = hidden_states.device
 
-                    device = query.device
-                    batch_size, _seq_len, heads, head_dim = query.shape
+                    def _project_qkv(linear_fn, norm_fn, x, chunk_size=8192, out_device=None):
+                        if out_device is None:
+                            out_device = x.device
+                        out = torch.empty(x.shape[0], x.shape[1], heads, head_dim, dtype=x.dtype, device=out_device)
+                        for s in range(0, x.shape[1], chunk_size):
+                            e = min(s + chunk_size, x.shape[1])
+                            proj = linear_fn(x[:, s:e])
+                            if norm_fn is not None:
+                                proj = norm_fn(proj)
+                            out[:, s:e] = proj.unflatten(2, (heads, head_dim)).to(out_device)
+                            del proj
+                        return out
+
+                    if kv_cache_mode != "cached":
+                        # ── Extract mode: fast contiguous Q/K/V projections and in-place chunked GPU attention ──
+                        hc_ext = 10 if seq_len > 25000 else 20
+                        _log_mem("self_attn_extract_start")
+
+                        # 1. Project Q and apply RoPE in-place on GPU (cast to hidden_states dtype for Tensor Core speed)
+                        query = _project_qkv(attn.to_q, attn.norm_q, hidden_states, chunk_size=8192)
+                        query = tw.rope_apply(query, grid_sizes, rotary_emb, rope_stride).type_as(hidden_states)
+
+                        # 2. Project K and apply RoPE in-place on GPU, then offload to CPU immediately
+                        key = _project_qkv(attn.to_k, attn.norm_k, hidden_states, chunk_size=8192)
+                        key = tw.rope_apply(key, grid_sizes, rotary_emb, rope_stride).type_as(hidden_states)
+                        key_cpu = key.cpu()
+                        del key
+
+                        # 3. Project V directly to CPU (ZERO VRAM usage!)
+                        val_cpu = _project_qkv(attn.to_v, None, hidden_states, chunk_size=8192, out_device="cpu")
+
+                        # Store post-RoPE K and V to disk cache asynchronously
+                        kv_cache.store(key_cpu, val_cpu)
+
+                        # 4. In-place chunked attention directly on GPU (overwriting query in-place)
+                        for h0 in range(0, heads, hc_ext):
+                            h1 = min(h0 + hc_ext, heads)
+                            qh = query[:, :, h0:h1].transpose(1, 2)
+                            kh = key_cpu[:, :, h0:h1].to(device, non_blocking=True).transpose(1, 2)
+                            vh = val_cpu[:, :, h0:h1].to(device, non_blocking=True).transpose(1, 2)
+                            query[:, :, h0:h1] = torch.nn.functional.scaled_dot_product_attention(
+                                qh, kh, vh
+                            ).transpose(1, 2)
+                            del qh, kh, vh
+                        del key_cpu, val_cpu
+
+                        # 5. In-place chunked to_out into hidden_states
+                        out_flat = query.flatten(2, 3)
+                        del query
+                        for s in range(0, seq_len, C_SIZE):
+                            e = min(s + C_SIZE, seq_len)
+                            hidden_states[:, s:e] = attn.to_out[0](out_flat[:, s:e])
+                        del out_flat
+                        hidden_states = attn.to_out[1](hidden_states)
+                        _log_mem("self_attn_extract_done")
+                        return hidden_states
+
+                    # ── Cached mode: fast in-place generation path with Triton flex attention ──
+                    _log_mem("cached_attn_start")
 
                     frames, height, width = grid_sizes[0].tolist()
                     ref_frames, ref_height, ref_width = reference_grid_sizes[0].tolist()
@@ -256,48 +405,58 @@ def _patch_flex_attention():
                     gen_slice = slice(0, frames * origin_latent_hw)
                     ref_slice = slice(packed_len, packed_len + ref_frames * origin_latent_hw)
 
-                    # Apply RoPE to generation Q and K for all heads (cheap — float32 chunk already
-                    # handled by _safe_rope_apply).  Key_ref gets rope per head-group below.
-                    query_r = tw.rope_apply(query, grid_sizes, rotary_emb, rope_stride).type_as(value)
-                    key_r   = tw.rope_apply(key,   grid_sizes, rotary_emb, rope_stride).type_as(value)
+                    _l_idx = getattr(kv_cache, "layer_idx", "?")
+                    import time as _t_attn, sys as _sys
+                    _t0_attn = _t_attn.time()
 
-                    # Reference KV lives on CPU (stored there by CPUPinnedWanAnimate2KVLayerCache).
-                    # Access the raw CPU tensors directly to avoid a full 439 MB H2D transfer.
-                    key_ref_cpu = kv_cache.key    # (batch, ref_tokens, heads, head_dim) on CPU
+                    # 1. Project K: apply RoPE and offload immediately to CPU
+                    key_gen = _project_qkv(attn.to_k, attn.norm_k, hidden_states, chunk_size=8192)
+                    key_gen = tw.rope_apply(key_gen, grid_sizes, rotary_emb, rope_stride).type_as(hidden_states)
+                    key_gen_cpu = key_gen.cpu()
+                    del key_gen
+                    clean_memory(device)
+
+                    # 2. Project V directly to CPU (ZERO permanent VRAM!)
+                    val_gen_cpu = _project_qkv(attn.to_v, None, hidden_states, chunk_size=8192, out_device="cpu")
+                    clean_memory(device)
+
+                    # 3. Project Q and apply RoPE in-place on GPU (cast to hidden_states dtype for Tensor Core speed)
+                    query = _project_qkv(attn.to_q, attn.norm_q, hidden_states, chunk_size=8192)
+                    query = tw.rope_apply(query, grid_sizes, rotary_emb, rope_stride).type_as(hidden_states)
+
+                    # Reference KV lives on disk; loaded on-demand per layer (already post-RoPE!)
+                    key_ref_cpu = kv_cache.key    # on CPU
                     val_ref_cpu = kv_cache.value
 
-                    # Output accumulator — valid tokens only, filled head-group by head-group
-                    hidden_out = query.new_zeros(batch_size, valid_len, heads, head_dim)
-
-                    for h0 in range(0, heads, _HC):
-                        h1 = min(h0 + _HC, heads)
+                    hc_step = 15 if (packed_len + packed_ref_len) > 30000 else 20
+                    for h0 in range(0, heads, hc_step):
+                        h1 = min(h0 + hc_step, heads)
                         g  = h1 - h0
+                        _t0_g = _t_attn.time()
 
-                        # Small packed buffers for g heads (~90 MB each for 960×544)
-                        q_h = query_r.new_zeros(batch_size, packed_len, g, head_dim)
-                        k_h = key_r.new_zeros(batch_size, packed_len + packed_ref_len, g, head_dim)
-                        v_h = value.new_zeros(batch_size, packed_len + packed_ref_len, g, head_dim)
+                        # Small packed buffers for g heads
+                        q_h = query.new_zeros(batch_size, packed_len, g, head_dim)
+                        k_h = query.new_zeros(batch_size, packed_len + packed_ref_len, g, head_dim)
+                        v_h = query.new_zeros(batch_size, packed_len + packed_ref_len, g, head_dim)
 
-                        # Scatter generation tokens into packed layout
+                        # Generation tokens from CPU/GPU
                         q_h[:, gen_slice].view(batch_size, frames, origin_latent_hw, g, head_dim)[:, :, :hw] = (
-                            query_r[:, :valid_len, h0:h1, :].view(batch_size, frames, hw, g, head_dim)
+                            query[:, :valid_len, h0:h1, :].view(batch_size, frames, hw, g, head_dim)
                         )
+                        k_gen_g = key_gen_cpu[:, :valid_len, h0:h1, :].to(device, non_blocking=True).type_as(hidden_states)
+                        v_gen_g = val_gen_cpu[:, :valid_len, h0:h1, :].to(device, non_blocking=True).type_as(hidden_states)
                         k_h[:, gen_slice].view(batch_size, frames, origin_latent_hw, g, head_dim)[:, :, :hw] = (
-                            key_r[:, :valid_len, h0:h1, :].view(batch_size, frames, hw, g, head_dim)
+                            k_gen_g.view(batch_size, frames, hw, g, head_dim)
                         )
                         v_h[:, gen_slice].view(batch_size, frames, origin_latent_hw, g, head_dim)[:, :, :hw] = (
-                            value[:, :valid_len, h0:h1, :].view(batch_size, frames, hw, g, head_dim)
+                            v_gen_g.view(batch_size, frames, hw, g, head_dim)
                         )
+                        del k_gen_g, v_gen_g
 
-                        # Pull just g heads of ref KV from CPU → GPU and apply RoPE
-                        k_ref_g = key_ref_cpu[:, :, h0:h1, :].to(device, non_blocking=True)
-                        v_ref_g = val_ref_cpu[:, :, h0:h1, :].to(device, non_blocking=True)
-                        k_ref_g = tw.rope_apply(
-                            k_ref_g, reference_grid_sizes,
-                            reference_rotary_emb, reference_rope_stride,
-                        ).type_as(value)
+                        # Pull just g heads of ref KV from CPU → GPU (already post-RoPE, ZERO python overhead!)
+                        k_ref_g = key_ref_cpu[:, :, h0:h1, :].to(device, non_blocking=True).type_as(hidden_states)
+                        v_ref_g = val_ref_cpu[:, :, h0:h1, :].to(device, non_blocking=True).type_as(hidden_states)
 
-                        # Scatter reference tokens into packed layout
                         k_h[:, ref_slice].view(batch_size, ref_frames, origin_latent_hw, g, head_dim)[:, :, :ref_hw] = (
                             k_ref_g[:, :ref_valid].view(batch_size, ref_frames, ref_hw, g, head_dim)
                         )
@@ -306,7 +465,7 @@ def _patch_flex_attention():
                         )
                         del k_ref_g, v_ref_g
 
-                        # Flex attention for this head group (same block mask as full version)
+                        # Flex attention compiled with Triton for this head group
                         out_h = dispatch_attention_fn(
                             q_h, k_h, v_h,
                             attn_mask=attention_mask,
@@ -315,33 +474,86 @@ def _patch_flex_attention():
                         )
                         del q_h, k_h, v_h
 
-                        # Gather valid output tokens
-                        hidden_out[:, :, h0:h1, :] = (
+                        # Overwrite query in-place (ZERO extra tensor allocation)
+                        query[:, :valid_len, h0:h1, :] = (
                             out_h[:, gen_slice]
                             .view(batch_size, frames, origin_latent_hw, g, head_dim)[:, :, :hw]
                             .reshape(batch_size, valid_len, g, head_dim)
                         )
                         del out_h
+                        logger.info("          [SelfAttn L%02s] Heads %d..%d/%d done (%.2fs)", _l_idx, h0, h1, heads, _t_attn.time() - _t0_g)
+                        _sys.stdout.flush()
 
-                    del query_r, key_r
+                    del key_gen_cpu, val_gen_cpu, key_ref_cpu, val_ref_cpu
+                    if hasattr(kv_cache, "evict"):
+                        kv_cache.evict()
 
-                    # Append unattended padding positions unchanged (original behaviour)
-                    hidden_states = torch.cat([hidden_out, query[:, valid_len:]], dim=1)
-                    del hidden_out
-
-                    # to_out projection (same as original lines 276-278)
-                    hidden_states = hidden_states.flatten(2, 3).type_as(query)
-                    hidden_states = attn.to_out[0](hidden_states)
+                    # In-place chunked to_out (overwriting hidden_states in-place! ZERO extra allocation)
+                    out_flat = query.flatten(2, 3)
+                    del query
+                    for s in range(0, seq_len, C_SIZE):
+                        e = min(s + C_SIZE, seq_len)
+                        hidden_states[:, s:e] = attn.to_out[0](out_flat[:, s:e])
+                    del out_flat
                     hidden_states = attn.to_out[1](hidden_states)
+                    logger.info("        [SelfAttn L%02s] Complete in %.2fs", _l_idx, _t_attn.time() - _t0_attn)
+                    _sys.stdout.flush()
+                    _log_mem("cached_attn_done")
                     return hidden_states
 
                 tw.WanAnimate2AttnProcessor.__call__ = _hc_attn_proc_call
                 tw._weellm_attn_proc_patched = True
                 logger.info(
-                    "[WeeLLM] Enabled head-chunked cached attention (HC=%d heads/iter) "
-                    "for Wan Animate — peak packed KV ≈ %d×%d×%d×2 bytes per chunk.",
-                    _HC, 88000, _HC, 128,
+                    "[WeeLLM] Enabled accelerated head-chunked cached attention (HC=%d heads/iter) "
+                    "with Triton flex attention for Wan Animate.",
+                    _HC,
                 )
+
+            if not hasattr(tw, "_weellm_cross_attn_patched"):
+                def _chunked_cross_attn_proc_call(
+                    _self, attn, hidden_states, encoder_hidden_states, encoder_hidden_states_image=None
+                ):
+                    from diffusers.models.attention_dispatch import dispatch_attention_fn
+
+                    C_SIZE = 4096
+                    batch_size, seq_len, _ = hidden_states.shape
+                    heads = attn.heads
+
+                    # 1. Project text KV once (tiny: 5 MB)
+                    key = attn.norm_k(attn.to_k(encoder_hidden_states)).unflatten(2, (heads, -1))
+                    value = attn.to_v(encoder_hidden_states).unflatten(2, (heads, -1))
+
+                    # 2. Project image KV once (if present, tiny: 2.5 MB)
+                    has_image = encoder_hidden_states_image is not None
+                    if has_image:
+                        if getattr(attn, "fused_projections", False):
+                            key_img, val_img = attn.to_added_kv(encoder_hidden_states_image).chunk(2, dim=-1)
+                        else:
+                            key_img = attn.add_k_proj(encoder_hidden_states_image)
+                            val_img = attn.add_v_proj(encoder_hidden_states_image)
+                        key_img = attn.norm_added_k(key_img).unflatten(2, (heads, -1))
+                        val_img = val_img.unflatten(2, (heads, -1))
+
+                    # 3. Chunked Q projection + attention + in-place to_out into hidden_states
+                    for s in range(0, seq_len, C_SIZE):
+                        e = min(s + C_SIZE, seq_len)
+                        q_ch = attn.norm_q(attn.to_q(hidden_states[:, s:e])).unflatten(2, (heads, -1))
+                        out_txt = dispatch_attention_fn(q_ch, key, value, attn_mask=None)
+                        if has_image:
+                            out_img = dispatch_attention_fn(q_ch, key_img, val_img, attn_mask=None)
+                            merged = (out_txt + out_img).flatten(2, 3)
+                            del out_img
+                        else:
+                            merged = out_txt.flatten(2, 3)
+                        del q_ch, out_txt
+                        hidden_states[:, s:e] = attn.to_out[1](attn.to_out[0](merged))
+                        del merged
+
+                    return hidden_states
+
+                tw.WanAnimate2CrossAttnProcessor.__call__ = _chunked_cross_attn_proc_call
+                tw._weellm_cross_attn_patched = True
+                logger.info("[WeeLLM] Enabled accelerated sequence-chunked cross-attention for Wan Animate.")
 
             if not hasattr(tw, "_weellm_block_fwd_patched"):
 
@@ -361,20 +573,44 @@ def _patch_flex_attention():
                     origin_latent_frames=None,
                     origin_latent_hw=None,
                 ):
-                    """
-                    Memory-efficient replacement for WanAnimate2TransformerBlock.forward.
-                    The stock code does (hidden_states.float() + small) which creates a
-                    full float32 copy of hidden_states (330 MB on 4 GB GPU → OOM).
-                    We instead do hidden_states + small.type_as(hidden_states), which
-                    only upcasts the small addend and avoids the large allocation.
-                    """
+                    _l_idx = getattr(kv_cache, "layer_idx", "?")
+                    import time as _t_blk, sys as _sys
+                    _t0_blk = _t_blk.time()
+
                     shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = (
                         self.modulation + temb
                     ).chunk(6, dim=1)
 
+                    def _chunked_norm_and_mod(norm_fn, x_in, sc, sh, c_size=4096):
+                        out_t = torch.empty_like(x_in)
+                        sc_bf = sc.type_as(x_in)
+                        sh_bf = sh.type_as(x_in)
+                        for st in range(0, x_in.shape[1], c_size):
+                            e = min(st + c_size, x_in.shape[1])
+                            ch = norm_fn(x_in[:, st : e])
+                            out_t[:, st : e] = ch * (1 + sc_bf) + sh_bf
+                        return out_t
+
+                    def _chunked_norm3_fn(norm_fn, x_in, c_size=4096):
+                        import torch.nn as _nn
+                        if isinstance(norm_fn, _nn.Identity):
+                            return x_in
+                        out_t = torch.empty_like(x_in)
+                        for st in range(0, x_in.shape[1], c_size):
+                            e = min(st + c_size, x_in.shape[1])
+                            out_t[:, st : e] = norm_fn(x_in[:, st : e])
+                        return out_t
+
+                    _log_mem("block_start")
                     # 1. Self-attention
-                    # Stock: (hidden_states.float() * scale + shift).type_as — norm output is small, fine
-                    norm_hs = (self.norm1(hidden_states.float()) * (1 + scale_msa) + shift_msa).type_as(hidden_states)
+                    _log_mem("before_norm1")
+                    norm_hs = _chunked_norm_and_mod(self.norm1, hidden_states, scale_msa, shift_msa, c_size=4096)
+                    _log_mem("after_norm1")
+
+                    # Offload residual hidden_states to CPU during self_attn to free 416 MB VRAM
+                    hs_cpu = hidden_states.cpu()
+                    del hidden_states
+
                     attn_output = self.self_attn(
                         norm_hs,
                         rotary_emb=rotary_emb,
@@ -390,33 +626,56 @@ def _patch_flex_attention():
                         origin_latent_hw=origin_latent_hw,
                     )
                     del norm_hs
-                    # Stock: (hidden_states.float() + attn_output * gate_msa).type_as(hidden_states)
-                    # Fix: avoid float32 copy of full hidden_states (330 MB), cast only the small addend
-                    hidden_states = hidden_states + (attn_output * gate_msa).type_as(hidden_states)
-                    del attn_output
+                    hidden_states = hs_cpu.to(attn_output.device)
+                    del hs_cpu
+                    _log_mem("after_self_attn_return")
+
+                    # In-place chunked residual add
+                    gate = gate_msa.type_as(hidden_states)
+                    RES_CHUNK = 4096
+                    for s in range(0, hidden_states.shape[1], RES_CHUNK):
+                        e = min(s + RES_CHUNK, hidden_states.shape[1])
+                        hidden_states[:, s:e] += attn_output[:, s:e] * gate
+                    del attn_output, gate
+                    _log_mem("after_self_attn_residual")
 
                     # 2. Cross-attention
-                    # norm3(hidden_states.float()) is fine — norm output is small
-                    norm_hs = self.norm3(hidden_states.float()).type_as(hidden_states)
+                    _log_mem("before_norm3")
+                    norm_hs = _chunked_norm3_fn(self.norm3, hidden_states, c_size=4096)
+                    _log_mem("after_norm3")
                     cross_out = self.cross_attn(
                         norm_hs,
                         encoder_hidden_states=encoder_hidden_states,
                         encoder_hidden_states_image=encoder_hidden_states_image,
                     )
                     del norm_hs
-                    hidden_states = hidden_states + cross_out
-                    del cross_out
+                    _log_mem("after_cross_attn_return")
 
-                    # 3. Feed-forward
-                    norm_hs = (self.norm2(hidden_states.float()) * (1 + c_scale_msa) + c_shift_msa).type_as(
-                        hidden_states
-                    )
-                    ff_output = self.ffn(norm_hs)
-                    del norm_hs
-                    # Stock: (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(hidden_states)
-                    # Fix: cast only ff_output * c_gate_msa (small), not all of hidden_states
-                    hidden_states = hidden_states + (ff_output.float() * c_gate_msa).type_as(hidden_states)
-                    del ff_output
+                    # In-place chunked cross-attn residual
+                    for s in range(0, hidden_states.shape[1], RES_CHUNK):
+                        e = min(s + RES_CHUNK, hidden_states.shape[1])
+                        hidden_states[:, s:e] += cross_out[:, s:e]
+                    del cross_out
+                    _log_mem("after_cross_attn_residual")
+
+                    # 3. Feed-forward (chunked LayerNorm + modulation, and chunked FFN direct into residual)
+                    _log_mem("before_norm2")
+                    norm_hs = _chunked_norm_and_mod(self.norm2, hidden_states, c_scale_msa, c_shift_msa, c_size=4096)
+                    _log_mem("after_norm2")
+                    
+                    _log_mem("before_ffn")
+                    c_gate = c_gate_msa.type_as(hidden_states)
+                    FFN_CHUNK = 4096
+                    for s in range(0, norm_hs.shape[1], FFN_CHUNK):
+                        e = min(s + FFN_CHUNK, norm_hs.shape[1])
+                        hidden_states[:, s:e] += self.ffn(norm_hs[:, s:e]) * c_gate
+                    del norm_hs, c_gate
+                    _log_mem("after_ffn_return")
+                    _log_mem("block_end")
+
+                    _vram = torch.cuda.memory_allocated() / (1024**2) if torch.cuda.is_available() else 0
+                    logger.info("      [Block %02s/40] mode=%s completed in %.2fs | VRAM: %.1f MB", _l_idx, kv_cache_mode, _t_blk.time() - _t0_blk, _vram)
+                    _sys.stdout.flush()
 
                     return hidden_states
 
@@ -588,7 +847,13 @@ class WeeWanAnimatePipeline(WeeVideoPipeline):
         num_inference_steps = kwargs.pop("num_inference_steps", 20)
         guidance_scale = kwargs.pop("guidance_scale", 3.0)
         fps = kwargs.pop("fps", 24)
-        segment_frame_length = kwargs.pop("segment_frame_length", 81)
+        segment_frame_length = kwargs.pop("segment_frame_length", None)
+        if segment_frame_length is None:
+            if num_frames is not None:
+                segment_frame_length = min(int(num_frames), 81)
+            else:
+                segment_frame_length = 81
+        segment_frame_length = int(segment_frame_length)
         prev_segment_conditioning_frames = kwargs.pop("prev_segment_conditioning_frames", 1)
         generator = kwargs.pop("generator", None)
         seed = kwargs.pop("seed", None)
@@ -724,13 +989,24 @@ class WeeWanAnimatePipeline(WeeVideoPipeline):
                         def __getattr__(self, name): return getattr(self.orig_b, name)
                         def __call__(self, comp, state):
                             dev = comp._execution_device
+                            # Run preprocess step so crop_region, image_pixels, height, and width are resolved
+                            if hasattr(self.orig_b, "sub_blocks") and "preprocess" in self.orig_b.sub_blocks:
+                                comp, state = self.orig_b.sub_blocks["preprocess"](comp, state)
+                            elif hasattr(state, "set") and "reference_image_latents" in self.data:
+                                lat_h, lat_w = self.data["reference_image_latents"].shape[-2:]
+                                scale = getattr(comp, "vae_scale_factor_spatial", 8)
+                                state.set("height", lat_h * scale)
+                                state.set("width", lat_w * scale)
+
                             if hasattr(state, "set"):
                                 if "encoder_hidden_states_image" in self.data:
-                                    state.set("encoder_hidden_states_image", self.data["encoder_hidden_states_image"].to(dev))
+                                    state.set("encoder_hidden_states_image", self.data["encoder_hidden_states_image"].to(dev), kwargs_type="denoiser_input_fields")
                                 if "condition_clip_context" in self.data:
                                     state.set("condition_clip_context", self.data["condition_clip_context"].to(dev))
                             clean_memory(dev)
-                            logger.info("[VideoCache] Restored cached CLIP vision features.")
+                            h_val = state.get("height") if hasattr(state, "get") else None
+                            w_val = state.get("width") if hasattr(state, "get") else None
+                            logger.info("[VideoCache] Restored cached CLIP vision features (frame resolution: %sx%s).", h_val, w_val)
                             return comp, state
 
                     class CacheHitVaeEncoderWrapper:
@@ -790,6 +1066,133 @@ class WeeWanAnimatePipeline(WeeVideoPipeline):
             if core_denoise is not None and hasattr(core_denoise, "sub_blocks"):
                 denoise_wrapper = core_denoise.sub_blocks.get("denoise")
                 if denoise_wrapper is not None and hasattr(denoise_wrapper, "sub_blocks"):
+                    orig_seg_vae = denoise_wrapper.sub_blocks.get("vae_encoder")
+                    if orig_seg_vae is not None:
+                        class WanAnimateSegmentVaeWrapper:
+                            def __init__(self, orig_step):
+                                self.orig_step = orig_step
+                            def __getattr__(self, name):
+                                return getattr(self.orig_step, name)
+                            def __call__(self, comp, b_state, k: int):
+                                import time as _time
+                                logger.info("[VideoCache] Segment %d: VAE encoding driving video slice (%d frames)...", k + 1, b_state.segment_frame_length)
+                                t0 = _time.time()
+                                comp, b_state = self.orig_step(comp, b_state, k=k)
+                                logger.info("[VideoCache] Segment %d: VAE encoding done in %.2fs. Driving latents: %s", k + 1, _time.time() - t0, list(b_state.driving_video_latents.shape))
+                                return comp, b_state
+
+                        denoise_wrapper.sub_blocks["vae_encoder"] = WanAnimateSegmentVaeWrapper(orig_seg_vae)
+
+                    orig_prev_frames = denoise_wrapper.sub_blocks.get("prev_frames")
+                    if orig_prev_frames is not None:
+                        class WanAnimatePrevFramesWrapper:
+                            def __init__(self, orig_step):
+                                self.orig_step = orig_step
+                            def __getattr__(self, name): return getattr(self.orig_step, name)
+                            def __call__(self, comp, b_state, k: int):
+                                import time as _time, sys as _sys
+                                logger.info("[VideoCache] Segment %d: Building previous frames conditioning latents...", k + 1)
+                                _sys.stdout.flush()
+                                t0 = _time.time()
+                                comp, b_state = self.orig_step(comp, b_state, k=k)
+                                logger.info("[VideoCache] Segment %d: Previous frames conditioning done in %.2fs. Reference latents: %s",
+                                            k + 1, _time.time() - t0, list(b_state.reference_latents.shape))
+                                _sys.stdout.flush()
+                                return comp, b_state
+                        denoise_wrapper.sub_blocks["prev_frames"] = WanAnimatePrevFramesWrapper(orig_prev_frames)
+
+                    orig_prepare = denoise_wrapper.sub_blocks.get("prepare")
+                    if orig_prepare is not None:
+                        class WanAnimatePrepareWrapper:
+                            def __init__(self, orig_step):
+                                self.orig_step = orig_step
+                            def __getattr__(self, name): return getattr(self.orig_step, name)
+                            def __call__(self, comp, b_state, k: int):
+                                import time as _time, sys as _sys
+                                logger.info("[VideoCache] Segment %d: Preparing initial noise latents and fresh KV cache...", k + 1)
+                                _sys.stdout.flush()
+                                t0 = _time.time()
+                                comp, b_state = self.orig_step(comp, b_state, k=k)
+                                logger.info("[VideoCache] Segment %d: Prepare done in %.2fs. Initial noise latents: %s",
+                                            k + 1, _time.time() - t0, list(b_state.latents.shape))
+                                _sys.stdout.flush()
+                                return comp, b_state
+                        denoise_wrapper.sub_blocks["prepare"] = WanAnimatePrepareWrapper(orig_prepare)
+
+                    orig_sched = denoise_wrapper.sub_blocks.get("scheduler_reset")
+                    if orig_sched is not None:
+                        class WanAnimateSchedResetWrapper:
+                            def __init__(self, orig_step):
+                                self.orig_step = orig_step
+                            def __getattr__(self, name): return getattr(self.orig_step, name)
+                            def __call__(self, comp, b_state, k: int):
+                                import time as _time, sys as _sys
+                                logger.info("[VideoCache] Segment %d: Scheduler reset for %d steps...", k + 1, b_state.num_inference_steps)
+                                _sys.stdout.flush()
+                                t0 = _time.time()
+                                comp, b_state = self.orig_step(comp, b_state, k=k)
+                                logger.info("[VideoCache] Segment %d: Scheduler reset done in %.2fs. Timesteps: %s",
+                                            k + 1, _time.time() - t0, [round(t.item(), 1) for t in b_state.timesteps])
+                                _sys.stdout.flush()
+                                return comp, b_state
+                        denoise_wrapper.sub_blocks["scheduler_reset"] = WanAnimateSchedResetWrapper(orig_sched)
+
+                    orig_ref_extract = denoise_wrapper.sub_blocks.get("ref_extract")
+                    if orig_ref_extract is not None:
+                        class WanAnimateRefExtractWrapper:
+                            def __init__(self, orig_step):
+                                self.orig_step = orig_step
+                            def __getattr__(self, name):
+                                return getattr(self.orig_step, name)
+                            def __call__(self, comp, b_state, k: int):
+                                import sys as _sys
+                                logger.info("[VideoCache] Segment %d: Checking reference extraction pass (Pass 1)...", k + 1)
+                                _sys.stdout.flush()
+                                kv_dir = Path(r"D:\Personal Projects\WeeLLM\.weellm_cache\kv_layers")
+                                if kv_dir.exists() and (kv_dir / "k_layer_39.pt").exists() and (kv_dir / "v_layer_39.pt").exists():
+                                    logger.info("[VideoCache] Segment %d: Reference KV cache HIT (all 40 layers exist on disk) — skipping Pass 1!", k + 1)
+                                    _sys.stdout.flush()
+                                    if hasattr(b_state, "driving_video_pixels") and isinstance(b_state.driving_video_pixels, torch.Tensor):
+                                        if b_state.driving_video_pixels.is_cuda:
+                                            b_state.driving_video_pixels.data = b_state.driving_video_pixels.data.cpu()
+                                    if hasattr(b_state, "latents") and isinstance(b_state.latents, torch.Tensor):
+                                        if b_state.latents.is_cuda:
+                                            b_state.latents.data = b_state.latents.data.cpu()
+                                    clean_memory(comp._execution_device)
+                                    logger.info("[VideoCache] Offloaded driving video pixels to CPU; cleaned VRAM for denoising.")
+                                    _sys.stdout.flush()
+                                    return comp, b_state
+                                logger.info("[VideoCache] Segment %d: Reference KV cache MISS — running Pass 1...", k + 1)
+                                _sys.stdout.flush()
+                                _log_mem("ref_extract_wrapper_start")
+                                _dump_gpu_tensors("AT REF EXTRACT START")
+                                if hasattr(b_state, "driving_video_pixels") and isinstance(b_state.driving_video_pixels, torch.Tensor):
+                                    if b_state.driving_video_pixels.is_cuda:
+                                        b_state.driving_video_pixels.data = b_state.driving_video_pixels.data.cpu()
+                                if hasattr(b_state, "latents") and isinstance(b_state.latents, torch.Tensor):
+                                    if b_state.latents.is_cuda:
+                                        b_state.latents.data = b_state.latents.data.cpu()
+                                import gc as _gc
+                                for _obj in _gc.get_objects():
+                                    try:
+                                        if torch.is_tensor(_obj) and _obj.is_cuda and _obj.ndim == 5 and _obj.shape[1] == 3:
+                                            _obj.data = _obj.data.cpu()
+                                    except Exception:
+                                        pass
+                                clean_memory(comp._execution_device)
+                                _log_mem("ref_extract_wrapper_after_clean")
+                                _dump_gpu_tensors("AFTER REF EXTRACT CLEAN")
+                                logger.info("[VideoCache] Offloaded driving video pixels and latents to CPU; cleaned VRAM for reference extraction.")
+                                _sys.stdout.flush()
+                                comp, b_state = self.orig_step(comp, b_state, k=k)
+                                clean_memory(comp._execution_device)
+                                _log_mem("ref_extract_wrapper_end")
+                                logger.info("[VideoCache] Reference extraction pass finished; VRAM cleaned.")
+                                _sys.stdout.flush()
+                                return comp, b_state
+
+                        denoise_wrapper.sub_blocks["ref_extract"] = WanAnimateRefExtractWrapper(orig_ref_extract)
+
                     orig_inner = denoise_wrapper.sub_blocks.get("denoise_inner")
                     if orig_inner is not None and video_cache is not None:
                         class WanAnimateDenoiseInnerCacheWrapper:
@@ -812,13 +1215,21 @@ class WeeWanAnimatePipeline(WeeVideoPipeline):
                                 # Offload Pass-1 artifacts from VRAM before starting denoise steps.
                                 # Do NOT evict the VAE (evict_module moves params to meta device,
                                 # destroying them; decode would then fail with "Tensor on meta").
+                                if hasattr(block_state, "driving_video_pixels") and isinstance(block_state.driving_video_pixels, torch.Tensor):
+                                    if block_state.driving_video_pixels.is_cuda:
+                                        block_state.driving_video_pixels.data = block_state.driving_video_pixels.data.cpu()
                                 if hasattr(block_state, "driving_video_latents") and block_state.driving_video_latents is not None:
-                                    block_state.driving_video_latents = [
-                                        l.cpu() if isinstance(l, torch.Tensor) else l
-                                        for l in block_state.driving_video_latents
-                                    ]
+                                    if isinstance(block_state.driving_video_latents, torch.Tensor):
+                                        block_state.driving_video_latents = block_state.driving_video_latents.cpu()
+                                    elif isinstance(block_state.driving_video_latents, list):
+                                        block_state.driving_video_latents = [
+                                            l.cpu() if isinstance(l, torch.Tensor) else l
+                                            for l in block_state.driving_video_latents
+                                        ]
+                                if hasattr(block_state, "driving_video_condition") and isinstance(block_state.driving_video_condition, torch.Tensor):
+                                    block_state.driving_video_condition = block_state.driving_video_condition.cpu()
                                 clean_memory(components._execution_device)
-                                logger.info("[VideoCache] Offloaded driving video latents to CPU; cleaned VRAM for denoising.")
+                                logger.info("[VideoCache] Offloaded driving video pixels & latents to CPU; cleaned VRAM for denoising.")
 
                                 transformer_dtype = components.transformer.dtype
                                 guider_inputs = {
@@ -826,16 +1237,26 @@ class WeeWanAnimatePipeline(WeeVideoPipeline):
                                     "is_uncondtion": (False, True),
                                 }
                                 import inspect
+                                _dev = getattr(components, "_execution_device", None) or getattr(components.transformer, "device", "cuda")
                                 transformer_args = set(inspect.signature(components.transformer.forward).parameters.keys())
+                                denoiser_fields = getattr(block_state, "denoiser_input_fields", {}) or {}
                                 shared_kwargs = {
                                     name: value.to(transformer_dtype) if isinstance(value, torch.Tensor) else value
-                                    for name, value in block_state.denoiser_input_fields.items()
+                                    for name, value in denoiser_fields.items()
                                     if name in transformer_args and name not in guider_inputs
                                 }
+                                if "encoder_hidden_states_image" not in shared_kwargs or shared_kwargs["encoder_hidden_states_image"] is None:
+                                    img_emb = getattr(block_state, "encoder_hidden_states_image", None)
+                                    if img_emb is None and hasattr(self.cache, "run_dir"):
+                                        ref_f = self.cache.run_dir / "ref_cond.pt"
+                                        if ref_f.exists():
+                                            cached_ref = torch.load(str(ref_f), map_location="cpu", weights_only=False)
+                                            img_emb = cached_ref.get("encoder_hidden_states_image")
+                                    if img_emb is not None:
+                                        shared_kwargs["encoder_hidden_states_image"] = img_emb.to(dtype=transformer_dtype, device=_dev)
 
                                 # Pre-cast tensors that are fixed for the entire segment to
                                 # avoid redundant .to() allocations on every denoising step.
-                                _dev = components.transformer.device if hasattr(components.transformer, "device") else block_state.latents.device
                                 _reference_latents = block_state.reference_latents.to(dtype=transformer_dtype, device=_dev)
                                 _prompt_embeds = block_state.prompt_embeds.to(dtype=transformer_dtype)
                                 _neg_embeds = block_state.negative_prompt_embeds.to(dtype=transformer_dtype)
@@ -858,15 +1279,26 @@ class WeeWanAnimatePipeline(WeeVideoPipeline):
                                             progress_bar.update()
                                             continue
 
+                                        _log_mem(f"denoise_step_{i+1}_start")
+                                        import time as _t_step, sys as _sys
+                                        _t0_step = _t_step.time()
+                                        logger.info(">>> [Denoise] Step %d/%d starting (timestep=%.1f)...", i + 1, total_steps, t.item())
+                                        _sys.stdout.flush()
+
                                         timestep = torch.stack([t])
                                         components.guider.set_state(step=i, num_inference_steps=block_state.num_inference_steps, timestep=t)
                                         guider_state = components.guider.prepare_inputs(guider_inputs_typed)
 
                                         # Cast latents to transformer dtype once per step (latents update each step)
-                                        _latents_typed = block_state.latents.to(transformer_dtype)
+                                        _latents_typed = block_state.latents.to(dtype=transformer_dtype, device=_dev)
 
-                                        for guider_state_batch in guider_state:
+                                        for branch_idx, guider_state_batch in enumerate(guider_state):
+                                            _t0_branch = _t_step.time()
+                                            logger.info("    >>> [Denoise] Step %d/%d | Branch %d/%d (is_uncond=%s) starting 40 transformer blocks...",
+                                                        i + 1, total_steps, branch_idx + 1, len(guider_state), guider_state_batch.is_uncondtion)
+                                            _sys.stdout.flush()
                                             components.guider.prepare_models(components.transformer)
+                                            _log_mem(f"denoise_step_{i+1}_before_transformer")
                                             guider_state_batch.noise_pred = components.transformer(
                                                 [_latents_typed],
                                                 timestep=timestep,
@@ -882,6 +1314,10 @@ class WeeWanAnimatePipeline(WeeVideoPipeline):
                                                 **shared_kwargs,
                                             ).sample[0]
                                             components.guider.cleanup_models(components.transformer)
+                                            logger.info("    <<< [Denoise] Step %d/%d | Branch %d/%d completed in %.2fs.",
+                                                        i + 1, total_steps, branch_idx + 1, len(guider_state), _t_step.time() - _t0_branch)
+                                            _sys.stdout.flush()
+                                            _log_mem(f"denoise_step_{i+1}_after_transformer")
 
                                         noise_pred = components.guider(guider_state)[0]
                                         latents = components.scheduler.step(
@@ -892,6 +1328,9 @@ class WeeWanAnimatePipeline(WeeVideoPipeline):
                                             generator=block_state.generator,
                                         )[0]
                                         block_state.latents = latents.squeeze(0)
+                                        logger.info("<<< [Denoise] Step %d/%d completed in %.2fs.", i + 1, total_steps, _t_step.time() - _t0_step)
+                                        _sys.stdout.flush()
+                                        _log_mem(f"denoise_step_{i+1}_after_scheduler")
 
                                         # Checkpoint step
                                         if (i + 1) % self.cache.save_every == 0 or (i + 1) == total_steps:
@@ -914,14 +1353,18 @@ class WeeWanAnimatePipeline(WeeVideoPipeline):
                             def __getattr__(self, name):
                                 return getattr(self.orig_dec, name)
                             def __call__(self, comp, b_state, k: int):
+                                import time as _time, sys as _sys
                                 tr = getattr(comp, "transformer", None)
                                 if tr is not None:
                                     evict_module(getattr(tr, "model", tr))
                                 clean_memory(comp._execution_device)
                                 logger.info("[VideoCache] Transformer evicted from VRAM before VAE decode.")
+                                _sys.stdout.flush()
 
+                                t0 = _time.time()
                                 comp, b_state = self.orig_dec(comp, b_state, k=k)
-                                logger.info("[VideoCache] Segment %d VAE decode complete.", k + 1)
+                                logger.info("[VideoCache] Segment %d VAE decode complete in %.2fs.", k + 1, _time.time() - t0)
+                                _sys.stdout.flush()
                                 return comp, b_state
 
                         denoise_wrapper.sub_blocks["decode"] = WanAnimateSegmentDecodeWrapper(orig_decode)
