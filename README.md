@@ -108,6 +108,7 @@ WeeLLM dynamically streams text encoder and transformer layers to the GPU for ma
 - MiniMax-H3 (FL2VA)
 - LTX 2.5 (Text To Video + Image To Video)
 - Wan2.2-TI2V-5B (Text To Video + Image To Video)
+- Wan2.2-Animate-2-14B
 
 ---
 
@@ -317,6 +318,30 @@ video_frames = pipe(
 
 output_path = "video.mp4"
 video_frames.save(output_path, fps=24)
+```
+
+### Character Animation
+
+```python
+from weellm import WeeVideoPipeline
+import torch
+
+pipe = WeeVideoPipeline.from_pretrained(
+    r"Wan2.2-Animate-2-14B-Diffusers",
+    device="cuda" if torch.cuda.is_available() else "cpu",
+    torch_dtype=torch.bfloat16,
+)
+
+result = pipe(
+    prompt="A character follows the motion from the driving video with natural, consistent movements.",
+    image=r"character.png",
+    video=r"video.mp4",
+    num_frames=81,
+    num_inference_steps=6,
+    guidance_scale=1.0,
+    fps=24,
+)
+result.save("demo_output.mp4", fps=24)
 ```
 
 ### Using GGUF Models
