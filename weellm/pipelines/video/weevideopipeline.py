@@ -637,7 +637,7 @@ class WeeVideoPipeline(WeeBasePipeline):
                     _lat = self._preprocess_latents_for_decode(_lat, _vae, kwargs)
                             
                     from weellm.io.memory import evict_module
-                    for _comp in ["transformer", "text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4", "connectors"]:
+                    for _comp in ["transformer", "transformer_ref", "text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4", "connectors"]:
                         _c = getattr(_underlying, _comp, None)
                         if _c: evict_module(_c)
                     gc.collect()

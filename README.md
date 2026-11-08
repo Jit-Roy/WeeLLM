@@ -268,6 +268,8 @@ video_frames = pipe(
         "A fast sports car driving through a futuristic neon city at night, "
         "rain reflecting the lights, 4K, cinematic lighting."
     ),
+    first_frame=None,
+    last_frame=None,
     height=512,
     width=512,
     num_frames=56,
@@ -320,7 +322,43 @@ output_path = "video.mp4"
 video_frames.save(output_path, fps=24)
 ```
 
-### Character Animation
+### Video to Video (Using Minimax H3 Ref2VA)
+
+```python
+from weellm import WeeVideoPipeline
+import torch
+
+pipe = WeeVideoPipeline.from_pretrained(
+    r"MiniMax-H3",
+    transformer_ref_path="minimax_h3_ref2va_pruned-Q4_K.gguf",  
+    text_encoder_path="qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
+    lora_path="h3_character_swap_v1.5.safetensors",
+    device="cuda" if torch.cuda.is_available() else "cpu",
+    torch_dtype=torch.bfloat16
+)
+
+# References are ordered — position maps to <Picture N> / <Video N> prompt tokens
+result = pipe(
+    prompt=(
+        "Animate <Picture 1> as the main character performing the same motion "
+        "shown in <Video 1>. Use <Picture 2> as the scene and lighting reference."
+    ),
+    references=[
+        r"character.png",  
+        r"scene_ref.png",  
+        r"driving.mp4",    
+    ],
+    num_inference_steps=6,
+    num_frames=73,
+    height=480,
+    width=832,
+    fps=24,
+)
+
+result.save("output.mp4", fps=24)
+```
+
+### Character Animation (Using Wan Animate)
 
 ```python
 from weellm import WeeVideoPipeline

@@ -39,9 +39,22 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
             if not hasattr(_df, _cls):
                 setattr(_df, _cls, type(_cls, (), {}))
 
-        # We do not support Ref2VA yet. If we didn't explicitly pass transformer_ref
-        # or transformer_ref_path, force it to None so we don't download it from HF.
-        if "transformer_ref" not in kwargs and "transformer_ref_path" not in kwargs:
+        # Detect if Ref2VA workflow is requested.
+        # Rule: transformer_ref_path= → Ref2VA, transformer_path= → FL2VA.
+        # Explicit overrides (workflow= / is_ref2va=) take priority.
+        # Filename-based sniffing is intentionally NOT used — kwarg name is the signal.
+        is_ref2va = (
+            "transformer_ref_path" in kwargs
+            or kwargs.get("workflow") == "ref2va"
+            or kwargs.get("is_ref2va", False)
+        )
+
+        if "transformer_ref_path" in kwargs and "transformer_path" not in kwargs:
+            kwargs["transformer_path"] = kwargs.pop("transformer_ref_path")
+
+        # In diffusers ModularPipeline, transformer_ref would attempt to download from HF if not None.
+        # Force it to None during from_pretrained so nothing downloads; we will attach the loaded model below.
+        if "transformer_ref" not in kwargs:
             kwargs["transformer_ref"] = None
 
         # ── Resolve model dir ─────────────────────────────────────────────────
@@ -71,6 +84,15 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
             if hasattr(underlying, "components"):
                 underlying.components["vae"] = underlying.video_vae
 
+        # For Ref2VA workflows, MiniMaxH3Ref2VADenoiseStep reads components.transformer_ref.
+        # Attach the streamed transformer to transformer_ref so the Ref2VA denoise block finds it.
+        tr = getattr(underlying, "transformer", None)
+        if tr is not None and (is_ref2va or getattr(underlying, "transformer_ref", None) is None):
+            underlying.transformer_ref = tr
+            if hasattr(underlying, "components"):
+                underlying.components["transformer_ref"] = tr
+            logger.debug("[WeeLLM/MiniMax] transformer_ref wired to loaded transformer streamer.")
+
         # ── Apply post-load patches ───────────────────────────────────────────
         cls._apply_pipeline_patches(underlying, device)
         cls._inject_tokenizer_processor(underlying, model_dir_path)
@@ -84,7 +106,131 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
         for _k in ("guidance_scale", "negative_prompt", "image_guidance_scale"):
             kwargs.pop(_k, None)
 
-        # ── Conditioning frame resolution ──────────────────────────────────────
+        # ── Ref2VA / Character Swap mode resolution ────────────────────────────
+        has_video_ref = "video" in kwargs or "driving_video" in kwargs
+        has_references = "references" in kwargs
+
+        if has_video_ref or has_references:
+            from diffusers.modular_pipelines.minimax_h3 import (
+                MiniMaxH3ImageReference,
+                MiniMaxH3VideoReference,
+                MiniMaxH3AudioReference,
+                MiniMaxH3Reference,
+            )
+            import PIL.Image
+
+            refs = []
+            if has_references:
+                raw_refs = kwargs.pop("references")
+                if not isinstance(raw_refs, (list, tuple)):
+                    raw_refs = [raw_refs]
+                for r in raw_refs:
+                    if isinstance(r, MiniMaxH3Reference):
+                        refs.append(r)
+                    elif isinstance(r, (str, Path)):
+                        s = str(r).lower()
+                        if s.endswith((".mp4", ".mov", ".avi", ".webm", ".mkv")):
+                            refs.append(MiniMaxH3VideoReference.from_file(r))
+                        elif s.endswith((".wav", ".mp3", ".flac", ".aac", ".ogg")):
+                            refs.append(MiniMaxH3AudioReference.from_file(r))
+                        else:
+                            refs.append(MiniMaxH3ImageReference.from_file(r))
+                    elif isinstance(r, PIL.Image.Image):
+                        refs.append(MiniMaxH3ImageReference(image=r))
+                    else:
+                        refs.append(r)
+
+            if has_video_ref:
+                vid = kwargs.pop("video", None) or kwargs.pop("driving_video", None)
+                img = (
+                    kwargs.pop("character", None)
+                    or kwargs.pop("character_image", None)
+                    or kwargs.pop("image", None)
+                    or kwargs.pop("first_frame", None)
+                )
+
+                # Target character image is <Picture 1>, driving performance is <Video 1>
+                if img is not None:
+                    if isinstance(img, (str, Path)):
+                        refs.append(MiniMaxH3ImageReference.from_file(img))
+                    elif isinstance(img, PIL.Image.Image):
+                        refs.append(MiniMaxH3ImageReference(image=img))
+                    elif isinstance(img, MiniMaxH3Reference):
+                        refs.append(img)
+                if vid is not None:
+                    if isinstance(vid, (str, Path)):
+                        refs.append(MiniMaxH3VideoReference.from_file(vid))
+                    elif isinstance(vid, MiniMaxH3Reference):
+                        refs.append(vid)
+
+            kwargs["references"] = refs
+            kwargs.pop("image", None)
+            kwargs.pop("last_image", None)
+            kwargs.pop("first_frame", None)
+
+            # Smart height/width resolution for ref2va
+            _h, _w = kwargs.get("height"), kwargs.get("width")
+            if _h is None or _w is None:
+                vid_ref = next((r for r in refs if isinstance(r, MiniMaxH3VideoReference)), None)
+                img_ref = next((r for r in refs if isinstance(r, MiniMaxH3ImageReference)), None)
+                if vid_ref is not None and hasattr(vid_ref.frames, "shape") and len(vid_ref.frames.shape) >= 3:
+                    vh, vw = int(vid_ref.frames.shape[1]), int(vid_ref.frames.shape[2])
+                    kwargs["height"] = max(32, round((_h or vh) / 32) * 32)
+                    kwargs["width"]  = max(32, round((_w or vw) / 32) * 32)
+                elif img_ref is not None and hasattr(img_ref.image, "size"):
+                    iw, ih = img_ref.image.size
+                    kwargs["height"] = max(32, round((_h or ih) / 32) * 32)
+                    kwargs["width"]  = max(32, round((_w or iw) / 32) * 32)
+                else:
+                    kwargs["height"] = max(32, round((_h or 512) / 32) * 32)
+                    kwargs["width"]  = max(32, round((_w or 512) / 32) * 32)
+            else:
+                kwargs["height"] = max(32, round(_h / 32) * 32)
+                kwargs["width"]  = max(32, round(_w / 32) * 32)
+
+            # Snap num_frames to 17*n+5 (MiniMax VAE requirement)
+            _nf = kwargs.get("num_frames")
+            if _nf is not None:
+                _nf = int(_nf)
+                while _nf % 17 != 5:
+                    _nf += 1
+                kwargs["num_frames"] = _nf
+            else:
+                vid_ref = next((r for r in refs if isinstance(r, MiniMaxH3VideoReference)), None)
+                if vid_ref is not None and hasattr(vid_ref.frames, "shape"):
+                    _nf = int(vid_ref.frames.shape[0])
+                    while _nf % 17 != 5:
+                        _nf += 1
+                    kwargs["num_frames"] = _nf
+                else:
+                    kwargs["num_frames"] = 73
+
+            # Ensure SDPA Cutlass patch and short edge limit are active on pipeline
+            try:
+                import transformers.integrations.sdpa_attention as _sdpa_att
+                _sdpa_att.use_gqa_in_sdpa = lambda attention_mask, key, value: False
+                if hasattr(_sdpa_att, "sdpa_attention_forward"):
+                    _sdpa_att.sdpa_attention_forward.__globals__["use_gqa_in_sdpa"] = lambda attention_mask, key, value: False
+            except Exception:
+                pass
+            if hasattr(self._pipeline, "_internal_dict"):
+                from diffusers.configuration_utils import FrozenDict
+                cur_cfg = dict(getattr(self._pipeline, "_internal_dict", {}))
+                cur_cfg["reference_image_short_edge"] = 512
+                cur_cfg["canvas_short_edge"] = kwargs["height"]
+                cur_cfg["canvas_max_pixels"] = kwargs["height"] * kwargs["width"]
+                self._pipeline._internal_dict = FrozenDict(cur_cfg)
+                _und = getattr(self, "_underlying", None)
+                if _und is not None and hasattr(_und, "_internal_dict"):
+                    _und._internal_dict = FrozenDict(cur_cfg)
+
+            logger.info(
+                "[WeeLLM/MiniMax] Running in Ref2VA mode with %d reference(s). Resolution: %dx%d, Frames: %d.",
+                len(refs), kwargs["width"], kwargs["height"], kwargs["num_frames"]
+            )
+            return super().__call__(prompt=prompt, **kwargs)
+
+        # ── Conditioning frame resolution (FL2VA / T2VA) ──────────────────────
         # Rule:
         #   1. If user passes 'image': first frame = image, NO last frame.
         #   2. Else user passes 'first_frame' and 'last_frame' together (interpolation).
@@ -221,6 +367,50 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
             except Exception:
                 pass
 
+        # Inject image_processor and video_processor if not already present
+        if getattr(underlying, "image_processor", None) is None:
+            try:
+                from diffusers.image_processor import VaeImageProcessor
+                underlying.image_processor = VaeImageProcessor(vae_scale_factor=16)
+                if hasattr(underlying, "components"):
+                    underlying.components["image_processor"] = underlying.image_processor
+                logger.debug("[WeeLLM/MiniMax] image_processor injected.")
+            except Exception as e:
+                logger.warning("[WeeLLM/MiniMax] Could not inject image_processor: %s", e)
+
+        if getattr(underlying, "video_processor", None) is None:
+            try:
+                from diffusers.video_processor import VideoProcessor
+                underlying.video_processor = VideoProcessor(vae_scale_factor=16)
+                if hasattr(underlying, "components"):
+                    underlying.components["video_processor"] = underlying.video_processor
+                logger.debug("[WeeLLM/MiniMax] video_processor injected.")
+            except Exception as e:
+                logger.warning("[WeeLLM/MiniMax] Could not inject video_processor: %s", e)
+
+        # Force use_gqa_in_sdpa to return False so repeat_kv is used
+        # This allows PyTorch's EFFICIENT_ATTENTION (Cutlass) kernel to be selected on Windows,
+        # preventing 21+ GB dense math attention allocation during Qwen3-VL forward pass.
+        try:
+            import transformers.integrations.sdpa_attention as _sdpa_att
+            _sdpa_att.use_gqa_in_sdpa = lambda attention_mask, key, value: False
+            if hasattr(_sdpa_att, "sdpa_attention_forward"):
+                _sdpa_att.sdpa_attention_forward.__globals__["use_gqa_in_sdpa"] = lambda attention_mask, key, value: False
+            logger.debug("[WeeLLM/MiniMax] Patched use_gqa_in_sdpa -> False for Cutlass SDPA.")
+        except Exception as e:
+            logger.warning("[WeeLLM/MiniMax] Could not patch use_gqa_in_sdpa: %s", e)
+
+        # Cap reference_image_short_edge (default 2048 produces >7000 tokens for single image)
+        # 512 gives ~400 tokens, perfectly matching output resolution and fitting comfortably in memory.
+        try:
+            from diffusers.configuration_utils import FrozenDict
+            cur_cfg = dict(getattr(underlying, "_internal_dict", {}))
+            cur_cfg["reference_image_short_edge"] = 512
+            underlying._internal_dict = FrozenDict(cur_cfg)
+            logger.debug("[WeeLLM/MiniMax] reference_image_short_edge set to 512.")
+        except Exception as e:
+            logger.warning("[WeeLLM/MiniMax] Could not set reference_image_short_edge: %s", e)
+
     @staticmethod
     def _inject_tokenizer_processor(underlying, model_dir_path):
         try:
@@ -230,6 +420,9 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
                 underlying.tokenizer = Qwen2TokenizerFast.from_pretrained(str(te_dir))
             if getattr(underlying, "processor", None) is None:
                 underlying.processor = Qwen3VLProcessor.from_pretrained(str(te_dir))
+            if hasattr(underlying, "components"):
+                underlying.components["tokenizer"] = underlying.tokenizer
+                underlying.components["processor"] = underlying.processor
             logger.debug("[WeeLLM/MiniMax] tokenizer + processor injected from text_encoder/.")
         except Exception as e:
             logger.warning("[WeeLLM/MiniMax] Could not load tokenizer/processor: %s", e)
@@ -240,6 +433,8 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
             try:
                 from diffusers.schedulers.scheduling_minimax_h3 import MiniMaxH3Scheduler
                 underlying.audio_scheduler = MiniMaxH3Scheduler(shift=3.0)
+                if hasattr(underlying, "components"):
+                    underlying.components["audio_scheduler"] = underlying.audio_scheduler
                 logger.debug("[WeeLLM/MiniMax] audio_scheduler injected (shift=3.0).")
             except Exception as e:
                 logger.warning("[WeeLLM/MiniMax] audio_scheduler inject failed: %s", e)
@@ -253,69 +448,75 @@ class WeeMiniMaxPipeline(WeeVideoPipeline):
           Strategy 3: In-place index_copy_ + explicit embed deletion in transformer forward
         These are required to keep peak VRAM within budget on 4 GB GPUs.
         """
-        transformer = getattr(underlying, "transformer", None)
-        if transformer is None:
+        transformers = []
+        for name in ("transformer", "transformer_ref"):
+            tr = getattr(underlying, name, None)
+            if tr is not None and tr not in transformers:
+                transformers.append(tr)
+
+        if not transformers:
             logger.warning("[WeeLLM/MiniMax] No transformer found — skipping VRAM patches.")
             return
 
-        try:
-            from diffusers.models.transformers.transformer_minimax_h3 import MiniMaxH3TransformerBlock
-            FFN_CHUNK_SIZE = 8192
+        for transformer in transformers:
+            try:
+                from diffusers.models.transformers.transformer_minimax_h3 import MiniMaxH3TransformerBlock
+                FFN_CHUNK_SIZE = 8192
 
-            def _chunked_block_forward(self, hidden_states, temb, adaln_indices, rotary_emb, attention_mask=None):
-                shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(temb)
-                seq_len = hidden_states.shape[1]
+                def _chunked_block_forward(self, hidden_states, temb, adaln_indices, rotary_emb, attention_mask=None):
+                    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(temb)
+                    seq_len = hidden_states.shape[1]
 
-                # Attention with in-place AdaLN (chunked)
-                residual = hidden_states
-                norm_hidden_states = self.norm1(hidden_states)
-                for i in range(0, seq_len, FFN_CHUNK_SIZE):
-                    end = min(i + FFN_CHUNK_SIZE, seq_len)
-                    chunk = norm_hidden_states[:, i:end, :]
-                    scale_chunk = scale_msa.index_select(0, adaln_indices[i:end]).add_(1.0)
-                    chunk.mul_(scale_chunk)
-                    shift_chunk = shift_msa.index_select(0, adaln_indices[i:end])
-                    chunk.add_(shift_chunk)
-                    del scale_chunk, shift_chunk
+                    # Attention with in-place AdaLN (chunked)
+                    residual = hidden_states
+                    norm_hidden_states = self.norm1(hidden_states)
+                    for i in range(0, seq_len, FFN_CHUNK_SIZE):
+                        end = min(i + FFN_CHUNK_SIZE, seq_len)
+                        chunk = norm_hidden_states[:, i:end, :]
+                        scale_chunk = scale_msa.index_select(0, adaln_indices[i:end]).add_(1.0)
+                        chunk.mul_(scale_chunk)
+                        shift_chunk = shift_msa.index_select(0, adaln_indices[i:end])
+                        chunk.add_(shift_chunk)
+                        del scale_chunk, shift_chunk
 
-                attn_output = self.attn([norm_hidden_states], rotary_emb, attention_mask)
-                for i in range(0, seq_len, FFN_CHUNK_SIZE):
-                    end = min(i + FFN_CHUNK_SIZE, seq_len)
-                    chunk = attn_output[:, i:end, :]
-                    gate_chunk = gate_msa.index_select(0, adaln_indices[i:end])
-                    chunk.mul_(gate_chunk)
-                    del gate_chunk
-                    
-                hidden_states = residual.add_(attn_output); del attn_output
+                    attn_output = self.attn([norm_hidden_states], rotary_emb, attention_mask)
+                    for i in range(0, seq_len, FFN_CHUNK_SIZE):
+                        end = min(i + FFN_CHUNK_SIZE, seq_len)
+                        chunk = attn_output[:, i:end, :]
+                        gate_chunk = gate_msa.index_select(0, adaln_indices[i:end])
+                        chunk.mul_(gate_chunk)
+                        del gate_chunk
+                        
+                    hidden_states = residual.add_(attn_output); del attn_output
 
-                # FFN with in-place AdaLN + chunked computation
-                residual = hidden_states
-                norm_hidden_states = self.norm2(hidden_states)
-                for i in range(0, seq_len, FFN_CHUNK_SIZE):
-                    end = min(i + FFN_CHUNK_SIZE, seq_len)
-                    chunk = norm_hidden_states[:, i:end, :]
-                    scale_chunk = scale_mlp.index_select(0, adaln_indices[i:end]).add_(1.0)
-                    chunk.mul_(scale_chunk)
-                    shift_chunk = shift_mlp.index_select(0, adaln_indices[i:end])
-                    chunk.add_(shift_chunk)
-                    del scale_chunk, shift_chunk
-                    
-                    ff_chunk = self.ff(chunk)
-                    gate_chunk = gate_mlp.index_select(0, adaln_indices[i:end])
-                    ff_chunk.mul_(gate_chunk); del gate_chunk
-                    residual[:, i:end, :].add_(ff_chunk); del ff_chunk
-                del norm_hidden_states
-                hidden_states = residual
-                return hidden_states
+                    # FFN with in-place AdaLN + chunked computation
+                    residual = hidden_states
+                    norm_hidden_states = self.norm2(hidden_states)
+                    for i in range(0, seq_len, FFN_CHUNK_SIZE):
+                        end = min(i + FFN_CHUNK_SIZE, seq_len)
+                        chunk = norm_hidden_states[:, i:end, :]
+                        scale_chunk = scale_mlp.index_select(0, adaln_indices[i:end]).add_(1.0)
+                        chunk.mul_(scale_chunk)
+                        shift_chunk = shift_mlp.index_select(0, adaln_indices[i:end])
+                        chunk.add_(shift_chunk)
+                        del scale_chunk, shift_chunk
+                        
+                        ff_chunk = self.ff(chunk)
+                        gate_chunk = gate_mlp.index_select(0, adaln_indices[i:end])
+                        ff_chunk.mul_(gate_chunk); del gate_chunk
+                        residual[:, i:end, :].add_(ff_chunk); del ff_chunk
+                    del norm_hidden_states
+                    hidden_states = residual
+                    return hidden_states
 
-            patched = 0
-            for module in transformer.modules():
-                if isinstance(module, MiniMaxH3TransformerBlock):
-                    module.forward = types.MethodType(_chunked_block_forward, module)
-                    patched += 1
-            logger.debug("[WeeLLM/MiniMax] Strategy 1: Chunked FFN + in-place AdaLN patched into %d blocks.", patched)
-        except Exception as e:
-            logger.warning("[WeeLLM/MiniMax] Strategy 1 patch failed: %s", e)
+                patched = 0
+                for module in transformer.modules():
+                    if isinstance(module, MiniMaxH3TransformerBlock):
+                        module.forward = types.MethodType(_chunked_block_forward, module)
+                        patched += 1
+                logger.debug("[WeeLLM/MiniMax] Strategy 1: Chunked FFN + in-place AdaLN patched into %d blocks.", patched)
+            except Exception as e:
+                logger.warning("[WeeLLM/MiniMax] Strategy 1 patch failed: %s", e)
 
         try:
             from diffusers.models.attention_dispatch import AttentionBackendName, dispatch_attention_fn

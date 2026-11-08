@@ -194,7 +194,14 @@ class BaseTransformerStreamer(ABC):
                         free_vram, _ = torch.cuda.mem_get_info(self.device)
 
                     estimated_overhead = getattr(self.__class__, "_estimated_vram_overhead_bytes", 0)
-                    if b0_bytes + _VRAM_SAFETY_BYTES + estimated_overhead < free_vram:
+                    # Require the block to consume less than half the currently free VRAM so
+                    # we don't greedily pre-seed when another pipeline component (e.g. VAE
+                    # encoder) is about to need that headroom.  On uncongested cards the
+                    # check passes naturally; on a tight 4 GB card right after pipeline init
+                    # (when VAE weights are resident) the check will fail and block[0] is
+                    # loaded lazily by the pre-hook instead — no model-specific hard-coding.
+                    headroom_required = (b0_bytes + _VRAM_SAFETY_BYTES + estimated_overhead) * 2
+                    if headroom_required < free_vram:
                         self._h2d_futures[b0_name] = self._h2d_executor.submit(
                             self._do_h2d, b0_name, b0_keys
                         )
@@ -206,10 +213,9 @@ class BaseTransformerStreamer(ABC):
                     else:
                         logger.debug(
                             "[Streamer] Skipping eager H2D seed for block[0] '%s' (%.0f MB) — "
-                            "only %.0f MB free VRAM (need %.0f MB + safety margin + overhead). "
+                            "insufficient headroom (%.0f MB free, need %.0f MB). "
                             "Pre-hook will load lazily.",
-                            b0_name, b0_bytes / 1e6, free_vram / 1e6,
-                            (b0_bytes + _VRAM_SAFETY_BYTES + estimated_overhead) / 1e6,
+                            b0_name, b0_bytes / 1e6, free_vram / 1e6, headroom_required / 1e6,
                         )
                 except Exception:
                     pass  # If budget check fails for any reason, fall back to lazy loading

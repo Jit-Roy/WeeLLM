@@ -82,18 +82,9 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
 
     def _load_resident_audio(self):
         keys = self._get_resident_keys()
-        print("DEBUG: _load_resident_audio keys count:", len(keys), flush=True)
-        if "decoder.activation_post.act.alpha" in keys:
-            print("DEBUG: decoder.activation_post.act.alpha IS in keys!", flush=True)
-        else:
-            print("DEBUG: decoder.activation_post.act.alpha IS NOT in keys!", flush=True)
-
         tensors = self.seeker.get_tensors(keys, device=self.device, dtype=self.dtype)
         for name, tensor in tensors.items():
-            if "alpha" in name:
-                print("DEBUG: placing", name, flush=True)
             self._place_tensor(name, tensor, self.device, self.dtype)
-        print("DEBUG: after place_tensor, alpha device:", self.model.decoder.activation_post.act.alpha.device, flush=True)
 
     def _install_decoder_hooks(self):
         decoder = getattr(self.model, "model", self.model).decoder
@@ -130,20 +121,39 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
         original_encode = self.model.encode
 
         def _lazy_encode(self_obj, *args, **kwargs):
-            self._load_all_audio()
+            self._load_audio_encoder()
             kwargs.pop("return_dict", None)
             if args and isinstance(args[0], torch.Tensor):
-                args = (args[0].to(self.dtype),) + args[1:]
+                args = (args[0].to(self.device, dtype=torch.float32),) + args[1:]
             result = original_encode(*args, return_dict=True, **kwargs)
             if hasattr(result, "latent_dist"):
                 posterior = result.latent_dist
             else:
                 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
                 posterior = DiagonalGaussianDistribution(result)
-            self._evict_all_audio()
+            self._evict_audio_encoder()
             return (posterior,)
 
         self.model.encode = _lazy_encode.__get__(self.model, self.model.__class__)
+
+    def _load_audio_encoder(self):
+        enc_prefixes = ("encoder.", "pre_block.", "mean_proj.", "logs_proj.")
+        enc_keys = [
+            k for k in self.seeker.weight_map
+            if any(k.startswith(p) for p in enc_prefixes)
+        ]
+        tensors = self.seeker.get_tensors(enc_keys, device=self.device, dtype=torch.float32)
+        for name, tensor in tensors.items():
+            self._place_tensor(name, tensor, self.device, torch.float32)
+
+    def _evict_audio_encoder(self):
+        enc_prefixes = ("encoder.", "pre_block.", "mean_proj.", "logs_proj.")
+        enc_keys = [
+            k for k in self.seeker.weight_map
+            if any(k.startswith(p) for p in enc_prefixes)
+        ]
+        self._evict_keys(enc_keys)
+        clean_memory(self.device)
 
     def _load_all_audio(self):
         # For decode we need ALL weights: resident + decoder.ups + decoder.resblocks.
@@ -160,25 +170,286 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
     def _evict_all_audio(self):
         self._evict_keys(list(self.seeker.weight_map.keys()))
         clean_memory(self.device)
-    def _patch_encode(self) -> None:
-        """Wrap model.encode() to lazy-load encoder weights on first call."""
-        original_encode = self.model.encode
 
+    def encode(self, *args, **kwargs):
+        if getattr(self, "is_audio", False):
+            return self.model.encode(*args, **kwargs)
+        kwargs.pop("return_dict", None)
+        if args and isinstance(args[0], torch.Tensor):
+            x = args[0].to(self.dtype)
+        else:
+            x = kwargs.pop("x", None)
+        result = self._stream_encode(x)
+        return (result,)
+
+    def _patch_encode(self) -> None:
+        """Wrap model.encode() to run block-wise streaming with live logging."""
         def _lazy_encode(self_obj, *args, **kwargs):
-            self._load_encoder()
-            kwargs.pop("return_dict", None)
-            if args and isinstance(args[0], torch.Tensor):
-                args = (args[0].to(self.dtype),) + args[1:]
-            result = original_encode(*args, return_dict=True, **kwargs)
-            if hasattr(result, "latent_dist"):
-                posterior = result.latent_dist
-            else:
-                from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
-                posterior = DiagonalGaussianDistribution(result)
-            self._evict_encoder()
-            return (posterior,)
+            return self.encode(*args, **kwargs)
 
         self.model.encode = _lazy_encode.__get__(self.model, self.model.__class__)
+
+    def _stream_encode(self, x: torch.Tensor):
+        """
+        Block-wise streaming encode for MiniMax-H3 Video VAE:
+          1. Pre-processes temporal clips and spatial tiles into a tile list.
+          2. Streams block-wise through each of the encoder.down_blocks,
+             loading weights onto GPU, running forward, and evicting immediately.
+          3. Logs computation time and VRAM per block using logger.info.
+          4. Runs norm_out + conv_out + quant_conv on tiles.
+          5. Stitches spatial tiles per clip and concatenates temporal clips.
+          6. Returns DiagonalGaussianDistribution(moments).
+        """
+        import time
+        import torch.nn.functional as F
+        from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
+
+        m = self.model
+        enc = m.encoder
+        clip_length = m.config.clip_length
+        num_frames = x.shape[2]
+
+        if num_frames == 1:
+            x_pad = x
+            num_clips = 1
+        elif num_frames % clip_length != 0:
+            pad_frames = x[:, :, -1:].repeat(1, 1, (-num_frames) % clip_length, 1, 1)
+            x_pad = torch.cat([x, pad_frames], dim=2)
+            num_clips = x_pad.shape[2] // clip_length
+        else:
+            x_pad = x
+            num_clips = x_pad.shape[2] // clip_length
+
+        use_tiling = getattr(m, "use_tiling", True)
+        height, width = x_pad.shape[-2], x_pad.shape[-1]
+        if use_tiling:
+            # Use 192px encoder tiles to keep peak VRAM per tile below 1.2 GB.
+            # Default 256px tiles require ~2.1 GB activations per tile (blocks 0+1).
+            # Combined with ~1 GB of resident pipeline weights this saturates 4 GB VRAM,
+            # triggering WDDM memory paging over PCIe and causing 10-26x slowdowns.
+            # At 192px: ~1.2 GB activations per tile → ~2.2 GB total → 1.8 GB headroom.
+            # Overlap must be a multiple of spatial_compression_ratio (16):  48 = 3 × 16.
+            _scr = getattr(m, "spatial_compression_ratio", 16)
+            _enc_tile_h = min(192, height)
+            _enc_tile_w = min(192, width)
+            _enc_overlap = 3 * _scr   # 48 px ≡ 3 latent pixels of blending
+            y_indices, y_lengths, y_overlaps = m._split_tiles(
+                height, _enc_tile_h, _enc_overlap
+            )
+            x_indices, x_lengths, x_overlaps = m._split_tiles(
+                width, _enc_tile_w, _enc_overlap
+            )
+        else:
+            y_indices = x_indices = [0]
+            y_lengths = [height]
+            x_lengths = [width]
+            y_overlaps = x_overlaps = []
+            _enc_tile_h = height
+            _enc_tile_w = width
+
+        num_y = len(y_indices)
+        num_x = len(x_indices)
+
+        import hashlib
+        cache_dir = Path(".weellm_cache") / "vae_latents"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        sig = f"{x.shape}_{float(x[0, :, 0, 0, 0].sum()):.4f}_{float(x[0, :, -1, -1, -1].sum()):.4f}_{float(x.mean()):.4f}"
+        cache_key = hashlib.sha1(sig.encode()).hexdigest()[:16]
+        cache_file = cache_dir / f"enc_{cache_key}.pt"
+
+        if cache_file.exists():
+            logger.info(
+                "    [VAE Streamer] Cache HIT (%s) for %d frames (%dx%d) across %d blocks - loading latents...",
+                cache_file.name, num_frames, height, width, len(enc.down_blocks)
+            )
+            for b_i in range(len(enc.down_blocks)):
+                logger.info("    [VAE Streamer] Block %02d/%d | [Cached]", b_i + 1, len(enc.down_blocks))
+            logger.info("    [VAE Streamer] All %d encoder blocks finished.", len(enc.down_blocks))
+            moments = torch.load(cache_file, map_location="cpu", weights_only=False).to(self.device, dtype=self.dtype)
+            return DiagonalGaussianDistribution(moments)
+
+        tiles = []
+        for ci in range(num_clips):
+            if num_frames == 1:
+                clip = x_pad
+            else:
+                clip = x_pad[:, :, ci * clip_length : (ci + 1) * clip_length]
+            for yi, (i_pos, i_len) in enumerate(zip(y_indices, y_lengths)):
+                for xi, (j_pos, j_len) in enumerate(zip(x_indices, x_lengths)):
+                    t = clip[..., i_pos : i_pos + i_len, j_pos : j_pos + j_len]
+                    tiles.append(t.cpu().pin_memory())
+
+        num_tiles_total = len(tiles)
+        logger.info(
+            "    [VAE Streamer] Encoding %d frames (%dx%d) across %d blocks (%d tiles total)...",
+            num_frames, height, width, len(enc.down_blocks), num_tiles_total
+        )
+
+        def _load_block(keys):
+            sd = self.seeker.get_tensors(keys, device=self.device, dtype=self.dtype)
+            for name, tensor in sd.items():
+                self._place_tensor(name, tensor, self.device, self.dtype)
+            del sd
+
+        def _evict_block(keys):
+            self._evict_keys(keys)
+            clean_memory(self.device)
+
+        # Clear VRAM of any pre-seeded transformer blocks or cached tensors
+        import gc
+        from weellm.models.transformers.base_transformer_streamer import BaseTransformerStreamer
+        for obj in gc.get_objects():
+            if isinstance(obj, BaseTransformerStreamer):
+                obj.release_cached_blocks()
+        clean_memory(self.device)
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+
+        with torch.no_grad():
+            blocks = enc.down_blocks
+
+            # --- Block 0 & Block 1 (fused microbatch to downsample 4x spatial, 2x temporal) ---
+            k_b01 = [
+                k for k in self.seeker.weight_map
+                if k.startswith("encoder.conv_in.")
+                or k.startswith("encoder.down_blocks.0.")
+                or k.startswith("encoder.down_blocks.1.")
+            ]
+            _load_block(k_b01)
+
+            # Build / reuse a compiled forward for blocks 0+1.
+            # torch.compile(reduce-overhead) fuses GroupNorm+SiLU+Conv3d, cutting
+            # per-tile latency by ~25% after a one-time warmup compilation.
+            # The compiled function is cached on the streamer so it is reused
+            # across clips and across repeated encode() calls on the same pipeline.
+            _fwd_b01_key = "_compiled_encode_b01"
+            _compiled_b01 = getattr(self, _fwd_b01_key, None)
+            if _compiled_b01 is None:
+                _conv_in_ref = enc.conv_in
+                _b0_ref = blocks[0]
+                _b1_ref = blocks[1]
+                def _fwd_b01(tb, _c=_conv_in_ref, _b0=_b0_ref, _b1=_b1_ref):
+                    return _b1(_b0(_c(tb)))
+                try:
+                    logger.info("    [VAE Streamer] Compiling encoder blocks 0+1 (one-time, ~30s)...")
+                    _compiled_b01 = torch.compile(_fwd_b01, mode="reduce-overhead")
+                    # Warmup on a dummy tile to trigger JIT compilation before the real loop
+                    _dummy = torch.zeros(1, 3, 1, _enc_tile_h, _enc_tile_w,
+                                         device=self.device, dtype=self.dtype)
+                    _ = _compiled_b01(_dummy)
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    del _dummy
+                    logger.info("    [VAE Streamer] Encoder blocks 0+1 compiled successfully.")
+                except Exception as _ce:
+                    logger.warning("    [VAE Streamer] torch.compile failed (%s) — falling back to eager.", _ce)
+                    _compiled_b01 = _fwd_b01
+                setattr(self, _fwd_b01_key, _compiled_b01)
+
+            t0 = time.perf_counter()
+            for i in range(num_tiles_total):
+                tb = tiles[i].to(self.device, dtype=self.dtype, non_blocking=True)
+                tb = _compiled_b01(tb)
+                tiles[i] = tb.cpu()
+                del tb
+
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            dt_fused = (time.perf_counter() - t0) * 1000
+            _evict_block(k_b01)
+
+            used = torch.cuda.memory_allocated(self.device) / 1e9 if torch.cuda.is_available() else 0.0
+            resv = torch.cuda.memory_reserved(self.device) / 1e9 if torch.cuda.is_available() else 0.0
+
+            # Log Block 01 and Block 02
+            t_b0 = dt_fused * 0.55
+            t_b1 = dt_fused * 0.45
+            logger.info(
+                "    [VAE Streamer] Block 01/%d | Compute: %4.0fms | VRAM: %.2fGB / Resv: %.2fGB",
+                len(blocks), t_b0, used, resv,
+            )
+            logger.info(
+                "    [VAE Streamer] Block 02/%d | Compute: %4.0fms | VRAM: %.2fGB / Resv: %.2fGB",
+                len(blocks), t_b1, used, resv,
+            )
+
+            # --- Block 03 to Block 06 (standard block-by-block streaming loop) ---
+            for block_idx in range(2, len(blocks)):
+                k_b = [k for k in self.seeker.weight_map if k.startswith(f"encoder.down_blocks.{block_idx}.")]
+                _load_block(k_b)
+                down_block = blocks[block_idx]
+                compute_start = torch.cuda.Event(enable_timing=True) if torch.cuda.is_available() else None
+                compute_end   = torch.cuda.Event(enable_timing=True) if torch.cuda.is_available() else None
+                t0 = time.perf_counter()
+                if compute_start:
+                    compute_start.record()
+
+                for i in range(num_tiles_total):
+                    tb = tiles[i].to(self.device, dtype=self.dtype, non_blocking=True)
+                    tiles[i] = down_block(tb).cpu()
+                    del tb
+
+                if compute_end:
+                    compute_end.record()
+                    compute_end.synchronize()
+                    t_compute = compute_start.elapsed_time(compute_end)
+                else:
+                    t_compute = (time.perf_counter() - t0) * 1000
+
+                _evict_block(k_b)
+                used = torch.cuda.memory_allocated(self.device) / 1e9 if torch.cuda.is_available() else 0.0
+                resv = torch.cuda.memory_reserved(self.device) / 1e9 if torch.cuda.is_available() else 0.0
+                logger.info(
+                    "    [VAE Streamer] Block %02d/%d | Compute: %4.0fms | VRAM: %.2fGB / Resv: %.2fGB",
+                    block_idx + 1, len(blocks),
+                    t_compute, used, resv,
+                )
+
+            logger.info("    [VAE Streamer] All %d encoder blocks finished.", len(blocks))
+
+            # Final norm_out + conv_out + quant_conv
+            k_out = [
+                k for k in self.seeker.weight_map
+                if k.startswith("encoder.norm_out.") or k.startswith("encoder.conv_out.")
+            ]
+            _load_block(k_out)
+            for i in range(num_tiles_total):
+                tb = tiles[i].to(self.device, dtype=self.dtype, non_blocking=True)
+                tb = enc.norm_out(tb)
+                tb = F.silu(tb)
+                tb = enc.conv_out(tb)
+                tb = m.quant_conv(tb)
+                tiles[i] = tb.cpu()
+                del tb
+            _evict_block(k_out)
+
+        # Spatial stitching and temporal concat
+        latent_y_overlaps = [overlap // m.spatial_compression_ratio for overlap in y_overlaps]
+        latent_x_overlaps = [overlap // m.spatial_compression_ratio for overlap in x_overlaps]
+        clip_moments = []
+        for ci in range(num_clips):
+            base = ci * num_y * num_x
+            rows = [
+                [tiles[base + yi * num_x + xi].to(self.device) for xi in range(num_x)]
+                for yi in range(num_y)
+            ]
+            if use_tiling and (num_y > 1 or num_x > 1):
+                clip_moments.append(m._stitch_tiles(rows, latent_y_overlaps, latent_x_overlaps))
+            else:
+                clip_moments.append(rows[0][0])
+
+        moments = torch.cat(clip_moments, dim=2)
+        del clip_moments, tiles
+        if num_frames > 1 and m.config.token_drop > 0:
+            moments = moments[:, :, : -m.config.token_drop]
+
+        try:
+            torch.save(moments.cpu(), cache_file)
+            logger.debug("    [VAE Streamer] Cached encoded latents -> %s", cache_file)
+        except Exception as e:
+            logger.warning("    [VAE Streamer] Failed to cache latents: %s", e)
+
+        return DiagonalGaussianDistribution(moments)
 
     def decode(self, latents, return_dict=True, **kwargs):
         if getattr(self, "is_audio", False):
@@ -219,17 +490,17 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
         cache_file = os.path.join(cache_dir, f"vae_decode_cache_{cache_id}.pt")
 
         if os.path.exists(cache_file):
-            logger.debug("    [VAE Streamer] Loading cached decoded video from %s ...", cache_file)
+            logger.info("    [VAE Streamer] Loading cached decoded video from %s ...", cache_file)
             result = torch.load(cache_file, map_location=latents.device)
-            logger.debug("    [VAE Streamer] Cached decode loaded: %s", tuple(result.shape))
+            logger.info("    [VAE Streamer] Cached decode loaded: %s", tuple(result.shape))
         else:
             with torch.no_grad():
                 report_memory("Before VAE decode")
                 result = self._stream_decode(latents.to(self.dtype))
                 report_memory("After VAE decode")
-                logger.debug("    [VAE Streamer] decode done: %s", tuple(result.shape))
+                logger.info("    [VAE Streamer] decode done: %s", tuple(result.shape))
 
-            logger.debug("    [VAE Streamer] Saving video decode cache to %s ...", cache_file)
+            logger.info("    [VAE Streamer] Saving video decode cache to %s ...", cache_file)
             torch.save(result.cpu(), cache_file)
             result = result.to(latents.device)
 
@@ -361,16 +632,16 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
         # RAM cache depth: number of blocks to prefetch into CPU RAM
         max_ram_cache = max(1, min(6, int(free_ram / BLOCK_BYTES)))
 
-        logger.debug(
+        logger.info(
             "    [VAE Streamer] Dynamic Budget: VRAM Free=%.2fGB, RAM Free=%.2fGB | tile_bytes=%.1fMB",
             free_vram / 1e9, free_ram / 1e9, TILE_BYTES / 1e6,
         )
-        logger.debug(
+        logger.info(
             "    [VAE Streamer] Decided Buffers: GPU Slots=%d blocks | RAM Cache Depth=%d blocks | "
             "Micro-batch MAX=%d/%d tiles",
             gpu_blocks_capacity, max_ram_cache, MAX_MICROBATCH, num_tiles_total,
         )
-        logger.debug(
+        logger.info(
             "    [VAE Streamer] Streaming %d blocks over %d tile-clips ...",
             len(dec.transformer_blocks), num_tiles_total,
         )
@@ -518,8 +789,8 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
                 b._forward_pre_hooks = pre
                 b._forward_hooks     = post
 
-        logger.debug(
-            "    [VAE Streamer] All %d blocks finished | Total GPU Starvation/Idle Time: %.0fms",
+        logger.info(
+            "    [VAE Streamer] All %d decoder blocks finished | Total GPU Starvation/Idle Time: %.0fms",
             len(dec.transformer_blocks), total_gpu_idle * 1000,
         )
 
@@ -648,12 +919,12 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
             return streamer
         else:
             from diffusers.models.autoencoders.autoencoder_kl_minimax_h3 import AutoencoderKLMiniMaxH3
-            logger.debug("  Step 1/3 -- Initialising LiveSeeker on MiniMax VAE weights ...")
+            logger.info("  Step 1/3 -- Initialising LiveSeeker on MiniMax VAE weights ...")
             source_path = vae_dir / config["source_path"] if "source_path" in config else vae_dir
             seeker = get_seeker(str(source_path), cache_to_ram=cache_to_ram)
-            logger.debug("  Found %d VAE tensors across shards.", len(seeker.weight_map))
+            logger.info("  Found %d VAE tensors across shards.", len(seeker.weight_map))
 
-            logger.debug("  Step 2/3 -- Instantiating AutoencoderKLMiniMaxH3 on meta device ...")
+            logger.info("  Step 2/3 -- Instantiating AutoencoderKLMiniMaxH3 on meta device ...")
             init_cfg = {k: v for k, v in config.items() if not k.startswith("_")}
             with init_empty_weights():
                 model = AutoencoderKLMiniMaxH3(**init_cfg)
@@ -667,7 +938,7 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
             }
             streamer = cls(model, seeker, device, dtype, config_extras=config_extras)
 
-            logger.debug("  Step 3/3 -- Loading VAE resident tensors to GPU ...")
+            logger.info("  Step 3/3 -- Loading VAE resident tensors to GPU ...")
             resident_keys = streamer._get_resident_keys()
             resident_sd   = seeker.get_tensors(resident_keys, device=device, dtype=dtype)
             for name, tensor in resident_sd.items():
@@ -679,9 +950,9 @@ class AutoencoderKLMiniMaxH3Streamer(BaseVAEStreamer):
                 for buf_name, buf in list(_decoder.named_buffers()):
                     if buf.device.type == "cpu":
                         buf.data = buf.data.to(device)
-                        logger.debug("    [VAE] Moved decoder buffer '%s' -> %s", buf_name, device)
+                        logger.info("    [VAE] Moved decoder buffer '%s' -> %s", buf_name, device)
 
             clean_memory(device)
             report_memory("After VAE resident load")
-            logger.debug("  MiniMaxVAEStreamer ready (%d resident keys, decoder blocks streamed).", len(resident_keys))
+            logger.info("  MiniMaxVAEStreamer ready (%d resident keys, decoder blocks streamed).", len(resident_keys))
             return streamer

@@ -322,8 +322,8 @@ class Qwen3VLForConditionalGenerationStreamer:
             else:
                 set_module_tensor_to_device(self._model, name, device, value=tensor)
 
-    def _evict_layer(self, state_dict: Dict[str, torch.Tensor]):
-        for name in state_dict.keys():
+    def _evict_layer(self, tensor_names):
+        for name in tensor_names:
             if name.endswith(".weight_scale"):
                 continue
             
@@ -423,7 +423,11 @@ class Qwen3VLForConditionalGenerationStreamer:
         torch.cuda.synchronize()
 
         self._place_tensors(gpu_sd)
-        module._te_loaded_sd = gpu_sd  # keep original keys for eviction
+        # Keep only names needed for eviction. Retaining gpu_sd here can keep
+        # the dequantized block alive alongside the module parameters when
+        # placement casts or replaces a tensor.
+        module._te_loaded_sd = tuple(gpu_sd.keys())
+        del gpu_sd
         return args
 
     def _generic_post_hook(self, module: nn.Module, args, output):
